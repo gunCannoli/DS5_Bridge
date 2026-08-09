@@ -40,6 +40,12 @@ endif ()
 # ====================================================================================
 option(WAVESHARE_RP2350B_PLUS_W_BUILD "Build for Waveshare RP2350B-Plus-W (USB-C, 16MB flash, RM2 wireless)" OFF)
 
+# Wake-on-LAN over Wi-Fi: sends a UDP magic packet to a configured target PC
+# when a controller connects. Requires a CYW43 radio and lwIP, so it is only
+# offered (and only defaults on) for the Waveshare RP2350B-Plus-W target;
+# other boards are unaffected. See src/wolwifi.h for the isolated module.
+option(ENABLE_WOLWIFI "Enable Wake-on-LAN over Wi-Fi (requires CYW43 Wi-Fi + lwIP)" ${WAVESHARE_RP2350B_PLUS_W_BUILD})
+
 if (WAVESHARE_RP2350B_PLUS_W_BUILD)
     set(PICO_BOARD waveshare_rp2350b_plus_w CACHE STRING "Board type")
     # Waveshare board header is not in upstream pico-sdk; ship it here and
@@ -47,6 +53,9 @@ if (WAVESHARE_RP2350B_PLUS_W_BUILD)
     list(APPEND PICO_BOARD_HEADER_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/boards/headers")
 else ()
     set(PICO_BOARD pico2_w CACHE STRING "Board type")
+    if (ENABLE_WOLWIFI)
+        message(FATAL_ERROR "ENABLE_WOLWIFI requires WAVESHARE_RP2350B_PLUS_W_BUILD=ON (CYW43 Wi-Fi board).")
+    endif ()
 endif ()
 message(STATUS "ds5-bridge board target -- PICO_BOARD=${PICO_BOARD}")
 set(SYS_CLOCK_KHZ_VALUE 150000 CACHE STRING "RP2350 system clock in kHz")
@@ -92,6 +101,12 @@ add_executable(ds5-bridge
         src/firmware_log.cpp
         src/watchdog_telemetry.cpp
 )
+
+if (ENABLE_WOLWIFI)
+    target_sources(ds5-bridge PRIVATE
+            src/wolwifi.cpp
+    )
+endif ()
 
 # Cockos WDLResampler
 add_library(wdl_resampler STATIC
@@ -365,7 +380,6 @@ if(TARGET bs2_default)
     )
 endif()
 target_compile_definitions(ds5-bridge PRIVATE
-        CYW43_LWIP=0
         PICO_EMBED_XIP_SETUP=1
         # BOOTSEL polling floats QSPI CSn briefly; flash_safe_execute() must
         # park core 1 while that happens.
@@ -493,13 +507,36 @@ target_link_libraries(ds5-bridge
         hardware_timer
         pico_rand
         pico_btstack_classic
-        pico_cyw43_arch_poll
         pico_btstack_cyw43
         tinyusb_device
         tinyusb_board
         wdl_resampler
         opus
 )
+
+if (ENABLE_WOLWIFI)
+    # Swaps in lwIP support on top of the same CYW43 poll-mode arch already
+    # used for Bluetooth (pico_cyw43_arch_lwip_poll depends on
+    # pico_cyw43_arch_poll and additionally links pico_lwip_nosys, setting
+    # CYW43_LWIP=1 via its headers interface). BTstack keeps using the CYW43
+    # HCI transport independently of lwIP/UDP traffic on the same radio.
+    target_include_directories(ds5-bridge PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/boards/headers
+    )
+    target_compile_definitions(ds5-bridge PRIVATE
+            ENABLE_WOLWIFI
+    )
+    target_link_libraries(ds5-bridge
+            pico_cyw43_arch_lwip_poll
+    )
+else ()
+    target_compile_definitions(ds5-bridge PRIVATE
+            CYW43_LWIP=0
+    )
+    target_link_libraries(ds5-bridge
+            pico_cyw43_arch_poll
+    )
+endif ()
 
 # The exact-capacity audio queues use static storage. Codec and resampler
 # startup still allocate 79,120 bytes; retain another 8 KiB after those known
