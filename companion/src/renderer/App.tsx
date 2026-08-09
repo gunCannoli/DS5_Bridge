@@ -10182,6 +10182,46 @@ export function App() {
                     <span className="wol-settings-error">{wolFieldError.message}</span>
                   )}
                 </div>
+              </div>
+              <div className="bridge-settings-column">
+                <div className="settings-menu-section-label">Power & Controller</div>
+                <div className={`settings-menu-row ${settingsFocusTarget === 'controller-power-saving' ? 'settings-menu-row-highlight' : ''}`}>
+                  <div className="settings-menu-copy">
+                    <strong>Controller Power Saving</strong>
+                    <span>Caps haptics, triggers, and lightbar brightness at 60% while headphones are plugged in</span>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={snapshot.settings.controllerPowerSavingEnabled}
+                    className={`switch ${snapshot.settings.controllerPowerSavingEnabled ? 'on' : ''}`}
+                    disabled={pendingAction !== null}
+                    onClick={() => void runAction('controller-power-saving', () => (
+                      window.bridge.setControllerPowerSavingEnabled(!snapshot.settings.controllerPowerSavingEnabled)
+                    ))}
+                  >
+                    <span />
+                  </button>
+                </div>
+                <div className="settings-menu-row">
+                  <div className="settings-menu-copy">
+                    <strong>Player Slot LED</strong>
+                    <span>Show the controller player indicator lights</span>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={snapshot.settings.playerLedEnabled}
+                    className={`switch ${snapshot.settings.playerLedEnabled ? 'on' : ''}`}
+                    disabled={!connected}
+                    onClick={() => void runAction('player-led', () => (
+                      window.bridge.setPlayerLedEnabled(!snapshot.settings.playerLedEnabled)
+                    ))}
+                  >
+                    <span />
+                  </button>
+                </div>
+                <div className="settings-menu-section-label">Firmware</div>
                 <div className="settings-menu-row pico-firmware-row">
                   <div className="pico-firmware-header">
                     <strong>Firmware</strong>
@@ -10226,45 +10266,6 @@ export function App() {
                       <span className="pico-firmware-message bad">{picoFirmwareError}</span>
                     ) : null}
                   </div>
-                </div>
-              </div>
-              <div className="bridge-settings-column">
-                <div className="settings-menu-section-label">Power & Controller</div>
-                <div className={`settings-menu-row ${settingsFocusTarget === 'controller-power-saving' ? 'settings-menu-row-highlight' : ''}`}>
-                  <div className="settings-menu-copy">
-                    <strong>Controller Power Saving</strong>
-                    <span>Caps haptics, triggers, and lightbar brightness at 60% while headphones are plugged in</span>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={snapshot.settings.controllerPowerSavingEnabled}
-                    className={`switch ${snapshot.settings.controllerPowerSavingEnabled ? 'on' : ''}`}
-                    disabled={pendingAction !== null}
-                    onClick={() => void runAction('controller-power-saving', () => (
-                      window.bridge.setControllerPowerSavingEnabled(!snapshot.settings.controllerPowerSavingEnabled)
-                    ))}
-                  >
-                    <span />
-                  </button>
-                </div>
-                <div className="settings-menu-row">
-                  <div className="settings-menu-copy">
-                    <strong>Player Slot LED</strong>
-                    <span>Show the controller player indicator lights</span>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={snapshot.settings.playerLedEnabled}
-                    className={`switch ${snapshot.settings.playerLedEnabled ? 'on' : ''}`}
-                    disabled={!connected}
-                    onClick={() => void runAction('player-led', () => (
-                      window.bridge.setPlayerLedEnabled(!snapshot.settings.playerLedEnabled)
-                    ))}
-                  >
-                    <span />
-                  </button>
                 </div>
                 <div className="settings-menu-section-label">Shortcuts</div>
                 <div className={`settings-menu-row ${settingsFocusTarget === 'sleep-shortcut' ? 'settings-menu-row-highlight' : ''}`}>

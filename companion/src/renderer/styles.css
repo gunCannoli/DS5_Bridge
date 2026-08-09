@@ -2074,16 +2074,19 @@ button {
 
 /* Wake-on-LAN SSID/password/target-MAC fields: label left, input right, on
    one row -- same label-left/control-right shape as a toggle or select row,
-   just with a text input as the control. Input sizing follows the modal's
-   compact control scale (.settings-timeout-select is the closest reference:
-   26px tall, 12px text) rather than the larger .remap-profile-name-field
-   dialog input, since this lives inline in the settings columns, not a
-   standalone dialog. The optional error message wraps to its own full-width
-   line below when present. */
+   just with a text input as the control. The input column is a fixed ~45%
+   of the row (not sized to the label text) so all three inputs -- SSID,
+   password, MAC -- line up at the same width and right edge regardless of
+   label length. Input sizing follows the modal's compact control scale
+   (.settings-timeout-select is the closest reference: 26px tall, 12px text)
+   rather than the larger .remap-profile-name-field dialog input, since this
+   lives inline in the settings columns, not a standalone dialog. The
+   optional error message wraps to its own full-width line below when
+   present. */
 .wol-settings-row {
   display: grid;
   align-items: center;
-  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 45%;
   column-gap: 10px;
   row-gap: 4px;
 }
@@ -2096,6 +2099,7 @@ button {
   width: 100%;
   min-width: 0;
   height: 26px;
+  margin-left: auto;
   border: 1px solid var(--surface-border-strong);
   border-radius: var(--control-radius);
   padding: 0 9px;
