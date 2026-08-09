@@ -93,6 +93,93 @@ If a future version of this feature needs a genuinely new output location
 with the reasoning, so it's clear it was an intentional addition and not
 drift from upstream's layout.
 
+## Rebuild rules — what to rebuild after a change
+
+The two halves of this project build independently and don't need to be
+rebuilt together. Only rebuild what you actually touched.
+
+### Firmware-only changes (anything under `src/`, `boards/`, root `CMakeLists.txt`)
+
+Rebuild the board firmware. The companion app does NOT need rebuilding —
+it talks to whatever firmware is currently flashed over the existing HID
+protocol, it isn't compiled against firmware source.
+
+```bash
+export PICO_SDK_PATH="C:/auto/arduino/build/pico-sdk"
+./boards/build_waveshare_rp2350b_plus_w.sh
+# UF2 at build/waveshare/ds5-bridge.uf2
+```
+
+For a quick one-off/manual configure (e.g. testing a CMake option change in
+isolation) instead of the convenience script:
+
+```bash
+cmake -S . -B build/waveshare -G Ninja \
+  -DWAVESHARE_RP2350B_PLUS_W_BUILD=ON -DENABLE_COMPANION=ON \
+  -DPICO_NO_COPRO_DIS=1 -DPICO_SDK_PATH="C:/auto/arduino/build/pico-sdk"
+cmake --build build/waveshare --target ds5-bridge
+```
+
+`-DENABLE_COMPANION=ON` is required for a real build (it's what compiles
+`companion.cpp`, including all the WOL command handlers) — the CMake default
+is off. See "Local build environment notes" below if the final link/UF2 step
+crashes; the actual compile+link already succeeded if you see "Verified
+complete live firmware hot paths..." before the crash.
+
+To also sanity-check the default (non-Waveshare) board still builds after a
+change to shared firmware code (anything outside `wolwifi.h/.cpp`,
+`boards/headers/lwipopts.h`):
+
+```bash
+cmake -S . -B build/default -G Ninja -DENABLE_COMPANION=ON \
+  -DPICO_NO_COPRO_DIS=1 -DPICO_SDK_PATH="C:/auto/arduino/build/pico-sdk"
+cmake --build build/default --target ds5-bridge
+```
+
+Flashing: hold BOOTSEL, plug in, drag the UF2 onto the mounted drive — or
+use the companion app's Firmware > Mount + Flash buttons once it's running
+against the currently-flashed firmware.
+
+### Companion-app-only changes (anything under `companion/`)
+
+Rebuild the companion app. The firmware does NOT need rebuilding.
+
+```bash
+cd companion
+npm run typecheck   # fast correctness check, run this first
+npx vitest run src  # full test suite
+npm run dev          # build + launch electron for interactive testing
+```
+
+To produce a distributable build:
+
+```bash
+npm run installer:win   # NSIS installer -> companion/artifacts/installer/
+# or, for a quick portable folder without building a full installer:
+npm run package:win     # -> companion/artifacts/DS5 Bridge-win32-x64-<timestamp>/
+```
+
+### Changes touching both (e.g. a new companion protocol command, like WOL's
+### SET_WOL_* commands and their `src/companion.cpp` handlers)
+
+Rebuild both, in either order, but test them together before considering the
+change done — a protocol change is only correct if both sides agree on wire
+format (`COMMAND_ID` values, payload layout, `PROTOCOL_MAJOR`/`MINOR`).
+
+1. Rebuild firmware (above), flash it to the board.
+2. Rebuild/run the companion app (above) against that flashed firmware.
+3. Exercise the actual feature through the UI, not just typecheck/build
+   success — protocol mismatches don't show up at compile time.
+
+### Quick reference: do I need to rebuild firmware, companion, or both?
+
+| Changed | Rebuild |
+|---|---|
+| `src/*.cpp`, `src/*.h`, `boards/**`, root `CMakeLists.txt` | Firmware only |
+| `companion/src/main/**`, `companion/src/renderer/**`, `companion/src/preload.ts` | Companion only |
+| `companion/src/shared/protocol.ts` or `companion/src/shared/types.ts` | Companion (always) + firmware if the corresponding C++ side (`companion.cpp`'s `CommandId` enum, `kProtocolMinor`, report layout) also changed — check whether you edited both before assuming one side is enough |
+| `src/companion.cpp` | Firmware always; companion app only if you also changed `protocol.ts`/`types.ts` to match |
+
 ## Local build environment notes
 
 - On this machine, `arm-none-eabi-objdump`/the chained CMake `POST_BUILD`
