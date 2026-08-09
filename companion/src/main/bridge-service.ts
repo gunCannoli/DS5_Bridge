@@ -2978,21 +2978,23 @@ export class BridgeService extends EventEmitter {
   }
 
   async setWolWifiSsid(ssid: string): Promise<BridgeSnapshot> {
+    const payload = wolWifiSsidPayload(ssid);
     await this.sendSettingCommand(
       COMMAND_ID.SET_WOL_WIFI_SSID,
-      0,
+      payload.length,
       { wolWifiSsid: ssid },
-      wolWifiSsidPayload(ssid)
+      payload
     );
     return this.getSnapshot();
   }
 
   async setWolWifiPassword(password: string): Promise<BridgeSnapshot> {
+    const payload = wolWifiPasswordPayload(password);
     await this.sendSettingCommand(
       COMMAND_ID.SET_WOL_WIFI_PASSWORD,
-      0,
+      payload.length,
       { wolWifiPassword: password },
-      wolWifiPasswordPayload(password)
+      payload
     );
     return this.getSnapshot();
   }
@@ -4059,15 +4061,17 @@ export class BridgeService extends EventEmitter {
       { expectSettingsRevisionChange }
     );
     if (settings.wolWifiSsid) {
-      await this.sendCommand(COMMAND_ID.SET_WOL_WIFI_SSID, 0, {
+      const ssidPayload = wolWifiSsidPayload(settings.wolWifiSsid);
+      await this.sendCommand(COMMAND_ID.SET_WOL_WIFI_SSID, ssidPayload.length, {
         expectSettingsRevisionChange,
-        extraPayload: wolWifiSsidPayload(settings.wolWifiSsid)
+        extraPayload: ssidPayload
       });
     }
     if (settings.wolWifiPassword) {
-      await this.sendCommand(COMMAND_ID.SET_WOL_WIFI_PASSWORD, 0, {
+      const passwordPayload = wolWifiPasswordPayload(settings.wolWifiPassword);
+      await this.sendCommand(COMMAND_ID.SET_WOL_WIFI_PASSWORD, passwordPayload.length, {
         expectSettingsRevisionChange,
-        extraPayload: wolWifiPasswordPayload(settings.wolWifiPassword)
+        extraPayload: passwordPayload
       });
     }
     if (settings.wolTargetMac) {
