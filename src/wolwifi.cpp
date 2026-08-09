@@ -28,7 +28,10 @@ constexpr uint16_t WOL_UDP_PORT = 9;              // standard WOL discard-port t
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;
 constexpr uint32_t WIFI_RETRY_BACKOFF_MS = 10000;
 constexpr uint8_t MAX_SSID_LEN = 32;               // 802.11 SSID max
-constexpr uint8_t MAX_PASSWORD_LEN = 63;           // WPA2-PSK passphrase max
+// WPA2-PSK passphrases can be up to 63 chars, but the companion protocol's
+// fixed 63-byte HID report (11-byte command header) only has 53 bytes of
+// payload room -- see WOL_WIFI_PASSWORD_MAX_LENGTH in shared/protocol.ts.
+constexpr uint8_t MAX_PASSWORD_LEN = 53;
 
 enum class WifiState : uint8_t {
     Unconfigured,
@@ -40,7 +43,7 @@ enum class WifiState : uint8_t {
 };
 
 volatile bool g_enabled = false;
-bool g_have_credentials = false;
+bool g_have_ssid = false;
 bool g_have_target_mac = false;
 
 char g_ssid[MAX_SSID_LEN + 1] = {0};
@@ -108,7 +111,7 @@ bool have_ip_lease() {
 }
 
 void start_wifi_connect() {
-    if (!g_have_credentials) {
+    if (!g_have_ssid) {
         enter_state(WifiState::Unconfigured);
         return;
     }
@@ -142,30 +145,46 @@ bool wolwifi_is_enabled(void) {
     return g_enabled;
 }
 
-bool wolwifi_set_wifi_credentials(const char *ssid, uint8_t ssid_len,
-                                   const char *password, uint8_t password_len) {
-    if (ssid_len > MAX_SSID_LEN || password_len > MAX_PASSWORD_LEN) {
-        DS5_LOG("[WOL] Rejected Wi-Fi credentials: length out of range\n");
+bool wolwifi_set_wifi_ssid(const char *ssid, uint8_t ssid_len) {
+    if (ssid_len > MAX_SSID_LEN) {
+        DS5_LOG("[WOL] Rejected Wi-Fi SSID: length out of range\n");
         return false;
     }
-    if ((ssid_len > 0 && ssid == nullptr) || (password_len > 0 && password == nullptr)) {
-        DS5_LOG("[WOL] Rejected Wi-Fi credentials: null buffer\n");
+    if (ssid_len > 0 && ssid == nullptr) {
+        DS5_LOG("[WOL] Rejected Wi-Fi SSID: null buffer\n");
         return false;
     }
 
     std::memset(g_ssid, 0, sizeof(g_ssid));
-    std::memset(g_password, 0, sizeof(g_password));
     if (ssid_len > 0) {
         std::memcpy(g_ssid, ssid, ssid_len);
     }
+    g_have_ssid = ssid_len > 0;
+
+    DS5_LOG("[WOL] Wi-Fi SSID updated (len=%u)\n", ssid_len);
+
+    // Re-apply on next task poll rather than blocking here.
+    enter_state(WifiState::Idle);
+    return true;
+}
+
+bool wolwifi_set_wifi_password(const char *password, uint8_t password_len) {
+    if (password_len > MAX_PASSWORD_LEN) {
+        DS5_LOG("[WOL] Rejected Wi-Fi password: length out of range\n");
+        return false;
+    }
+    if (password_len > 0 && password == nullptr) {
+        DS5_LOG("[WOL] Rejected Wi-Fi password: null buffer\n");
+        return false;
+    }
+
+    std::memset(g_password, 0, sizeof(g_password));
     if (password_len > 0) {
         std::memcpy(g_password, password, password_len);
     }
-    g_have_credentials = ssid_len > 0;
 
-    DS5_LOG("[WOL] Wi-Fi credentials updated (ssid_len=%u)\n", ssid_len);
+    DS5_LOG("[WOL] Wi-Fi password updated (len=%u)\n", password_len);
 
-    // Re-apply on next task poll rather than blocking here.
     enter_state(WifiState::Idle);
     return true;
 }
@@ -186,7 +205,7 @@ bool wolwifi_set_target_mac(const uint8_t mac[6]) {
 }
 
 void wolwifi_on_controller_connect(void) {
-    if (!g_enabled || !g_have_credentials || !g_have_target_mac) {
+    if (!g_enabled || !g_have_ssid || !g_have_target_mac) {
         return;
     }
     DS5_LOG("[WOL] Controller connected\n");
@@ -201,7 +220,7 @@ void wolwifi_on_controller_connect(void) {
 }
 
 void wolwifi_task(void) {
-    if (!g_enabled || !g_have_credentials) {
+    if (!g_enabled || !g_have_ssid) {
         return;
     }
 
