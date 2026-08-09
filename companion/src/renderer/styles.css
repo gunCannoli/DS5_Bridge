@@ -2137,6 +2137,19 @@ button {
   line-height: 1.16;
 }
 
+.wol-debug-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.wol-debug-actions .secondary-action {
+  min-height: 26px;
+  padding: 0 10px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .settings-menu-controls {
   flex: 0 0 auto;
   display: grid;

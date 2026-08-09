@@ -1143,6 +1143,12 @@ function registerIpc(service: BridgeService): void {
   ipcMain.handle('bridge:setWolTargetMac', (_event, value: string) => (
     service.setWolTargetMac(value)
   ));
+  ipcMain.handle('bridge:triggerWolDebugPing', () => (
+    service.triggerWolDebugPing()
+  ));
+  ipcMain.handle('bridge:triggerWolDebugSend', () => (
+    service.triggerWolDebugSend()
+  ));
   ipcMain.handle('bridge:setSleepKeybindEnabled', (_event, value: boolean) => (
     service.setSleepKeybindEnabled(value)
   ));
@@ -1285,7 +1291,7 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   const settingsStore = new SettingsStore(app.getPath('userData'));
   applyLaunchAtStartup(settingsStore.get().launchAtStartupEnabled);
-  bridgeService = new BridgeService(settingsStore);
+  bridgeService = new BridgeService(settingsStore, app.getPath('userData'));
   registerIpc(bridgeService);
 
   mainWindow = createWindow(settingsStore.get().uiScalePercent);

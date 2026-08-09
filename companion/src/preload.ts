@@ -143,6 +143,12 @@ const api = {
   setWolTargetMac: (value: string): Promise<BridgeSnapshot> => (
     ipcRenderer.invoke('bridge:setWolTargetMac', value)
   ),
+  triggerWolDebugPing: (): Promise<BridgeSnapshot> => (
+    ipcRenderer.invoke('bridge:triggerWolDebugPing')
+  ),
+  triggerWolDebugSend: (): Promise<BridgeSnapshot> => (
+    ipcRenderer.invoke('bridge:triggerWolDebugSend')
+  ),
   setSleepKeybindEnabled: (value: boolean): Promise<BridgeSnapshot> => (
     ipcRenderer.invoke('bridge:setSleepKeybindEnabled', value)
   ),

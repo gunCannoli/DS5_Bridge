@@ -31,8 +31,11 @@ import {
   parseFeedbackTraceReport,
   parseFirmwareLogReport,
   parseStatusReport,
+  parseWolDebugStatusReport,
   readReportProtocolVersion,
   SHORTCUT_EVENT,
+  WOL_DEBUG_ACTION,
+  WOL_DEBUG_RESULT,
   buildButtonRemapPayload,
   hostPersonaModeValue,
   normalizeChordControllerSettingStepPercent,
@@ -60,6 +63,7 @@ import type {
   RemapButtonId,
   HostPersonaMode,
   AudioStatusPayload,
+  WolDebugStatusPayload,
   TriggerTraceEventPayload,
   FeedbackTraceEventPayload,
   BridgeStatusPayload,
@@ -170,6 +174,8 @@ type BridgeDiagnosticsWithoutAudioLog = Omit<
   | 'feedbackTraceLines'
   | 'feedbackTraceDroppedCount'
   | 'audioStatus'
+  | 'wolDebugStatus'
+  | 'wolDebugLogPath'
 >;
 
 type CommandOptions = {
@@ -334,7 +340,9 @@ function emptyDiagnostics(rawDevices: HidDeviceSummary[]): BridgeDiagnostics {
     triggerTraceDroppedCount: 0,
     feedbackTraceLines: [],
     feedbackTraceDroppedCount: 0,
-    audioStatus: null
+    audioStatus: null,
+    wolDebugStatus: null,
+    wolDebugLogPath: null
   };
 }
 
@@ -1274,6 +1282,9 @@ export class BridgeService extends EventEmitter {
   private feedbackTraceDroppedCount = 0;
   private feedbackTraceSupported: boolean | null = null;
   private audioStatus: AudioStatusPayload | null = null;
+  private wolDebugStatus: WolDebugStatusPayload | null = null;
+  private wolDebugLogPath: string | null = null;
+  private wolDebugLogLastError: string | null = null;
   private incompatibleCompanionProtocolVersion: ReportProtocolVersion | null = null;
   private lastAudioStatsSignature: string | null = null;
   private systemAudioHapticsRetryAt = 0;
@@ -1299,7 +1310,10 @@ export class BridgeService extends EventEmitter {
     [SHORTCUT_EVENT.MIC_MUTE_OFF]: () => this.applyControllerMicMuteEvent(false)
   };
 
-  constructor(private readonly settingsStore: SettingsStore) {
+  constructor(
+    private readonly settingsStore: SettingsStore,
+    private readonly wolDebugLogDirectory?: string
+  ) {
     super();
     this.snapshot = {
       state: 'no-bridge',
@@ -1608,7 +1622,9 @@ export class BridgeService extends EventEmitter {
       triggerTraceDroppedCount: this.triggerTraceDroppedCount,
       feedbackTraceLines: [...this.feedbackTraceLines],
       feedbackTraceDroppedCount: this.feedbackTraceDroppedCount,
-      audioStatus: this.audioStatus ? { ...this.audioStatus } : null
+      audioStatus: this.audioStatus ? { ...this.audioStatus } : null,
+      wolDebugStatus: this.wolDebugStatus ? { ...this.wolDebugStatus } : null,
+      wolDebugLogPath: this.wolDebugLogPath
     };
   }
 
@@ -2084,6 +2100,73 @@ export class BridgeService extends EventEmitter {
       this.audioStatus = null;
     }
     this.publishAudioDiagnosticsSnapshot();
+  }
+
+  // Polled every tick like readAudioStatus(); cheap even when no WOL debug
+  // action is in flight. Writes one line per action to a small always-on
+  // log file (independent of the separate Firmware UART Log feature) so a
+  // Ping/WOL Test click is debuggable even without that capture running --
+  // see decisions.md for why this can't rely on the UART log alone (the
+  // target PC and the PC running this companion app can be the same
+  // machine, so once WOL actually needs to fire, there is no PC left to
+  // read logs from).
+  private async readWolDebugStatus(): Promise<void> {
+    if (!this.device) {
+      this.wolDebugStatus = null;
+      this.publishAudioDiagnosticsSnapshot();
+      return;
+    }
+
+    try {
+      const status = parseWolDebugStatusReport(
+        await this.device.getFeatureReport(REPORT_ID.WOL_DEBUG_STATUS, REPORT_LENGTH)
+      );
+      const previous = this.wolDebugStatus;
+      this.wolDebugStatus = status;
+      const actionChanged = previous?.lastActionStartedMs !== status.lastActionStartedMs;
+      const resultSettled = status.lastResult !== WOL_DEBUG_RESULT.PENDING;
+      const resultChanged = previous?.lastResult !== status.lastResult;
+      if (status.lastAction !== WOL_DEBUG_ACTION.NONE && resultSettled && (actionChanged || resultChanged)) {
+        await this.appendWolDebugLog(status);
+      }
+    } catch {
+      this.wolDebugStatus = null;
+    }
+    this.publishAudioDiagnosticsSnapshot();
+  }
+
+  private async appendWolDebugLog(status: WolDebugStatusPayload): Promise<void> {
+    if (!this.wolDebugLogDirectory) {
+      return;
+    }
+    try {
+      const logPath = path.join(this.wolDebugLogDirectory, 'ds5bridge-wol-debug.log');
+      const actionName = status.lastAction === WOL_DEBUG_ACTION.PING ? 'ping' : 'send-wol';
+      const resultName = Object.entries(WOL_DEBUG_RESULT).find(
+        ([, value]) => value === status.lastResult
+      )?.[0] ?? String(status.lastResult);
+      const linkStateNames = ['unconfigured', 'idle', 'connecting', 'waiting-for-ip', 'connected', 'failed'];
+      const linkStateName = linkStateNames[status.linkState] ?? String(status.linkState);
+      const ip = status.ipAddress ?? 'none';
+      const line = `${new Date().toISOString()} action=${actionName} result=${resultName.toLowerCase()} link=${linkStateName} ip=${ip}\n`;
+      await fsPromises.appendFile(logPath, line);
+      this.wolDebugLogPath = logPath;
+      this.wolDebugLogLastError = null;
+    } catch (error) {
+      this.wolDebugLogLastError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async triggerWolDebugPing(): Promise<BridgeSnapshot> {
+    await this.sendCommand(COMMAND_ID.TRIGGER_WOL_DEBUG_PING, 0);
+    await this.readWolDebugStatus();
+    return this.getSnapshot();
+  }
+
+  async triggerWolDebugSend(): Promise<BridgeSnapshot> {
+    await this.sendCommand(COMMAND_ID.TRIGGER_WOL_DEBUG_SEND, 0);
+    await this.readWolDebugStatus();
+    return this.getSnapshot();
   }
 
   private async readAudioStatusThrottled(force = false, intervalMs = AUDIO_STATUS_READ_INTERVAL_MS): Promise<void> {
@@ -3623,6 +3706,7 @@ export class BridgeService extends EventEmitter {
     await this.readFirmwareLog();
     await this.readAudioDebugThrottled(true);
     await this.readAudioStatus();
+    await this.readWolDebugStatus();
     const deviceIdentity = await this.readDeviceIdentity();
     this.updateConnectedDeviceIdentity(deviceIdentity, status.controllerConnected);
     this.maybeEmitStatusToasts(status);
@@ -4397,7 +4481,9 @@ export class BridgeService extends EventEmitter {
         feedbackTraceLineCount: this.snapshot.diagnostics.feedbackTraceLines.length,
         feedbackTraceTail: this.snapshot.diagnostics.feedbackTraceLines.at(-1) ?? null,
         feedbackTraceDroppedCount: this.snapshot.diagnostics.feedbackTraceDroppedCount,
-        audioStatus: this.snapshot.diagnostics.audioStatus
+        audioStatus: this.snapshot.diagnostics.audioStatus,
+        wolDebugStatus: this.snapshot.diagnostics.wolDebugStatus,
+        wolDebugLogPath: this.snapshot.diagnostics.wolDebugLogPath
       }
     });
     if (signature === this.lastEmittedSnapshotSignature) {
