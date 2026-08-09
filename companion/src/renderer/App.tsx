@@ -2693,6 +2693,27 @@ function chordControllerSettingSummary(action: ChordControllerSettingAction, ste
   return 'Controller Setting';
 }
 
+function wolRawLinkStatusHint(rawLinkStatus: number): string {
+  switch (rawLinkStatus) {
+    case -3:
+      return 'wrong Wi-Fi password';
+    case -2:
+      return 'network not found -- check SSID and that the board is in range';
+    case -1:
+      return 'connect failed';
+    case 0:
+      return 'radio idle';
+    case 1:
+      return 'associated, waiting for network details';
+    case 2:
+      return 'associated, waiting for an IP address';
+    case 3:
+      return 'connected';
+    default:
+      return `status ${rawLinkStatus}`;
+  }
+}
+
 function wolDebugStatusText(status: WolDebugStatusPayload | null): string {
   if (!status || status.lastAction === WOL_DEBUG_ACTION.NONE) {
     return 'Ping checks the target MAC answers ARP. WOL Test re-sends the magic packet now.';
@@ -2715,10 +2736,10 @@ function wolDebugStatusText(status: WolDebugStatusPayload | null): string {
           return 'Wi-Fi not connected -- no SSID reached firmware, re-enter it';
         }
         if (status.linkState === WOL_WIFI_LINK_STATE.FAILED) {
-          return 'Wi-Fi not connected -- connect attempt failed, check SSID/password';
+          return `Wi-Fi not connected -- connect attempt failed (${wolRawLinkStatusHint(status.rawLinkStatus)})`;
         }
         if (status.linkState === WOL_WIFI_LINK_STATE.CONNECTING || status.linkState === WOL_WIFI_LINK_STATE.WAITING_FOR_IP) {
-          return 'Wi-Fi not connected yet -- still connecting, try again shortly';
+          return `Wi-Fi not connected yet -- ${wolRawLinkStatusHint(status.rawLinkStatus)}, try again shortly`;
         }
         return 'Wi-Fi not connected';
       case WOL_DEBUG_RESULT.SEND_FAILED:

@@ -2149,8 +2149,12 @@ export class BridgeService extends EventEmitter {
       const linkStateName = linkStateNames[status.linkState] ?? String(status.linkState);
       const ip = status.ipAddress ?? 'none';
       const linkStateAgeMs = status.nowMs - status.linkStateEnteredMs;
+      const rawLinkStatusNames: Record<number, string> = {
+        [-3]: 'badauth', [-2]: 'nonet', [-1]: 'fail', 0: 'down', 1: 'join', 2: 'noip', 3: 'up'
+      };
+      const rawLinkStatusName = rawLinkStatusNames[status.rawLinkStatus] ?? String(status.rawLinkStatus);
       const line = `${new Date().toISOString()} action=${actionName} result=${resultName.toLowerCase()} `
-        + `link=${linkStateName} link_age_ms=${linkStateAgeMs} ip=${ip} `
+        + `link=${linkStateName} link_age_ms=${linkStateAgeMs} raw_link_status=${rawLinkStatusName} ip=${ip} `
         + `wol_enabled=${status.wolEnabled} have_ssid=${status.haveSsid} have_target_mac=${status.haveTargetMac}\n`;
       await fsPromises.appendFile(logPath, line);
       this.wolDebugLogPath = logPath;

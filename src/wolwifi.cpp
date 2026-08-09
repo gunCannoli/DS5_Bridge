@@ -368,6 +368,7 @@ WolDebugStatus wolwifi_debug_status(void) {
     status.have_target_mac = g_have_target_mac;
     status.now_ms = now_ms();
     status.link_state_entered_ms = g_state_entered_ms;
+    status.raw_link_status = static_cast<int8_t>(cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA));
     return status;
 }
 
@@ -407,6 +408,16 @@ void wolwifi_task(void) {
 
         case WifiState::Connecting: {
             const int status = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
+            // Log every status transition seen while connecting (not just
+            // the terminal ones) -- CYW43_LINK_JOIN/NOIP/UP/FAIL/NONET/
+            // BADAUTH are all distinct and a flapping link (associate,
+            // get an IP, drop) looks identical to "still connecting" from
+            // our WolWifiLinkState alone without this.
+            static int last_logged_status = -100; // sentinel outside CYW43_LINK_* range
+            if (status != last_logged_status) {
+                DS5_LOG("[WOL] Wi-Fi link status: %d\n", status);
+                last_logged_status = status;
+            }
             if (status == CYW43_LINK_UP) {
                 DS5_LOG("[WOL] Wi-Fi link up; waiting for IP lease\n");
                 enter_state(WifiState::WaitingForIp);
@@ -440,7 +451,10 @@ void wolwifi_task(void) {
         case WifiState::Connected: {
             const int status = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
             if (status != CYW43_LINK_UP || !have_ip_lease()) {
-                DS5_LOG("[WOL] Wi-Fi link lost; will retry\n");
+                DS5_LOG(
+                    "[WOL] Wi-Fi link lost; will retry (status=%d, have_ip=%d)\n",
+                    status, have_ip_lease() ? 1 : 0
+                );
                 enter_state(WifiState::Failed);
             }
             return;

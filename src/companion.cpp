@@ -1877,7 +1877,7 @@ uint16_t build_wol_debug_status(uint8_t *buffer, uint16_t reqlen) {
     buffer[11] = status.ip_octets[1];
     buffer[12] = status.ip_octets[2];
     buffer[13] = status.ip_octets[3];
-    // buffer[14] reserved
+    buffer[14] = static_cast<uint8_t>(status.raw_link_status);
     write_u32(buffer + 15, status.last_action_started_ms);
     write_u32(buffer + 19, status.now_ms);
     write_u32(buffer + 23, status.link_state_entered_ms);
