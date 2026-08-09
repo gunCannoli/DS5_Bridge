@@ -1328,9 +1328,12 @@ button {
 }
 
 /* Wake-on-LAN adds a text-input section (SSID/password/target MAC) to the
-   preferences modal's left column, on top of the existing rows -- taller
-   than the other modal variants need. */
+   preferences modal's left column: taller than the other modal variants
+   need (extra rows), and wider (side-by-side label + text input rows need
+   more horizontal room than the toggle/select rows the column was sized
+   for, or the input gets squeezed to the point of overflowing the column). */
 .bridge-settings-preferences-modal {
+  width: min(880px, calc(100vw - 48px));
   max-height: min(700px, calc(100vh - 48px));
 }
 
@@ -2069,19 +2072,20 @@ button {
   flex: 0 0 48px;
 }
 
-/* Wake-on-LAN SSID/password/target-MAC fields: stacked full-width rows
-   (label above input), matching .pico-firmware-row's layout since a 32-char
-   SSID or a MAC address doesn't fit the label-left/control-right pattern
-   used by toggles and selects. Input sizing follows the modal's compact
-   control scale (.settings-timeout-select is the closest reference: 26px
-   tall, 12px text) rather than the larger .remap-profile-name-field dialog
-   input, since this lives inline in the settings columns, not a standalone
-   dialog. */
+/* Wake-on-LAN SSID/password/target-MAC fields: label left, input right, on
+   one row -- same label-left/control-right shape as a toggle or select row,
+   just with a text input as the control. Input sizing follows the modal's
+   compact control scale (.settings-timeout-select is the closest reference:
+   26px tall, 12px text) rather than the larger .remap-profile-name-field
+   dialog input, since this lives inline in the settings columns, not a
+   standalone dialog. The optional error message wraps to its own full-width
+   line below when present. */
 .wol-settings-row {
   display: grid;
-  align-items: stretch;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 5px;
+  align-items: center;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  column-gap: 10px;
+  row-gap: 4px;
 }
 
 .wol-settings-row .settings-menu-copy {
@@ -2090,6 +2094,7 @@ button {
 
 .wol-settings-input {
   width: 100%;
+  min-width: 0;
   height: 26px;
   border: 1px solid var(--surface-border-strong);
   border-radius: var(--control-radius);
@@ -2122,6 +2127,7 @@ button {
 }
 
 .wol-settings-error {
+  grid-column: 1 / -1;
   color: var(--danger);
   font-size: 10.5px;
   line-height: 1.16;

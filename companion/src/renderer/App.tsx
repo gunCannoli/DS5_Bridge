@@ -10059,7 +10059,7 @@ export function App() {
                 <div className="settings-menu-row">
                   <div className="settings-menu-copy">
                     <strong>Wake PC over Wi-Fi</strong>
-                    <span>Send a network Wake-on-LAN packet to a PC when a controller connects. Requires the Waveshare RP2350B-Plus-W board.</span>
+                    <span>Sends a Wake-on-LAN packet when a controller connects.</span>
                   </div>
                   <button
                     type="button"
