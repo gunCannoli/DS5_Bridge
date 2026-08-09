@@ -52,6 +52,16 @@ struct WolDebugStatus {
     // between lwIP's network-byte-order ip4_addr and this wire format's
     // little-endian write_u32 -- see decisions.md.
     uint8_t ip_octets[4];
+    // Raw config-reached-firmware flags. Exposed so a stuck link_state
+    // (e.g. permanently Idle) can be diagnosed from the debug status alone
+    // -- Idle with wol_enabled=false means wolwifi_task() is intentionally
+    // not progressing (see the early-return at the top of wolwifi_task()),
+    // not a connect failure.
+    bool wol_enabled;
+    bool have_ssid;
+    bool have_target_mac;
+    uint32_t now_ms;              // firmware's current tick, for age math
+    uint32_t link_state_entered_ms;
 };
 
 #ifdef ENABLE_WOLWIFI
@@ -126,7 +136,12 @@ static inline WolDebugStatus wolwifi_debug_status(void) {
         WolDebugAction::None,
         WolDebugResult::NotConfigured,
         0,
-        {0, 0, 0, 0}
+        {0, 0, 0, 0},
+        false,
+        false,
+        false,
+        0,
+        0
     };
 }
 

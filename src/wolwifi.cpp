@@ -363,6 +363,11 @@ WolDebugStatus wolwifi_debug_status(void) {
     } else {
         status.ip_octets[0] = status.ip_octets[1] = status.ip_octets[2] = status.ip_octets[3] = 0;
     }
+    status.wol_enabled = g_enabled;
+    status.have_ssid = g_have_ssid;
+    status.have_target_mac = g_have_target_mac;
+    status.now_ms = now_ms();
+    status.link_state_entered_ms = g_state_entered_ms;
     return status;
 }
 
@@ -375,7 +380,20 @@ void wolwifi_task(void) {
         finish_debug_action(WolDebugResult::Timeout);
     }
 
-    if (!g_enabled || !g_have_ssid) {
+    // Rate-limited: logs only on the edge into/out of the blocked state,
+    // not every poll tick, to avoid flooding the log while WOL is
+    // intentionally off/unconfigured.
+    static bool was_blocked = false;
+    const bool blocked = !g_enabled || !g_have_ssid;
+    if (blocked != was_blocked) {
+        DS5_LOG(
+            "[WOL] Task %s: wol_enabled=%d have_ssid=%d have_target_mac=%d\n",
+            blocked ? "blocked" : "unblocked",
+            g_enabled ? 1 : 0, g_have_ssid ? 1 : 0, g_have_target_mac ? 1 : 0
+        );
+        was_blocked = blocked;
+    }
+    if (blocked) {
         return;
     }
 

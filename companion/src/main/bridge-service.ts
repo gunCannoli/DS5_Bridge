@@ -2148,7 +2148,10 @@ export class BridgeService extends EventEmitter {
       const linkStateNames = ['unconfigured', 'idle', 'connecting', 'waiting-for-ip', 'connected', 'failed'];
       const linkStateName = linkStateNames[status.linkState] ?? String(status.linkState);
       const ip = status.ipAddress ?? 'none';
-      const line = `${new Date().toISOString()} action=${actionName} result=${resultName.toLowerCase()} link=${linkStateName} ip=${ip}\n`;
+      const linkStateAgeMs = status.nowMs - status.linkStateEnteredMs;
+      const line = `${new Date().toISOString()} action=${actionName} result=${resultName.toLowerCase()} `
+        + `link=${linkStateName} link_age_ms=${linkStateAgeMs} ip=${ip} `
+        + `wol_enabled=${status.wolEnabled} have_ssid=${status.haveSsid} have_target_mac=${status.haveTargetMac}\n`;
       await fsPromises.appendFile(logPath, line);
       this.wolDebugLogPath = logPath;
       this.wolDebugLogLastError = null;
