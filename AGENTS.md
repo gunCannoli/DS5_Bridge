@@ -63,6 +63,36 @@ push on every single commit.
   decisions.md/task.md phase breakdown) — pushing is about syncing to GitHub,
   not about commit granularity.
 
+## Build output locations (use upstream's existing conventions, don't invent new ones)
+
+Both the board firmware and the companion app already have defined output
+locations upstream. Always use these — don't add a parallel `dist/` or similar,
+since that adds nothing but rebase friction for zero benefit.
+
+- **Board firmware UF2**: `build/waveshare/ds5-bridge.uf2`, produced by
+  `boards/build_waveshare_rp2350b_plus_w.sh` (default board target) or
+  `build/<name>/ds5-bridge.uf2` for other `-B <dir>` CMake configure targets
+  (e.g. our manual test builds used `build/waveshare_test`). This is CMake's
+  own build directory (gitignored via `build`/`build-*` in `.gitignore`), not
+  a separate release/dist step — upstream does not currently stage a "final"
+  firmware release copy anywhere else.
+- **Companion app installer**: `companion/artifacts/installer/` (NSIS `.exe`),
+  produced by `npm run installer:win` inside `companion/` via electron-builder
+  (`companion/package.json`'s `build.directories.output`).
+- **Companion app portable/debug package**: `companion/artifacts/DS5 Bridge-win32-x64-<timestamp>/`,
+  produced by `npm run package:win` (`companion/scripts/package-win.mjs`) —
+  a timestamped folder tree, not a single exe, used for quick manual testing
+  without building a full installer.
+- Both `companion/artifacts` and `build`/`build-*` are already gitignored at
+  the repo root; nothing extra was needed there.
+
+If a future version of this feature needs a genuinely new output location
+(e.g. bundling the Waveshare UF2 into the companion installer the way
+`pico-universal-flash-nuke.uf2` is bundled via `companion/firmware/` +
+`extraResources` in `package.json`), record that decision in `decisions.md`
+with the reasoning, so it's clear it was an intentional addition and not
+drift from upstream's layout.
+
 ## Local build environment notes
 
 - On this machine, `arm-none-eabi-objdump`/the chained CMake `POST_BUILD`

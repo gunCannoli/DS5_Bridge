@@ -5,6 +5,29 @@ Each entry: decision, rationale, alternatives considered, date.
 
 ---
 
+## 2026-08-09 — Build outputs stay in upstream's existing locations, no new dist/ folder
+
+**Decision:** Firmware UF2 stays at `build/waveshare/ds5-bridge.uf2` (or
+`build/<name>/ds5-bridge.uf2` for other CMake `-B` dirs); companion installer
+stays at `companion/artifacts/installer/`; companion portable package stays
+at `companion/artifacts/DS5 Bridge-win32-x64-<timestamp>/`. No new root-level
+`dist/` folder was added, even though one was briefly implemented (build
+script copy step, electron-builder output path change, `.gitignore` entry)
+before being reverted.
+
+**Why:** A new output convention that upstream doesn't already use is pure
+rebase friction — every future backport would need to remember to re-apply
+it, for no functional benefit over just knowing where the existing outputs
+already land. See AGENTS.md's "Build output locations" section for the
+authoritative reference of where each output currently goes.
+
+**Alternatives considered:** Root `dist/firmware/` + `dist/companion/`
+(initially implemented, then reverted per user feedback: "let's use what the
+original repo uses for build folders... so in the future we won't need to
+tweak too much when backporting from new versions").
+
+---
+
 ## 2026-08-09 — WOL UI capability gate: protocol-minor version, not a new status byte
 
 **Decision:** Gate the WOL settings UI on `firmwareFlags.wolControl`, computed
