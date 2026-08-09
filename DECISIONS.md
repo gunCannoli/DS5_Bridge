@@ -5,6 +5,57 @@ Each entry: decision, rationale, alternatives considered, date.
 
 ---
 
+## 2026-08-09 — WOL debug Ping/Test feature: motivation and mechanism
+
+**Context:** First real smoke test failed silently -- PC off, controller off,
+board on, controller paired, but WOL never woke the PC. Root cause
+diagnosis was blocked: the release firmware build has all `DS5_LOG` calls
+compiled out (see the "how to diagnose a failed smoke test" doc pass), and
+even with a debug-logging build, the companion app -- the only way to read
+those logs -- runs on the same PC that WOL is supposed to wake. Once the
+target PC is off, there's no PC left to run the companion app on.
+
+**Decision:** Add an on-demand debug row (Ping / WOL Test buttons) so the
+whole pipeline (Wi-Fi connect, target reachability, magic-packet send) can
+be exercised and verified *while the target PC is on*, building confidence
+before relying on it blind.
+
+**Ping mechanism:** lwIP's ARP API (`etharp_query`/`etharp_request`) only
+resolves IP->MAC, never the reverse, so there's no direct "ping this MAC"
+call. Instead: broadcast an ARP request (to generate traffic) and install a
+wrapper around `netif_default->input` (normally `ethernet_input`) that
+inspects every inbound frame's source MAC while a ping is in-flight, then
+always forwards to the real `ethernet_input` so nothing about normal lwIP
+operation changes. A match on the configured target MAC = success.
+
+**Alternatives considered:**
+- ICMP ping to a separately-configured IP: rejected, needs a new config
+  field and doesn't confirm the *specific target MAC* owns that IP.
+- Ship WOL Test only, no ping: rejected, gives no independent signal that
+  the target NIC is actually reachable before/after a send.
+
+**Status delivery:** Both the main status report and `firmwareFlags`/
+`statusFlags` bytes are fully packed (0 free bytes/bits) -- confirmed this
+independently of the earlier `wolControl` capability-flag decision, same
+constraint. Added a new `WOL_DEBUG_STATUS` report type instead (same
+pattern as `AUDIO_STATUS` being separate from the main status report).
+
+**IP address wire format:** Sent as 4 raw octets (`ip_octets[0..3]`), not a
+packed `uint32_t`. lwIP's `ip4_addr.addr` is network-byte-order; this
+protocol's `write_u32` is little-endian. Packing/unpacking through a
+`uint32_t` would silently produce a byte-reversed IP on the wire depending
+on which side got the convention backwards -- raw octets sidestep the
+question entirely, same reasoning as the existing MAC-address wire format.
+
+**Log delivery:** A new always-on `ds5bridge-wol-debug.log` file in the
+companion app's `userData` directory, written on every settled Ping/WOL
+Test result -- deliberately independent of the existing Firmware UART Log
+feature (which requires the user to have already picked a folder via
+Diagnostics > Choose Folder). The whole point of this feature is to work
+without that prior setup, given the same-PC constraint above.
+
+---
+
 ## 2026-08-09 — Build outputs stay in upstream's existing locations, no new dist/ folder
 
 **Decision:** Firmware UF2 stays at `build/waveshare/ds5-bridge.uf2` (or

@@ -8,22 +8,47 @@ below is fully completed.
 Setup, research (Phase 1-2), feature definition (Phase 3), firmware Wi-Fi/WOL
 implementation (Phase 4), companion app configuration (Phase 5), and build
 integration (Phase 6a/6b) complete and committed on `feature/wol-wifi`.
-Phase 8 (logging) substantially covered by `DS5_LOG` calls already in
-`wolwifi.cpp`. Companion app typechecks and all 278 tests pass.
+
+First real hardware smoke test (2026-08-09): PC off, controller off, board
+on (USB hub powered). Controller paired with board but WOL did not wake the
+PC. Root cause undiagnosed -- release firmware has no logging, and since
+the target PC and the PC running the companion app were the same machine,
+there was no way to read logs after the PC was off anyway.
+
+In response, added a WOL debug feature (Ping + WOL Test buttons in the
+companion app's Wake-on-LAN section, ARP-snoop-based ping, dedicated
+always-on log file) so the pipeline can be verified while the target PC is
+on -- see decisions.md for the full design writeup. This needed a firmware
+change (new debug entry points in wolwifi.h/.cpp, new WOL_DEBUG_STATUS
+report, two new trigger commands) and a companion app change (new IPC
+channels, status polling, debug log writer, UI row). Both committed and
+built: debug-logging Waveshare firmware at
+`build/waveshare-debug2/ds5-bridge.uf2`, companion installer at
+`companion/artifacts/installer/DS5-Bridge-Companion-Setup-1.7.0.exe`.
 
 ## Current task
 
-- [ ] Phase 7: smoke test — needs real Wi-Fi SSID/password and target PC MAC
-      from the user, plus physical hardware (Waveshare board + DualSense +
-      target PC) to actually run. Blocked until user provides these/hardware
-      is available.
+- [ ] Re-run Phase 7 smoke test using the new debug tooling: with the
+      target PC ON, flash the debug-logging firmware + install the updated
+      companion app, use Ping first (confirms Wi-Fi connects and the
+      target NIC answers ARP) then WOL Test (confirms the send path
+      works) before trusting an actual PC-off wake attempt again. Check
+      `ds5bridge-wol-debug.log` in the companion app's userData folder
+      after each click regardless of pass/fail.
 
 ## Next task
 
+- [ ] Once Ping/WOL Test both succeed with the PC on, re-attempt the
+      original PC-off wake test and use whatever the debug tooling showed
+      (or didn't show) to narrow down where the real failure was.
 - [ ] Phase 9: verify failure-behavior claims at test time (non-blocking
       design is already in place per 4d/4e, needs runtime confirmation)
 - [ ] Phase 10: PR prep — write PR description, fill in testing checklist
-      once Phase 7 runs, review for unrelated changes before opening PR
+      once Phase 7 runs, review for unrelated changes before opening PR.
+      Note: the WOL debug feature (Ping/WOL Test) is a reasonable candidate
+      to keep in the upstream PR too, not just as our local dev tooling --
+      decide before opening the PR whether to present it as part of the
+      feature or strip it as internal-only.
 
 ---
 
