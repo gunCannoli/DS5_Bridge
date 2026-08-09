@@ -180,6 +180,73 @@ format (`COMMAND_ID` values, payload layout, `PROTOCOL_MAJOR`/`MINOR`).
 | `companion/src/shared/protocol.ts` or `companion/src/shared/types.ts` | Companion (always) + firmware if the corresponding C++ side (`companion.cpp`'s `CommandId` enum, `kProtocolMinor`, report layout) also changed — check whether you edited both before assuming one side is enough |
 | `src/companion.cpp` | Firmware always; companion app only if you also changed `protocol.ts`/`types.ts` to match |
 
+## Diagnostics: how to see what went wrong during a smoke test
+
+If a smoke test fails (Wi-Fi doesn't connect, WOL packet doesn't send/wake
+the PC, controller behaves oddly with WOL enabled), there are two separate
+places to look, since firmware and companion are different processes with
+different logging paths.
+
+### Firmware logs (the important one for WOL issues)
+
+`DS5_LOG(...)` calls (including every `[WOL]`-prefixed message in
+`wolwifi.cpp`) are **compiled out entirely** unless the firmware is built
+with debug logging enabled — the default release build (what
+`boards/build_waveshare_rp2350b_plus_w.sh` and our earlier smoke-test builds
+produced) has them fully stripped, so nothing will show up no matter what
+you enable in the companion app's UI.
+
+To get a firmware build that actually emits `[WOL]` logs:
+
+```bash
+cmake -S . -B build/waveshare-debug -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DWAVESHARE_RP2350B_PLUS_W_BUILD=ON \
+  -DENABLE_COMPANION=ON -DDS5_DIAGNOSTICS_PRESET=custom -DENABLE_DEBUG_LOGS=ON \
+  -DPICO_NO_COPRO_DIS=1 -DPICO_SDK_PATH="C:/auto/arduino/build/pico-sdk"
+cmake --build build/waveshare-debug --target ds5-bridge
+```
+
+Flash `build/waveshare-debug/ds5-bridge.uf2` instead of the release build
+while debugging. `DS5_DIAGNOSTICS_PRESET=custom -DENABLE_DEBUG_LOGS=ON` is
+the minimal combination for just firmware logs, without the extra
+audio/trigger/feedback trace overhead `traces`/`all` presets add.
+
+These logs don't come out over a wired UART cable — they're transported
+over the same companion HID channel already used for settings, and the
+companion app writes them to a file on disk:
+
+1. Open the companion app, go to the device card, switch to the
+   **Diagnostics** tab (top-right toggle next to "Device").
+2. Under **Firmware UART Log**, click **Choose Folder** and pick a
+   directory — this both enables capture and sets where the log file lands.
+   The current file path is shown right there (`File: ...`) once capture is
+   running.
+3. Reproduce the issue (connect the controller, etc.), then open that log
+   file — it will contain every `[WOL]` line in order: init, Wi-Fi
+   connecting/connected + IP, controller-connect trigger, magic packet
+   sent/failed, link lost, credential/MAC updates, etc. (see `wolwifi.cpp`
+   for the exact message text at each step).
+4. The same Diagnostics tab also shows **SRAM overwrite loss** (bytes) — if
+   nonzero, the log ring buffer wrapped before the companion app could read
+   it; reproduce the issue with fewer other things happening first, or
+   expect to have missed early messages.
+
+### Companion app issues (protocol errors, UI not updating, connection problems)
+
+- Field-level errors (e.g. an invalid MAC/SSID/password rejected by
+  firmware) surface directly in the WOL section's UI as inline red text —
+  no log file needed for those.
+- The companion app itself doesn't write a persistent log file. For
+  anything else (HID connection drops, IPC errors, unexpected exceptions),
+  run it via `npm run dev` instead of the installed build and check the
+  Electron DevTools console (main window) plus the terminal `npm run dev`
+  is running in (main-process `console.error` output lands there).
+- The Diagnostics tab's other fields (Protocol, Last ACK, Revision,
+  Settings Revision) are useful for confirming the companion app and
+  firmware are actually talking and agreeing on protocol version — relevant
+  if `wolControl`/other WOL UI controls appear disabled unexpectedly (see
+  the protocol-minor gate decision in `decisions.md`).
+
 ## Local build environment notes
 
 - On this machine, `arm-none-eabi-objdump`/the chained CMake `POST_BUILD`
