@@ -635,6 +635,11 @@ export interface WolDebugStatusPayload {
   haveTargetMac: boolean;
   nowMs: number;
   linkStateEnteredMs: number;
+  // Raw cyw43_wifi_link_status() value (see wolwifi.h) -- our own linkState
+  // collapses several distinct CYW43 states into CONNECTING, which isn't
+  // enough to tell a flapping auth failure from a slow DHCP lease from a
+  // weak signal. -3=badauth, -2=nonet, -1=fail, 0=down, 1=join, 2=noip, 3=up.
+  rawLinkStatus: number;
 }
 
 export interface AudioStatusPayload {
@@ -1092,7 +1097,8 @@ export function parseWolDebugStatusReport(report: ArrayLike<number>): WolDebugSt
     haveTargetMac: (flags & 0x04) !== 0,
     lastActionStartedMs: readU32(report, 16),
     nowMs: readU32(report, 20),
-    linkStateEnteredMs: readU32(report, 24)
+    linkStateEnteredMs: readU32(report, 24),
+    rawLinkStatus: report[15] > 127 ? report[15] - 256 : report[15]
   };
 }
 

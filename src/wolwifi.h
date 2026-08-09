@@ -62,6 +62,12 @@ struct WolDebugStatus {
     bool have_target_mac;
     uint32_t now_ms;              // firmware's current tick, for age math
     uint32_t link_state_entered_ms;
+    // Raw cyw43_wifi_link_status() return value (CYW43_LINK_DOWN/JOIN/NOIP/
+    // UP/FAIL/NONET/BADAUTH -- see cyw43.h; range is -3..3, fits in int8_t).
+    // Exposed because our own WolWifiLinkState collapses several distinct
+    // CYW43 states into "Connecting", which isn't enough to tell a flapping
+    // auth failure from a slow DHCP lease from a weak signal.
+    int8_t raw_link_status;
 };
 
 #ifdef ENABLE_WOLWIFI
@@ -140,6 +146,7 @@ static inline WolDebugStatus wolwifi_debug_status(void) {
         false,
         false,
         false,
+        0,
         0,
         0
     };
