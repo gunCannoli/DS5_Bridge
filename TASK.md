@@ -5,23 +5,25 @@ below is fully completed.
 
 ## Status
 
-Setup, research (Phase 1-2), feature definition (Phase 3), and firmware Wi-Fi/WOL
-implementation (Phase 4) complete and committed on `feature/wol-wifi`. Build
-integration verified for both the Waveshare target (WOL on) and the default
-`pico2_w` target (WOL compiled out, zero wolwifi symbols) — Phase 6a/6b done
-ahead of schedule since it was the natural way to validate Phase 4.
+Setup, research (Phase 1-2), feature definition (Phase 3), firmware Wi-Fi/WOL
+implementation (Phase 4), companion app configuration (Phase 5), and build
+integration (Phase 6a/6b) complete and committed on `feature/wol-wifi`.
+Phase 8 (logging) substantially covered by `DS5_LOG` calls already in
+`wolwifi.cpp`. Companion app typechecks and all 278 tests pass.
 
 ## Current task
 
-- [ ] Phase 5a: new `COMMAND_ID`s in `companion/src/shared/protocol.ts` +
-      mirrored `enum CommandId` in `src/companion.cpp`
+- [ ] Phase 7: smoke test — needs real Wi-Fi SSID/password and target PC MAC
+      from the user, plus physical hardware (Waveshare board + DualSense +
+      target PC) to actually run. Blocked until user provides these/hardware
+      is available.
 
 ## Next task
 
-- [ ] Phase 5b: variable-length payload command(s) for SSID/password/MAC,
-      reusing the `SET_CHORD_BINDINGS` payload pattern (see decisions.md)
-- [ ] Phase 5c: `wolEnabled` bool command, following existing bool-setting
-      pattern (e.g. `SET_WAKE_ENABLED` from PR #93 as reference)
+- [ ] Phase 9: verify failure-behavior claims at test time (non-blocking
+      design is already in place per 4d/4e, needs runtime confirmation)
+- [ ] Phase 10: PR prep — write PR description, fill in testing checklist
+      once Phase 7 runs, review for unrelated changes before opening PR
 
 ---
 
@@ -61,21 +63,39 @@ x16), broadcast address, standard WOL UDP port.
       in `main.cpp`. Full firmware build + link + existing SRAM/heap
       verification passes for the Waveshare target with WOL on.
 
-### Phase 5 — Companion app changes
+### Phase 5 — Companion app changes (DONE, committed)
 
-- [ ] 5a. New `COMMAND_ID`s in `companion/src/shared/protocol.ts` +
-      mirrored `enum CommandId` in `src/companion.cpp`
-- [ ] 5b. Variable-length payload command(s) for SSID/password/MAC, reusing
-      the `SET_CHORD_BINDINGS` payload pattern (see decisions.md)
-- [ ] 5c. `wolEnabled` bool command, following existing bool-setting pattern
-      (e.g. `SET_WAKE_ENABLED` from PR #93 as reference)
-- [ ] 5d. Settings plumbing: `settings-store.ts` (defaults/normalize),
-      `bridge-service.ts` (setters + reapply-on-connect list), `main.ts`
-      (IPC handlers), `preload.ts` (renderer bridge)
-- [ ] 5e. `App.tsx` UI: enable toggle + 3 text fields under existing
-      settings section pattern
-- [ ] 5f. MAC address validation: companion-app side (JS, before send) AND
-      firmware side (C++, on receive — never trust the app blindly)
+- [x] 5a. New `COMMAND_ID`s (`0x37`-`0x3A`) in `companion/src/shared/protocol.ts`
+      + mirrored `enum CommandId` in `src/companion.cpp`.
+- [x] 5b. Variable-length payload commands for SSID/password, reusing the
+      `SET_CHORD_BINDINGS` payload framing (length in `value`, bytes after
+      the 10-byte header). Target MAC reuses the existing 6-byte
+      `bluetoothAddressPayload`-style wire format instead (fixed size, no
+      length prefix needed) — added `wolTargetMacPayload` as a MAC-specific
+      variant with WOL-relevant validation (rejects null/broadcast MAC).
+- [x] 5c. `wolEnabled` bool command (`SET_WOL_ENABLED`), following the
+      existing bool-setting pattern (e.g. `SET_WAKE_ON_CONNECT`, which
+      turned out to already exist in `port-dev` as a real merged USB-wake
+      feature, separate from PR #93's proposal — used as the direct
+      template instead).
+- [x] 5d. Settings plumbing: `settings-store.ts` (defaults/normalize, with
+      length clamping), `bridge-service.ts` (setters + reconnect-reapply,
+      conditional on non-empty for SSID/password/MAC), `main.ts` (IPC
+      handlers), `preload.ts` (renderer bridge). `ipc-contract.test.ts`
+      updated with a matching contract test.
+- [x] 5e. `App.tsx` UI: enable toggle (same format as the existing "Wake PC
+      on Controller" row) + 3 stacked full-width text inputs in a new
+      "Wake-on-LAN" section, right after Connection Behavior in the left
+      column. Modal `max-height` increased 560px -> 700px to fit without
+      scrolling.
+- [x] 5f. MAC address validation: companion-app side via `wolTargetMacPayload`
+      (throws `ProtocolError`, shown inline in the UI) AND firmware side
+      re-validates independently in `wolwifi_set_target_mac`/`_set_wifi_ssid`/
+      `_set_wifi_password` — never trusts the app's client-side checks alone.
+- [x] Bonus: gated the whole WOL UI section on a new `firmwareFlags.wolControl`
+      capability flag (protocol-minor gate, bumped `PROTOCOL_MINOR` 19 -> 20
+      in both `protocol.ts` and `companion.cpp`, kept in sync), matching the
+      pattern `wakeOnConnectControl`/`audioReactiveHapticsControl` already use.
 
 ### Phase 6 — Build integration (6a/6b DONE, done early while validating Phase 4)
 
@@ -102,12 +122,16 @@ x16), broadcast address, standard WOL UDP port.
 - [ ] Test 5: existing functionality unaffected (USB, BT stability, input,
       reconnect, no added controller latency)
 
-### Phase 8 — Logging
+### Phase 8 — Logging (substantially DONE)
 
-- [ ] `[WOL]` prefixed logs at: Wi-Fi init, Wi-Fi connected (+ IP), config
-      received, WOL enabled/disabled, controller connected, WOL triggered,
-      packet sent, failure. Match existing DS5 Bridge logging verbosity/style
-      (check `src/firmware_log.cpp` conventions before adding).
+- [x] `[WOL]` prefixed `DS5_LOG` calls already present in `wolwifi.cpp` at:
+      init, Wi-Fi connecting/connected (+ IP), connect failure/timeout, link
+      lost, SSID/password/MAC updated, controller-connect trigger, magic
+      packet sent/failed. Matches the existing `DS5_LOG` macro used
+      throughout the firmware (compiles out entirely unless
+      `DS5_DEBUG_LOGS_ENABLED`, so no runtime cost in release builds).
+- [ ] Revisit verbosity once real hardware testing (Phase 7) shows what's
+      actually useful vs. noisy.
 
 ### Phase 9 — Failure behavior (design constraint, verify at test time)
 
