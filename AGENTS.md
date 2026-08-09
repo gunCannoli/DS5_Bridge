@@ -63,6 +63,23 @@ push on every single commit.
   decisions.md/task.md phase breakdown) — pushing is about syncing to GitHub,
   not about commit granularity.
 
+## Local build environment notes
+
+- On this machine, `arm-none-eabi-objdump`/the chained CMake `POST_BUILD`
+  step that generates `ds5-bridge.dis`/`.hex`/`.bin`/`.uf2` sometimes crashes
+  (`Access violation`) when invoked through Ninja's nested `cmd.exe` chain.
+  This is NOT related to firmware source changes — `objdump`, `objcopy`, and
+  `picotool` all succeed when run manually against the same `.elf` (e.g. via
+  PowerShell) right after a failed build. If `cmake --build` fails only at
+  the final post-link step after "Linking CXX executable ds5-bridge.elf" and
+  "Verified complete live firmware hot paths...", the actual firmware build
+  succeeded — just re-run the objdump/objcopy/picotool commands from the
+  failing command line manually (or via PowerShell) to produce the missing
+  `.uf2`/`.hex`/`.bin`/`.dis` artifacts.
+- `PICO_NO_COPRO_DIS=1` avoids a separate, reproducible `picotool coprodis`
+  segfault when it processes `bs2_default.dis` in-place; pass it when
+  configuring if the boot_stage2 disassembly step crashes.
+
 ## Rebase/backport workflow
 
 When upstream `port-dev` moves forward:

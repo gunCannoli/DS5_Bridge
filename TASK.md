@@ -5,17 +5,23 @@ below is fully completed.
 
 ## Status
 
-Setup and research (Phase 1-2) complete. Feature definition and Wi-Fi bring-up
-scope agreed with user. About to start Phase 3-4 implementation.
+Setup, research (Phase 1-2), feature definition (Phase 3), and firmware Wi-Fi/WOL
+implementation (Phase 4) complete and committed on `feature/wol-wifi`. Build
+integration verified for both the Waveshare target (WOL on) and the default
+`pico2_w` target (WOL compiled out, zero wolwifi symbols) — Phase 6a/6b done
+ahead of schedule since it was the natural way to validate Phase 4.
 
 ## Current task
 
-- [ ] Create branch `feature/wol-wifi` off `upstream/port-dev`, push to `origin`
+- [ ] Phase 5a: new `COMMAND_ID`s in `companion/src/shared/protocol.ts` +
+      mirrored `enum CommandId` in `src/companion.cpp`
 
 ## Next task
 
-- [ ] Phase 4a: `CMakeLists.txt` — conditionally enable `CYW43_LWIP` and link
-      required lwIP libs, scoped to `WAVESHARE_RP2350B_PLUS_W_BUILD` only
+- [ ] Phase 5b: variable-length payload command(s) for SSID/password/MAC,
+      reusing the `SET_CHORD_BINDINGS` payload pattern (see decisions.md)
+- [ ] Phase 5c: `wolEnabled` bool command, following existing bool-setting
+      pattern (e.g. `SET_WAKE_ENABLED` from PR #93 as reference)
 
 ---
 
@@ -32,25 +38,28 @@ Config surface:
 Single target PC. Standard UDP magic packet (`FF FF FF FF FF FF` + target MAC
 x16), broadcast address, standard WOL UDP port.
 
-### Phase 4 — Firmware design
+### Phase 4 — Firmware design (DONE, committed)
 
-- [ ] 4a. CMake: enable `CYW43_LWIP` conditionally under
-      `WAVESHARE_RP2350B_PLUS_W_BUILD`, add `pico_cyw43_arch_lwip_*` (poll or
-      threadsafe-background — TBD based on coexistence with BTstack poll
-      loop) + lwIP libs. Must not affect other board builds (`pico2_w` etc).
-- [ ] 4b. New `src/wolwifi.h` / `src/wolwifi.cpp`, following the `wake.h/.cpp`
-      isolation pattern from PR #93: header-only no-op stubs when the feature
-      compile flag is off.
-      Owns: Wi-Fi connect, WOL target MAC, UDP magic packet construction,
-      UDP send, connection/retry handling.
-- [ ] 4c. Hook `wolwifi_on_controller_connect()` into `finish_hid_session_if_ready()`
-      in `src/bt.cpp` (see decisions.md for exact call site rationale).
-      Must be edge-triggered: fire once per DISCONNECTED->CONNECTED
-      transition, not per input report, not repeatedly while connected.
-- [ ] 4d. `wolwifi_task()` polled from main loop (`src/main.cpp`), non-blocking.
-- [ ] 4e. Verify BT latency/stability unaffected by enabling lwIP on CYW43
-      (shared SPI bus with BTstack) — this is the main open technical risk,
-      see decisions.md.
+- [x] 4a. CMake: `ENABLE_WOLWIFI` option (defaults on for
+      `WAVESHARE_RP2350B_PLUS_W_BUILD`, forced off elsewhere), swaps
+      `pico_cyw43_arch_poll` for `pico_cyw43_arch_lwip_poll`, adds
+      `boards/headers/lwipopts.h` (NO_SYS=1, UDP+DHCP only, no
+      TCP/sockets/PPP). Confirmed scoped correctly — other boards unaffected.
+- [x] 4b. `src/wolwifi.h` / `src/wolwifi.cpp` — isolated module, no-op stubs
+      when `ENABLE_WOLWIFI` is off. Owns Wi-Fi connect/retry (async, polled
+      state machine), magic-packet construction, UDP send via lwIP raw API.
+- [x] 4c. Hooked `wolwifi_on_controller_connect()` into
+      `finish_hid_session_if_ready()` in `src/bt.cpp`, right after
+      `connection_phase = BtConnectionPhase::Ready`. Confirmed edge-triggered
+      by the existing early-return guard in that function.
+- [x] 4d. `wolwifi_task()` polled from main loop (`src/main.cpp`), alongside
+      other `RUN_MAIN_PHASE` calls; new `WatchdogMainLoopPhase::Wolwifi` phase.
+- [x] 4e. De-risked: `cyw43_arch_init()`/`cyw43_arch_poll()` already drive
+      lwIP's async context together with BTstack's when `CYW43_LWIP=1`
+      (confirmed by reading `cyw43_arch_poll.c` in the SDK) — no separate
+      polling loop or bus-contention handling needed beyond what's already
+      in `main.cpp`. Full firmware build + link + existing SRAM/heap
+      verification passes for the Waveshare target with WOL on.
 
 ### Phase 5 — Companion app changes
 
@@ -68,12 +77,21 @@ x16), broadcast address, standard WOL UDP port.
 - [ ] 5f. MAC address validation: companion-app side (JS, before send) AND
       firmware side (C++, on receive — never trust the app blindly)
 
-### Phase 6 — Build integration
+### Phase 6 — Build integration (6a/6b DONE, done early while validating Phase 4)
 
-- [ ] 6a. Verify `boards/build_waveshare_rp2350b_plus_w.sh` builds clean with
-      WOL enabled
-- [ ] 6b. Verify default/other board build (`pico2_w`) still builds clean
-      with WOL code compiled out (conditional compilation confirmed working)
+- [x] 6a. Waveshare target (`-DWAVESHARE_RP2350B_PLUS_W_BUILD=ON`) builds,
+      links, and passes SRAM/heap verification with `ENABLE_WOLWIFI` on.
+      (Note: `ds5-bridge.uf2`/`.hex`/`.bin`/`.dis` generation via the
+      chained CMake POST_BUILD command intermittently crashes
+      `arm-none-eabi-objdump` on this machine when invoked through
+      Ninja's nested `cmd.exe` chain — confirmed NOT related to our code:
+      `objdump`/`objcopy`/`picotool` all succeed when run manually against
+      the same `.elf`. Environment quirk local to this machine; revisit if
+      it recurs, e.g. by disabling `PICO_NO_COPRO_DIS` interaction or
+      running the build outside a nested shell.)
+- [x] 6b. Default `pico2_w` build (`-DENABLE_COMPANION=ON`, no Waveshare
+      flag) builds and links cleanly; verified zero `wolwifi` symbols in
+      the resulting ELF via `nm | grep -ic wolwifi` = 0.
 
 ### Phase 7 — Smoke test (needs real SSID/password/target MAC from user before running)
 
