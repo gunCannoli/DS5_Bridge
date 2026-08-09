@@ -36,6 +36,7 @@
 #include "pico/stdio.h"
 #include "usb.h"
 #include "utils.h"
+#include "wolwifi.h"
 #include "bsp/board_api.h"
 #include "hardware/watchdog.h"
 #include "pico/sync.h"
@@ -3876,6 +3877,11 @@ static void finish_hid_session_if_ready() {
     connection_phase = BtConnectionPhase::Ready;
     connection_phase_started_us = 0;
     cancel_hid_channel_recovery_if_ready();
+    // Wake-on-LAN: this function only reaches here once per connection (see
+    // the `connection_phase == BtConnectionPhase::Ready` early-return above),
+    // so this is an edge trigger -- fires once per DISCONNECTED->CONNECTED
+    // transition, not on every input report or while already connected.
+    wolwifi_on_controller_connect();
     critical_section_enter_blocking(&queue_lock);
     reset_controller_output_session_locked();
     critical_section_exit(&queue_lock);
