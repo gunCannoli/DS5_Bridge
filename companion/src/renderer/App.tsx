@@ -102,6 +102,9 @@ import {
   MAX_CHORD_FUNCTION_NAME_LENGTH,
   MAX_KEYBOARD_FUNCTION_KEYS,
   REMAP_BUTTON_IDS,
+  WOL_WIFI_PASSWORD_MAX_LENGTH,
+  WOL_WIFI_SSID_MAX_LENGTH,
+  ProtocolError,
   ackResultName,
   normalizeChordControllerSettingStepPercent,
   isChordBindingAllowed
@@ -2834,6 +2837,10 @@ export function App() {
   const [startupVisible, setStartupVisible] = useState(true);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [bridgeRenameDraft, setBridgeRenameDraft] = useState<{ uniqueId: string; value: string } | null>(null);
+  const [wolWifiSsidDraft, setWolWifiSsidDraft] = useState<string | null>(null);
+  const [wolWifiPasswordDraft, setWolWifiPasswordDraft] = useState<string | null>(null);
+  const [wolTargetMacDraft, setWolTargetMacDraft] = useState<string | null>(null);
+  const [wolFieldError, setWolFieldError] = useState<{ field: 'ssid' | 'password' | 'mac'; message: string } | null>(null);
   const [activeControlTab, setActiveControlTab] = useState<ControlTab>('overview');
   const [openControlGroupId, setOpenControlGroupId] = useState<ControlTabGroupId | null>(null);
   const [hapticsValue, setHapticsValue] = useState(100);
@@ -3625,6 +3632,7 @@ export function App() {
   const adaptiveTriggersSupported = Boolean(snapshot?.status?.firmwareFlags.adaptiveTriggersControl);
   const usbSuspendDisconnectSupported = Boolean(snapshot?.status?.firmwareFlags.usbSuspendDisconnectControl);
   const wakeOnConnectSupported = Boolean(snapshot?.status?.firmwareFlags.wakeOnConnectControl);
+  const wolSupported = Boolean(snapshot?.status?.firmwareFlags.wolControl);
   const sleepControllerSupported = Boolean(snapshot?.status?.firmwareFlags.sleepControllerControl);
   const pollingRateControlSupported = Boolean(snapshot?.status?.firmwareFlags.pollingRateControl);
   const hostPersonaControlSupported = Boolean(snapshot?.status?.firmwareFlags.hostPersonaControl);
@@ -10046,6 +10054,133 @@ export function App() {
                   >
                     <span />
                   </button>
+                </div>
+                <div className="settings-menu-section-label">Wake-on-LAN</div>
+                <div className="settings-menu-row">
+                  <div className="settings-menu-copy">
+                    <strong>Wake PC over Wi-Fi</strong>
+                    <span>Send a network Wake-on-LAN packet to a PC when a controller connects. Requires the Waveshare RP2350B-Plus-W board.</span>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={snapshot.settings.wolEnabled}
+                    className={`switch ${snapshot.settings.wolEnabled ? 'on' : ''}`}
+                    disabled={!connected || !wolSupported || pendingAction !== null}
+                    onClick={() => void runAction('wol-enabled', () => (
+                      window.bridge.setWolEnabled(!snapshot.settings.wolEnabled)
+                    ))}
+                  >
+                    <span />
+                  </button>
+                </div>
+                <div className="settings-menu-row wol-settings-row">
+                  <div className="settings-menu-copy">
+                    <strong>Wi-Fi Network</strong>
+                  </div>
+                  <input
+                    className={`wol-settings-input ${wolFieldError?.field === 'ssid' ? 'invalid' : ''}`}
+                    type="text"
+                    maxLength={WOL_WIFI_SSID_MAX_LENGTH}
+                    placeholder="SSID"
+                    aria-label="Wake-on-LAN Wi-Fi SSID"
+                    value={wolWifiSsidDraft ?? snapshot.settings.wolWifiSsid}
+                    disabled={!connected || !wolSupported || pendingAction !== null}
+                    onChange={(event) => {
+                      setWolWifiSsidDraft(event.currentTarget.value);
+                      if (wolFieldError?.field === 'ssid') {
+                        setWolFieldError(null);
+                      }
+                    }}
+                    onBlur={() => {
+                      const value = wolWifiSsidDraft;
+                      setWolWifiSsidDraft(null);
+                      if (value === null || value === snapshot.settings.wolWifiSsid) {
+                        return;
+                      }
+                      void runAction('wol-wifi-ssid', () => window.bridge.setWolWifiSsid(value)).catch((error) => {
+                        setWolFieldError({
+                          field: 'ssid',
+                          message: error instanceof ProtocolError ? error.message : 'Invalid Wi-Fi SSID.'
+                        });
+                      });
+                    }}
+                  />
+                  {wolFieldError?.field === 'ssid' && (
+                    <span className="wol-settings-error">{wolFieldError.message}</span>
+                  )}
+                </div>
+                <div className="settings-menu-row wol-settings-row">
+                  <div className="settings-menu-copy">
+                    <strong>Wi-Fi Password</strong>
+                  </div>
+                  <input
+                    className={`wol-settings-input ${wolFieldError?.field === 'password' ? 'invalid' : ''}`}
+                    type="password"
+                    maxLength={WOL_WIFI_PASSWORD_MAX_LENGTH}
+                    placeholder="Password"
+                    aria-label="Wake-on-LAN Wi-Fi password"
+                    value={wolWifiPasswordDraft ?? snapshot.settings.wolWifiPassword}
+                    disabled={!connected || !wolSupported || pendingAction !== null}
+                    onChange={(event) => {
+                      setWolWifiPasswordDraft(event.currentTarget.value);
+                      if (wolFieldError?.field === 'password') {
+                        setWolFieldError(null);
+                      }
+                    }}
+                    onBlur={() => {
+                      const value = wolWifiPasswordDraft;
+                      setWolWifiPasswordDraft(null);
+                      if (value === null || value === snapshot.settings.wolWifiPassword) {
+                        return;
+                      }
+                      void runAction('wol-wifi-password', () => window.bridge.setWolWifiPassword(value)).catch((error) => {
+                        setWolFieldError({
+                          field: 'password',
+                          message: error instanceof ProtocolError ? error.message : 'Invalid Wi-Fi password.'
+                        });
+                      });
+                    }}
+                  />
+                  {wolFieldError?.field === 'password' && (
+                    <span className="wol-settings-error">{wolFieldError.message}</span>
+                  )}
+                </div>
+                <div className="settings-menu-row wol-settings-row">
+                  <div className="settings-menu-copy">
+                    <strong>Target MAC Address</strong>
+                  </div>
+                  <input
+                    className={`wol-settings-input ${wolFieldError?.field === 'mac' ? 'invalid' : ''}`}
+                    type="text"
+                    maxLength={17}
+                    placeholder="AA:BB:CC:DD:EE:FF"
+                    aria-label="Wake-on-LAN target MAC address"
+                    value={wolTargetMacDraft ?? snapshot.settings.wolTargetMac}
+                    disabled={!connected || !wolSupported || pendingAction !== null}
+                    onChange={(event) => {
+                      setWolTargetMacDraft(event.currentTarget.value);
+                      if (wolFieldError?.field === 'mac') {
+                        setWolFieldError(null);
+                      }
+                    }}
+                    onBlur={() => {
+                      const value = wolTargetMacDraft;
+                      setWolTargetMacDraft(null);
+                      if (value === null || value === snapshot.settings.wolTargetMac) {
+                        return;
+                      }
+                      void runAction('wol-target-mac', () => window.bridge.setWolTargetMac(value)).catch((error) => {
+                        setWolFieldError({
+                          field: 'mac',
+                          message: error instanceof ProtocolError ? error.message : 'Invalid MAC address.'
+                        });
+                      });
+                    }}
+                  />
+                  {wolFieldError?.field === 'mac' && (
+                    <span className="wol-settings-error">{wolFieldError.message}</span>
+                  )}
                 </div>
                 <div className="settings-menu-row pico-firmware-row">
                   <div className="pico-firmware-header">
