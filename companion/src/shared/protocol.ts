@@ -16,6 +16,7 @@ export const REPORT_ID = {
   AUDIO_STATUS: 0x08,
   TRIGGER_TRACE: 0x09,
   FEEDBACK_TRACE: 0x0a,
+  WOL_DEBUG_STATUS: 0x0c,
   DEVICE_IDENTITY: 0x0d,
   FIRMWARE_LOG: 0x0e
 } as const;
@@ -100,7 +101,9 @@ export const COMMAND_ID = {
   SET_WOL_ENABLED: 0x37,
   SET_WOL_WIFI_SSID: 0x38,
   SET_WOL_WIFI_PASSWORD: 0x39,
-  SET_WOL_TARGET_MAC: 0x3A
+  SET_WOL_TARGET_MAC: 0x3A,
+  TRIGGER_WOL_DEBUG_PING: 0x3B,
+  TRIGGER_WOL_DEBUG_SEND: 0x3C
 } as const;
 
 export const ACK_RESULT = {
@@ -586,6 +589,44 @@ export interface FeedbackTracePayload {
   events: FeedbackTraceEventPayload[];
 }
 
+// Mirrors WolWifiLinkState in src/wolwifi.h.
+export const WOL_WIFI_LINK_STATE = {
+  UNCONFIGURED: 0,
+  IDLE: 1,
+  CONNECTING: 2,
+  WAITING_FOR_IP: 3,
+  CONNECTED: 4,
+  FAILED: 5
+} as const;
+export type WolWifiLinkState = typeof WOL_WIFI_LINK_STATE[keyof typeof WOL_WIFI_LINK_STATE];
+
+// Mirrors WolDebugAction in src/wolwifi.h.
+export const WOL_DEBUG_ACTION = {
+  NONE: 0,
+  PING: 1,
+  SEND_WOL: 2
+} as const;
+export type WolDebugAction = typeof WOL_DEBUG_ACTION[keyof typeof WOL_DEBUG_ACTION];
+
+// Mirrors WolDebugResult in src/wolwifi.h.
+export const WOL_DEBUG_RESULT = {
+  PENDING: 0,
+  SUCCESS: 1,
+  TIMEOUT: 2,
+  NO_WIFI: 3,
+  SEND_FAILED: 4,
+  NOT_CONFIGURED: 5
+} as const;
+export type WolDebugResult = typeof WOL_DEBUG_RESULT[keyof typeof WOL_DEBUG_RESULT];
+
+export interface WolDebugStatusPayload {
+  linkState: WolWifiLinkState;
+  lastAction: WolDebugAction;
+  lastResult: WolDebugResult;
+  lastActionStartedMs: number;
+  ipAddress: string | null;
+}
+
 export interface AudioStatusPayload {
   duplexRequested: boolean;
   duplexActive: boolean;
@@ -1020,6 +1061,22 @@ export function parseAudioStatusReport(report: ArrayLike<number>): AudioStatusPa
     micPeakPermille: readU16(report, 61),
     micUsbStreaming: (primaryFlags & 0x80) !== 0,
     protocolVersion: `${protocolMajor}.${protocolMinor}`
+  };
+}
+
+export function parseWolDebugStatusReport(report: ArrayLike<number>): WolDebugStatusPayload {
+  assertReport(report, REPORT_ID.WOL_DEBUG_STATUS);
+
+  // ip_octets[0..3] are in display order (see WolDebugStatus in wolwifi.h) --
+  // raw bytes, not a packed uint32_t, to avoid a network-byte-order vs.
+  // write_u32's little-endian convention mismatch.
+  const octets = [report[11], report[12], report[13], report[14]];
+  return {
+    linkState: report[7] as WolWifiLinkState,
+    lastAction: report[8] as WolDebugAction,
+    lastResult: report[9] as WolDebugResult,
+    lastActionStartedMs: readU32(report, 16),
+    ipAddress: octets.every((octet) => octet === 0) ? null : octets.join('.')
   };
 }
 

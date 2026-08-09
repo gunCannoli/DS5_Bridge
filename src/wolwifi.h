@@ -14,6 +14,46 @@
 #include <cstdint>
 #include <cstddef>
 
+// Debug-status types are declared unconditionally (cheap; just enums/a
+// struct) so wolwifi_debug_status()'s signature is identical whether or not
+// ENABLE_WOLWIFI is set -- callers never need an #ifdef around the type.
+enum class WolDebugAction : uint8_t {
+    None = 0,
+    Ping = 1,
+    SendWol = 2,
+};
+
+enum class WolDebugResult : uint8_t {
+    Pending = 0,
+    Success = 1,
+    Timeout = 2,
+    NoWifi = 3,
+    SendFailed = 4,
+    NotConfigured = 5,
+};
+
+enum class WolWifiLinkState : uint8_t {
+    Unconfigured = 0,
+    Idle = 1,
+    Connecting = 2,
+    WaitingForIp = 3,
+    Connected = 4,
+    Failed = 5,
+};
+
+struct WolDebugStatus {
+    WolWifiLinkState link_state;
+    WolDebugAction last_action;
+    WolDebugResult last_result;
+    uint32_t last_action_started_ms;
+    // Dotted-quad octets in display order (ip_octets[0] is the first number
+    // shown, e.g. the "192" in "192.168.1.5"), all zero if no IP lease.
+    // Raw octets rather than a packed uint32_t so there's no ambiguity
+    // between lwIP's network-byte-order ip4_addr and this wire format's
+    // little-endian write_u32 -- see decisions.md.
+    uint8_t ip_octets[4];
+};
+
 #ifdef ENABLE_WOLWIFI
 
 // Must be called once during boot, after cyw43_arch_init() (main.cpp already
@@ -47,6 +87,27 @@ bool wolwifi_set_wifi_password(const char *password, uint8_t password_len);
 // (leaving prior config untouched) on a null pointer.
 bool wolwifi_set_target_mac(const uint8_t mac[6]);
 
+// Debug/smoke-test entry points, triggered on demand from the companion
+// app's WOL debug row (see decisions.md). Both are fire-and-forget: they
+// start (or restart) an async operation and return immediately; poll
+// wolwifi_debug_status() for the result.
+//
+// Ping: broadcasts an ARP request, then watches inbound ARP traffic for a
+// reply/announcement whose source MAC matches the configured target --
+// lwIP's ARP API only resolves IP->MAC, not the reverse, so this snoops
+// the netif's raw input rather than using etharp_query/etharp_request
+// directly. Confirms the target's NIC is on the network and answering ARP,
+// which is what actually matters for a WOL target (its NIC listens for
+// magic packets even with the OS off/asleep).
+void wolwifi_debug_ping(void);
+
+// Re-sends the magic packet right now (bypassing the controller-connect
+// trigger), regardless of Wi-Fi/target-MAC state -- the result reports
+// exactly why if it can't.
+void wolwifi_debug_send_wol(void);
+
+WolDebugStatus wolwifi_debug_status(void);
+
 #else
 
 static inline void wolwifi_init(void) {}
@@ -57,5 +118,16 @@ static inline bool wolwifi_is_enabled(void) { return false; }
 static inline bool wolwifi_set_wifi_ssid(const char *, uint8_t) { return false; }
 static inline bool wolwifi_set_wifi_password(const char *, uint8_t) { return false; }
 static inline bool wolwifi_set_target_mac(const uint8_t[6]) { return false; }
+static inline void wolwifi_debug_ping(void) {}
+static inline void wolwifi_debug_send_wol(void) {}
+static inline WolDebugStatus wolwifi_debug_status(void) {
+    return WolDebugStatus{
+        WolWifiLinkState::Unconfigured,
+        WolDebugAction::None,
+        WolDebugResult::NotConfigured,
+        0,
+        {0, 0, 0, 0}
+    };
+}
 
 #endif // ENABLE_WOLWIFI

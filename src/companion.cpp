@@ -162,6 +162,8 @@ enum CommandId : uint8_t {
     CommandSetWolWifiSsid = 0x38,
     CommandSetWolWifiPassword = 0x39,
     CommandSetWolTargetMac = 0x3A,
+    CommandTriggerWolDebugPing = 0x3B,
+    CommandTriggerWolDebugSend = 0x3C,
 };
 
 enum AckResult : uint8_t {
@@ -1856,6 +1858,27 @@ uint16_t build_audio_status(uint8_t *buffer, uint16_t reqlen) {
     return COMPANION_PAYLOAD_SIZE;
 }
 
+uint16_t build_wol_debug_status(uint8_t *buffer, uint16_t reqlen) {
+    if (reqlen < COMPANION_PAYLOAD_SIZE) {
+        return 0;
+    }
+
+    memset(buffer, 0, COMPANION_PAYLOAD_SIZE);
+    write_magic_and_version(buffer);
+
+    const WolDebugStatus status = wolwifi_debug_status();
+    buffer[6] = static_cast<uint8_t>(status.link_state);
+    buffer[7] = static_cast<uint8_t>(status.last_action);
+    buffer[8] = static_cast<uint8_t>(status.last_result);
+    // buffer[9] reserved
+    buffer[10] = status.ip_octets[0];
+    buffer[11] = status.ip_octets[1];
+    buffer[12] = status.ip_octets[2];
+    buffer[13] = status.ip_octets[3];
+    write_u32(buffer + 15, status.last_action_started_ms);
+    return COMPANION_PAYLOAD_SIZE;
+}
+
 uint16_t build_firmware_log(uint8_t *buffer, uint16_t reqlen) {
     if (reqlen < COMPANION_PAYLOAD_SIZE) {
         return 0;
@@ -2372,6 +2395,24 @@ void handle_command(uint8_t const *buffer, uint16_t bufsize) {
             set_ack(command_id, sequence, AckOk);
             return;
         }
+
+        case CommandTriggerWolDebugPing:
+            if (value != 0) {
+                set_ack(command_id, sequence, AckInvalidValue);
+                return;
+            }
+            wolwifi_debug_ping();
+            set_ack(command_id, sequence, AckOk);
+            return;
+
+        case CommandTriggerWolDebugSend:
+            if (value != 0) {
+                set_ack(command_id, sequence, AckInvalidValue);
+                return;
+            }
+            wolwifi_debug_send_wol();
+            set_ack(command_id, sequence, AckOk);
+            return;
 
         case CommandSetIdleDisconnectEnabled:
             if (value > 1) {
@@ -3392,6 +3433,8 @@ uint16_t companion_get_report(uint8_t report_id, hid_report_type_t report_type, 
 #endif
         case COMPANION_REPORT_AUDIO_STATUS:
             return build_audio_status(buffer, reqlen);
+        case COMPANION_REPORT_WOL_DEBUG_STATUS:
+            return build_wol_debug_status(buffer, reqlen);
         case COMPANION_REPORT_DEVICE_IDENTITY:
             return build_device_identity(buffer, reqlen);
         case COMPANION_REPORT_FIRMWARE_LOG:
