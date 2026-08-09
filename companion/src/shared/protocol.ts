@@ -625,6 +625,16 @@ export interface WolDebugStatusPayload {
   lastResult: WolDebugResult;
   lastActionStartedMs: number;
   ipAddress: string | null;
+  // Raw config-reached-firmware flags -- lets a stuck linkState (e.g.
+  // permanently IDLE) be diagnosed without needing the separate Firmware
+  // UART Log capture running. See wolwifi_task()'s early-return in
+  // wolwifi.cpp: IDLE + wolEnabled=false means the state machine is
+  // intentionally not progressing, not a connect failure.
+  wolEnabled: boolean;
+  haveSsid: boolean;
+  haveTargetMac: boolean;
+  nowMs: number;
+  linkStateEnteredMs: number;
 }
 
 export interface AudioStatusPayload {
@@ -1071,12 +1081,18 @@ export function parseWolDebugStatusReport(report: ArrayLike<number>): WolDebugSt
   // raw bytes, not a packed uint32_t, to avoid a network-byte-order vs.
   // write_u32's little-endian convention mismatch.
   const octets = [report[11], report[12], report[13], report[14]];
+  const flags = report[10];
   return {
     linkState: report[7] as WolWifiLinkState,
     lastAction: report[8] as WolDebugAction,
     lastResult: report[9] as WolDebugResult,
+    ipAddress: octets.every((octet) => octet === 0) ? null : octets.join('.'),
+    wolEnabled: (flags & 0x01) !== 0,
+    haveSsid: (flags & 0x02) !== 0,
+    haveTargetMac: (flags & 0x04) !== 0,
     lastActionStartedMs: readU32(report, 16),
-    ipAddress: octets.every((octet) => octet === 0) ? null : octets.join('.')
+    nowMs: readU32(report, 20),
+    linkStateEnteredMs: readU32(report, 24)
   };
 }
 

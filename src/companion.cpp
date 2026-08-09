@@ -1870,12 +1870,17 @@ uint16_t build_wol_debug_status(uint8_t *buffer, uint16_t reqlen) {
     buffer[6] = static_cast<uint8_t>(status.link_state);
     buffer[7] = static_cast<uint8_t>(status.last_action);
     buffer[8] = static_cast<uint8_t>(status.last_result);
-    // buffer[9] reserved
+    buffer[9] = (status.wol_enabled ? 0x01 : 0x00)
+        | (status.have_ssid ? 0x02 : 0x00)
+        | (status.have_target_mac ? 0x04 : 0x00);
     buffer[10] = status.ip_octets[0];
     buffer[11] = status.ip_octets[1];
     buffer[12] = status.ip_octets[2];
     buffer[13] = status.ip_octets[3];
+    // buffer[14] reserved
     write_u32(buffer + 15, status.last_action_started_ms);
+    write_u32(buffer + 19, status.now_ms);
+    write_u32(buffer + 23, status.link_state_entered_ms);
     return COMPANION_PAYLOAD_SIZE;
 }
 

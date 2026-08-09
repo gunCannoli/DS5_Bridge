@@ -106,6 +106,7 @@ import {
   WOL_WIFI_SSID_MAX_LENGTH,
   WOL_DEBUG_ACTION,
   WOL_DEBUG_RESULT,
+  WOL_WIFI_LINK_STATE,
   ProtocolError,
   ackResultName,
   normalizeChordControllerSettingStepPercent,
@@ -2707,11 +2708,23 @@ function wolDebugStatusText(status: WolDebugStatusPayload | null): string {
       case WOL_DEBUG_RESULT.TIMEOUT:
         return 'no response (timeout)';
       case WOL_DEBUG_RESULT.NO_WIFI:
+        if (!status.wolEnabled) {
+          return 'Wi-Fi not connected -- WOL is toggled off in firmware, re-enable it';
+        }
+        if (!status.haveSsid) {
+          return 'Wi-Fi not connected -- no SSID reached firmware, re-enter it';
+        }
+        if (status.linkState === WOL_WIFI_LINK_STATE.FAILED) {
+          return 'Wi-Fi not connected -- connect attempt failed, check SSID/password';
+        }
+        if (status.linkState === WOL_WIFI_LINK_STATE.CONNECTING || status.linkState === WOL_WIFI_LINK_STATE.WAITING_FOR_IP) {
+          return 'Wi-Fi not connected yet -- still connecting, try again shortly';
+        }
         return 'Wi-Fi not connected';
       case WOL_DEBUG_RESULT.SEND_FAILED:
         return 'send failed';
       case WOL_DEBUG_RESULT.NOT_CONFIGURED:
-        return 'target MAC not set';
+        return status.haveTargetMac ? 'target MAC not set' : 'target MAC not set (or not reaching firmware)';
       default:
         return 'unknown result';
     }
