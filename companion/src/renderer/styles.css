@@ -1327,6 +1327,13 @@ button {
   animation: modal-panel-in 160ms ease-out;
 }
 
+/* Wake-on-LAN adds a text-input section (SSID/password/target MAC) to the
+   preferences modal's left column, on top of the existing rows -- taller
+   than the other modal variants need. */
+.bridge-settings-preferences-modal {
+  max-height: min(700px, calc(100vh - 48px));
+}
+
 .bridge-settings-modal-heading {
   justify-content: space-between;
   padding: 4px 4px 6px 8px;
@@ -2060,6 +2067,64 @@ button {
 
 .settings-menu-row .switch {
   flex: 0 0 48px;
+}
+
+/* Wake-on-LAN SSID/password/target-MAC fields: stacked full-width rows
+   (label above input), matching .pico-firmware-row's layout since a 32-char
+   SSID or a MAC address doesn't fit the label-left/control-right pattern
+   used by toggles and selects. Input sizing follows the modal's compact
+   control scale (.settings-timeout-select is the closest reference: 26px
+   tall, 12px text) rather than the larger .remap-profile-name-field dialog
+   input, since this lives inline in the settings columns, not a standalone
+   dialog. */
+.wol-settings-row {
+  display: grid;
+  align-items: stretch;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+}
+
+.wol-settings-row .settings-menu-copy {
+  gap: 2px;
+}
+
+.wol-settings-input {
+  width: 100%;
+  height: 26px;
+  border: 1px solid var(--surface-border-strong);
+  border-radius: var(--control-radius);
+  padding: 0 9px;
+  color: var(--text-primary);
+  background: var(--surface-control);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  outline: none;
+}
+
+.wol-settings-input::placeholder {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.wol-settings-input:focus {
+  border-color: var(--accent-border-strong);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.wol-settings-input:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.wol-settings-input.invalid {
+  border-color: var(--danger-border-strong);
+}
+
+.wol-settings-error {
+  color: var(--danger);
+  font-size: 10.5px;
+  line-height: 1.16;
 }
 
 .settings-menu-controls {
