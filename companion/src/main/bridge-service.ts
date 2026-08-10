@@ -2127,7 +2127,16 @@ export class BridgeService extends EventEmitter {
       const resultSettled = status.lastResult !== WOL_DEBUG_RESULT.PENDING;
       const resultChanged = previous?.lastResult !== status.lastResult;
       if (status.lastAction !== WOL_DEBUG_ACTION.NONE && resultSettled && (actionChanged || resultChanged)) {
-        await this.appendWolDebugLog(status);
+        await this.appendWolDebugLog(status, 'debug-action');
+      }
+      // Also log on every linkState transition on its own, independent of
+      // whether a Ping/WOL Test button was clicked -- otherwise the log
+      // only captures a snapshot at the instant a debug button happens to
+      // be pressed, which can catch a connection attempt mid-flight
+      // (e.g. "connecting") and never show whether it went on to succeed
+      // or fail a few seconds later, since nothing else writes a line.
+      if (previous !== null && previous.linkState !== status.linkState) {
+        await this.appendWolDebugLog(status, 'link-state-change');
       }
     } catch {
       this.wolDebugStatus = null;
@@ -2135,13 +2144,18 @@ export class BridgeService extends EventEmitter {
     this.publishAudioDiagnosticsSnapshot();
   }
 
-  private async appendWolDebugLog(status: WolDebugStatusPayload): Promise<void> {
+  private async appendWolDebugLog(
+    status: WolDebugStatusPayload,
+    event: 'debug-action' | 'link-state-change'
+  ): Promise<void> {
     if (!this.wolDebugLogDirectory) {
       return;
     }
     try {
       const logPath = path.join(this.wolDebugLogDirectory, 'ds5bridge-wol-debug.log');
-      const actionName = status.lastAction === WOL_DEBUG_ACTION.PING ? 'ping' : 'send-wol';
+      const actionName = status.lastAction === WOL_DEBUG_ACTION.NONE
+        ? 'none'
+        : status.lastAction === WOL_DEBUG_ACTION.PING ? 'ping' : 'send-wol';
       const resultName = Object.entries(WOL_DEBUG_RESULT).find(
         ([, value]) => value === status.lastResult
       )?.[0] ?? String(status.lastResult);
@@ -2168,7 +2182,7 @@ export class BridgeService extends EventEmitter {
       // needs the exact bit layout from that file, which isn't part of the
       // public cyw43.h API and could change between driver versions.
       const joinStateHex = `0x${status.wifiJoinState.toString(16).padStart(4, '0')}`;
-      const line = `${new Date().toISOString()} action=${actionName} result=${resultName.toLowerCase()} `
+      const line = `${new Date().toISOString()} event=${event} action=${actionName} result=${resultName.toLowerCase()} `
         + `link=${linkStateName} link_age_ms=${linkStateAgeMs} raw_link_status=${rawLinkStatusName} `
         + `join_state=${joinStateHex} ip=${ip} `
         + `dhcp_state=${dhcpStateName} dhcp_tries=${status.dhcpTries} `
