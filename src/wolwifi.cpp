@@ -519,7 +519,17 @@ void wolwifi_load_persisted_config() {
 void wolwifi_init(void) {
     g_udp_pcb = udp_new();
     wolwifi_load_persisted_config();
-    enter_state(WifiState::Unconfigured);
+    // wolwifi_task()'s Unconfigured case is a dead end -- it never
+    // re-checks g_have_ssid, so if wolwifi_load_persisted_config() just
+    // loaded a valid SSID from flash, staying in Unconfigured would leave
+    // the state machine stuck until something else (only the SSID/password
+    // setters call enter_state(Idle)) nudges it out. Without this, a fresh
+    // boot's persisted config is loaded correctly but Wi-Fi genuinely
+    // cannot start connecting until the companion app's slow post-connect
+    // settings-reapply sequence happens to re-send the SSID -- the same
+    // race the flash-persistence fix closed for the config *values*, still
+    // open for the state machine itself. See decisions.md.
+    enter_state(g_have_ssid ? WifiState::Idle : WifiState::Unconfigured);
     DS5_LOG("[WOL] Initialized\n");
 }
 
