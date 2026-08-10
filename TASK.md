@@ -88,6 +88,14 @@ Ping's `arp_snoop_input` mechanism). Debug WOL Test button unaffected --
 still a single send. Debug firmware rebuilt at
 `build/waveshare/ds5-bridge.uf2`. Full writeup in decisions.md.
 
+**Lightbar WOL indicator added (2026-08-10, same session, committed):**
+requested after the resend fix -- pulsing dark<->light green while a
+resend cycle is active, solid light green for 2s on ARP-confirmed wake,
+then true restore to the prior color. See Phase 11b below for the full
+writeup; implemented in `bt.cpp`/`bt.h` (`bt_wol_indicator_*`), wired into
+`wolwifi.cpp`'s resend cycle. Debug firmware rebuilt at
+`build/waveshare/ds5-bridge.uf2`.
+
 ## Current task
 
 - [ ] **Flash the rebuilt debug firmware and re-attempt the real PC-off
@@ -95,10 +103,12 @@ still a single send. Debug firmware rebuilt at
       actually wakes via the automatic WOL-on-controller-connect trigger
       within the 15s resend budget, (b) the controller/BT connection
       survives the 2s delay + Wi-Fi connect + DHCP + resend sequence
-      without dropping, and (c) the debug log shows the automatic-trigger
+      without dropping, (c) the debug log shows the automatic-trigger
       resend cycle's own log lines (`[WOL] Target confirmed awake...` or
       `[WOL] Resend budget ... exhausted...`) this time, not just a
-      manual-debug-button entry. Note: the target PC being off means no
+      manual-debug-button entry, and (d) the lightbar visibly pulses green
+      while resending and goes solid green briefly once the PC wakes.
+      Note: the target PC being off means no
       companion app / log access during the test itself; check the
       log/companion app only after, once the PC is back up.
 
@@ -170,39 +180,33 @@ Ping/WOL Test debug actions):
       flag (matching how trigger/feedback trace are opt-in) or leave
       always-on like the current single-status `WOL_DEBUG_STATUS` report.
 
-**11b. Lightbar pulse when a WOL magic packet is actually sent:**
-- [ ] Firing point: inside `send_magic_packet_now()` in `wolwifi.cpp`, on
-      an attempted send (chosen over firing in
-      `wolwifi_on_controller_connect()`, since that can defer the actual
-      send until Wi-Fi comes up later via `g_send_pending` -- pulsing at
-      the trigger point could fire without a packet ever going out, or
-      fire well before the real send if Wi-Fi is slow to connect).
-- [ ] Restore behavior: true restore-to-previous-color was chosen over the
-      existing flash-then-refresh-same-color pattern PR #93 uses for
-      controller-wake (`bt.cpp:3900-3904`) -- `bt_set_lightbar_color()`
-      currently overwrites `saved_lightbar_*` immediately, so there's no
-      existing way to snapshot "what it was before". Needs either: (a) a
-      small new accessor exposing current `saved_lightbar_*` before
-      overwriting, captured by wolwifi.cpp/companion.cpp right before the
-      flash call, then explicitly restored via `bt_set_lightbar_color()`
-      again after the delay instead of relying on
-      `bt_schedule_lightbar_restore()`'s current "restore to last-set"
-      semantics; or (b) a small change to `bt_schedule_lightbar_restore`
-      itself to snapshot before the caller's `bt_set_lightbar_color` call
-      (needs call-order changes at the one existing call site too, so
-      wake-flash doesn't regress).
-- [ ] New function `bt_flash_lightbar_and_restore(r, g, b, brightness,
-      duration_ms)` (name TBD) in `bt.cpp`/`bt.h` combining
-      snapshot+flash+scheduled-true-restore in one call, so `wolwifi.cpp`
-      doesn't need to know lightbar internals -- just calls this once, as
-      a thin dependency on `bt.h` (already an established pattern;
-      `companion.cpp` already depends on both modules).
-- [x] Policy decided: always fires when WOL is enabled and a send is
-      attempted, regardless of `lightbarOverrideEnabled`/
-      `lightbarRestoreEnabled` -- it's a distinct "WOL fired" confirmation
-      signal, not general lightbar behavior.
-- [x] Color decided: green (`0x00, 0xFF, 0x00` or similar), distinct from
-      the existing blue (`0x00, 0x00, 0xFF`) controller-wake flash.
+**11b. Lightbar indicator while a WOL send is in flight (DONE, committed
+2026-08-10)** -- superseded the original single-flash plan below with a
+richer 3-stage sequence once the resend-until-confirmed fix (above) made
+"in flight" a real multi-second window worth showing, not just an instant:
+- [x] Pulsing dark<->light green (~1.5s breathing cycle) for the duration
+      of an active resend cycle (`bt_wol_indicator_begin()`, called from
+      `begin_resend_cycle()` in `wolwifi.cpp`).
+- [x] Solid light green for a 2s hold once the target confirms it's awake
+      via the same ARP liveness check the resend cycle uses to know when
+      to stop (`bt_wol_indicator_confirm()`).
+- [x] True restore-to-previous-color once the hold ends, or immediately if
+      the resend budget is exhausted with no confirmation
+      (`bt_wol_indicator_cancel()`, no distinct failure color -- kept
+      purely positive, matching the earlier decision not to add
+      complexity for the unconfirmed case). Implemented via a dedicated
+      `wol_indicator_pre_*` snapshot in `bt.cpp`, separate from
+      `saved_lightbar_*`/`lightbar_restore_pending`, since the pulse's own
+      repeated `bt_set_lightbar_color()` calls would otherwise clobber the
+      color it needs to restore to.
+- [x] New `bt_wol_indicator_begin/confirm/cancel/loop()` API in
+      `bt.cpp`/`bt.h`; `bt_wol_indicator_loop()` polled from `main.cpp`'s
+      existing `Lightbar` phase alongside `bt_lightbar_loop()`.
+- [x] Debug WOL Test button unaffected -- doesn't go through the resend
+      cycle, so no indicator fires for it.
+
+Debug firmware rebuilt at `build/waveshare/ds5-bridge.uf2`. Not yet
+visually verified on real hardware (pending next test).
 
 ---
 
