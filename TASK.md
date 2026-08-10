@@ -54,15 +54,36 @@ actually sent. There was a brief ~2.5s reconnect flap right at send time
 2->4) but the send ultimately succeeded. Full debugging narrative and
 fixes recorded in decisions.md.
 
+**Fourth bug found (2026-08-10, same session): controller drops BT
+during a real automatic WOL trigger.** The manual WOL Test (Wi-Fi already
+connected) worked, but a real controller-connect-triggered WOL fires a
+fresh Wi-Fi association + DHCP handshake on the CYW43439 (a combo Wi-Fi/BT
+chip sharing one radio) at the exact moment the BT session is still
+stabilizing, and that RF contention was dropping the controller. Researched
+PR #93 and the existing "Wake PC on Controller" feature (neither actually
+keeps BT connected -- both let it drop and reconnect) and
+`awalol/DS5Dongle#207/#186/#136` (independent prior art on the same combo
+chip; confirmed `cyw43_tcpip_link_status()` as correct, found two unused
+lwIP DHCP options). Fix (committed): delay the *start* of the Wi-Fi connect
+sequence by 2s after a controller-connect edge
+(`WIFI_CONNECT_START_DELAY_MS` in `wolwifi.cpp`), skipped entirely if
+Wi-Fi is already connected from a prior session; added
+`DHCP_DOES_ARP_CHECK=0`/`LWIP_DHCP_DOES_ACD_CHECK=0` to `lwipopts.h` to
+further shorten the DHCP handshake. Debug firmware rebuilt at
+`build/waveshare/ds5-bridge.uf2`. Full writeup in decisions.md.
+
 ## Current task
 
-- [ ] **Re-attempt the real PC-off wake test** (original Phase 7 Test 2):
-      with the target PC OFF (hibernate first, then full shutdown if the
-      NIC supports it) and the board on a powered USB hub as before, connect
-      the DualSense and confirm the PC actually wakes via the automatic
-      WOL-on-controller-connect trigger (not the manual debug buttons this
-      time -- this is the real feature path). Note: the target PC being off
-      means no companion app / log access during the test itself; check the
+- [ ] **Flash the rebuilt debug firmware and re-attempt the real PC-off
+      wake test** (original Phase 7 Test 2), this time checking whether
+      the controller stays connected through the wake: with the target PC
+      OFF (hibernate first, then full shutdown if the NIC supports it) and
+      the board on a powered USB hub as before, connect the DualSense and
+      confirm (a) the PC actually wakes via the automatic
+      WOL-on-controller-connect trigger, and (b) the controller/BT
+      connection survives the 2s delay + Wi-Fi connect + DHCP + send
+      sequence without dropping. Note: the target PC being off means no
+      companion app / log access during the test itself; check the
       log/companion app only after, once the PC is back up.
 
 ## Next task
