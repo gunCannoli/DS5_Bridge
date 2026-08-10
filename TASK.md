@@ -250,22 +250,43 @@ logged/acted on) so a ring-buffer overflow gap is distinguishable from
 `companion/artifacts/installer/DS5-Bridge-Companion-Setup-1.7.0.exe`. Full
 writeup in decisions.md.
 
+**2026-08-10: watchdog-reboot theory ruled out; user corrected the
+framing; found and fixed the real bug -- eleventh bug, false-positive ARP
+liveness confirmation.** `board-watchdog-reboot` never appeared in the
+retested log, ruling that out cleanly. User then clarified the actual
+regression sequence, which had been misread: **WOL sending itself was
+never broken** -- it reliably woke the PC before this session's changes.
+What actually happened is bug 9's fix (`disconnect_wifi_after_wol()`,
+added specifically to stop the controller disconnecting mid-boot) fixed
+that disconnect issue but introduced a new delay/timing problem on top of
+previously-working WOL. Re-reading the trace with that corrected framing:
+`wol-resend-confirmed` was firing only 1-3 seconds after
+`wol-resend-begin` on every cycle -- far too fast for a real cold-booting
+PC to answer ARP. Root cause found: `arp_snoop_input()`'s liveness check
+matched the target MAC against the source address of **any** inbound
+Ethernet frame -- `ETHTYPE_ARP` was defined as a constant but never
+actually checked. A false-positive match (any non-ARP broadcast/multicast
+frame carrying the target's MAC as source) was triggering "confirmed"
+almost instantly, which then (correctly, given the false signal) stopped
+the resend cycle and tore down Wi-Fi via bug 9's fix -- cutting the real
+15s resend window short before the target's NIC had genuinely finished
+waking and coming back online. Fixed (committed): actually check the
+Ethernet frame's EtherType field equals `ETHTYPE_ARP` before matching the
+source MAC, in both the resend cycle's watch and the debug Ping button's
+watch (shared code path). Debug firmware rebuilt at
+`build/waveshare/ds5-bridge.uf2`. Full writeup in decisions.md.
+
 ## Current task
 
-- [ ] **Flash the rebuilt debug firmware, launch the companion app (fresh
-      install), and re-attempt the real PC-off wake test.** WOL config is
-      already persisted in flash, no re-save needed. This round is
-      specifically about confirming or ruling out the watchdog-reboot
-      theory: check `ds5bridge-wol-debug.log` for
-      `event=board-trace stage=board-watchdog-reboot` appearing anywhere
-      -- if it does, `detail` is the `WatchdogMainLoopPhase` index the
-      board was stuck in (16 = `Wolwifi` would directly confirm the
-      resend-cycle-stall theory; see `watchdog_telemetry.h` for the full
-      list). Also still check: does `wol-wifi-assoc-timeout`/
-      `wol-dhcp-wait-timeout` still appear (DHCP still stalling even at
-      3s?), does the controller survive the entire boot without
-      disconnecting, and does the automatic magic packet arrive without
-      needing a manual power-on.
+- [ ] **Flash the rebuilt debug firmware and re-attempt the real PC-off
+      wake test.** WOL config is already persisted in flash, no re-save
+      needed. Check `ds5bridge-wol-debug.log` afterward for: (a) does
+      `wol-resend-confirmed` now take a realistic amount of time (several
+      seconds to tens of seconds, matching an actual PC boot) rather than
+      1-3s, (b) does the controller still survive the entire boot without
+      disconnecting (confirming bug 9's fix still holds now that the
+      resend cycle runs longer), and (c) does the PC actually wake from
+      the automatic magic packet alone, without a manual power-on.
 
 ## Next task
 
