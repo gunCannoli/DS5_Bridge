@@ -38,6 +38,17 @@ namespace {
 
 constexpr uint16_t WOL_UDP_PORT = 9;              // standard WOL discard-port target
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;
+// Association itself (join to the AP, CYW43_LINK_JOIN/NOIP) was observed
+// to complete quickly, but DHCP frequently stalled for the full 15s
+// WIFI_CONNECT_TIMEOUT_MS before timing out and retrying -- a likely
+// feedback loop with the BT/Wi-Fi radio-contention issue (DHCP slow
+// because BT is contending with it, BT drops because DHCP keeps retrying
+// for so long). A separate, shorter timeout specifically for the
+// WaitingForIp (DHCP) phase caps how long any single attempt can keep
+// contending with BT, at the cost of occasionally abandoning a DHCP
+// attempt that would have succeeded a little later -- the retry backoff
+// below picks it back up.
+constexpr uint32_t DHCP_WAIT_TIMEOUT_MS = 3000;
 constexpr uint32_t WIFI_RETRY_BACKOFF_MS = 10000;
 constexpr uint32_t DEBUG_PING_TIMEOUT_MS = 4000;
 // CYW43439 is a combo Wi-Fi/Bluetooth chip that time-shares one radio.
@@ -774,12 +785,17 @@ void wolwifi_task(void) {
                 enter_state(WifiState::WaitingForIp);
             } else if (status < 0 || now_ms() - g_state_entered_ms > WIFI_CONNECT_TIMEOUT_MS) {
                 g_wifi_connect_timeout_count++;
+                const uint32_t elapsed_ms = now_ms() - g_state_entered_ms;
                 DS5_LOG(
                     "[WOL] Wi-Fi connect failed/timed out (status=%d, join_state=0x%04x, "
                     "elapsed_ms=%lu, connect_timeout_count=%lu)\n",
                     status, cyw43_state.wifi_join_state,
-                    static_cast<unsigned long>(now_ms() - g_state_entered_ms),
+                    static_cast<unsigned long>(elapsed_ms),
                     static_cast<unsigned long>(g_wifi_connect_timeout_count)
+                );
+                bt_append_wol_trace_event(
+                    WolTraceStage::WolWifiAssocTimeout,
+                    static_cast<uint8_t>(std::min<uint32_t>(elapsed_ms / 1000, 255))
                 );
                 enter_state(WifiState::Failed);
             }
@@ -799,14 +815,19 @@ void wolwifi_task(void) {
                     g_send_pending = false;
                     begin_resend_cycle();
                 }
-            } else if (now_ms() - g_state_entered_ms > WIFI_CONNECT_TIMEOUT_MS) {
+            } else if (now_ms() - g_state_entered_ms > DHCP_WAIT_TIMEOUT_MS) {
                 g_dhcp_timeout_count++;
                 const struct dhcp *dhcp = netif_default != nullptr ? netif_dhcp_data(netif_default) : nullptr;
+                const uint32_t elapsed_ms = now_ms() - g_state_entered_ms;
                 DS5_LOG(
                     "[WOL] Timed out waiting for DHCP lease (dhcp_state=%u, dhcp_tries=%u, "
                     "join_state=0x%04x, dhcp_timeout_count=%lu)\n",
                     dhcp != nullptr ? dhcp->state : 0, dhcp != nullptr ? dhcp->tries : 0,
                     cyw43_state.wifi_join_state, static_cast<unsigned long>(g_dhcp_timeout_count)
+                );
+                bt_append_wol_trace_event(
+                    WolTraceStage::WolDhcpWaitTimeout,
+                    static_cast<uint8_t>(std::min<uint32_t>(elapsed_ms / 1000, 255))
                 );
                 enter_state(WifiState::Failed);
             }

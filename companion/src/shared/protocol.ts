@@ -75,7 +75,9 @@ export const WOL_TRACE_STAGE = {
   WOL_CONNECT_DELAY_START: 11,
   WOL_RESEND_BEGIN: 12,
   WOL_RESEND_CONFIRMED: 13,
-  WOL_RESEND_GAVE_UP: 14
+  WOL_RESEND_GAVE_UP: 14,
+  WOL_WIFI_ASSOC_TIMEOUT: 15,
+  WOL_DHCP_WAIT_TIMEOUT: 16
 } as const;
 
 export const COMMAND_ID = {
@@ -1023,7 +1025,9 @@ const WOL_TRACE_STAGE_LABELS: Record<number, string> = {
   [WOL_TRACE_STAGE.WOL_CONNECT_DELAY_START]: 'wol-connect-delay-start',
   [WOL_TRACE_STAGE.WOL_RESEND_BEGIN]: 'wol-resend-begin',
   [WOL_TRACE_STAGE.WOL_RESEND_CONFIRMED]: 'wol-resend-confirmed',
-  [WOL_TRACE_STAGE.WOL_RESEND_GAVE_UP]: 'wol-resend-gave-up'
+  [WOL_TRACE_STAGE.WOL_RESEND_GAVE_UP]: 'wol-resend-gave-up',
+  [WOL_TRACE_STAGE.WOL_WIFI_ASSOC_TIMEOUT]: 'wol-wifi-assoc-timeout',
+  [WOL_TRACE_STAGE.WOL_DHCP_WAIT_TIMEOUT]: 'wol-dhcp-wait-timeout'
 };
 
 // detail's meaning depends on stage -- see bt_append_wol_trace_event() call
