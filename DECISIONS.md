@@ -5,6 +5,97 @@ Each entry: decision, rationale, alternatives considered, date.
 
 ---
 
+## 2026-08-10 — Board-level connection/WOL trace: diagnosing a host-off-only failure
+
+**Context:** the sixth-bug fix (below) was retested for real (PC off) and
+failed differently: the controller connected, the lightbar **never turned
+green** (meaning the WOL indicator's `bt_wol_indicator_begin()`, called
+only from `begin_resend_cycle()`, never ran -- so `wolwifi_on_controller_connect()`
+likely never even fired), and the controller disconnected roughly 15
+seconds later. Re-reading `ds5bridge-wol-debug.log`
+(`C:\Users\limap\AppData\Roaming\DS5 Bridge\ds5bridge-wol-debug.log`)
+showed **no new entries at all** for this attempt -- the last lines were
+stale, from `01:36:41` in a prior session.
+
+**Root cause of the missing data (not the WOL bug itself, a diagnostics
+gap):** both the WOL debug log (`readWolDebugStatus()`/`appendWolDebugLog()`
+in `bridge-service.ts`) and the firmware UART log (`build_firmware_log()`
+in `companion.cpp`, documented in AGENTS.md) are transported entirely over
+the companion HID channel and only ever written when the companion app is
+actively polling. Since the target PC -- which is also the machine running
+the companion app in this test setup -- was off for the whole attempt,
+neither log could capture anything, regardless of what actually happened
+on the board. This is a real, structural blind spot for exactly the
+scenario WOL exists to handle (host off), not something a build flag or a
+UI tweak could fix.
+
+**User's diagnosis and request:** suspected the connection-persist changes
+introduced a bug that stops the WOL sequence from starting at all (not a
+BT/Wi-Fi radio contention issue, not the USB-suspend power-off issue --
+both already fixed and both would still show `wolwifi_on_controller_connect()`
+having fired, just failing partway through). Asked for a board-level log
+that survives independent of a live companion connection, readable once
+the app reopens.
+
+**Design decision (asked and confirmed):** rather than a narrower
+wolwifi-only trace, capture BT connection-phase events too, in the same
+ring buffer -- directly because the lightbar-never-green symptom points at
+the connection-establishment sequence in `bt.cpp` (existing code, predates
+WOL, shared by every controller connection) possibly timing out and
+disconnecting *before* `wolwifi_on_controller_connect()` is ever reached,
+which a WOL-only trace would be blind to.
+
+**Implementation:**
+- `wol_trace_ring` (48 records) + `bt_append_wol_trace_event()`/
+  `bt_read_wol_trace()` in `bt.cpp`/`bt.h`, modeled directly on the
+  existing `trigger_trace_ring`/`append_trigger_trace_event()` pattern in
+  `companion.cpp` (Phase 11a's originally-planned precedent, now actually
+  used one step ahead of schedule). RAM-only, survives a BT disconnect
+  (doesn't need to survive a power cycle -- only needs to bridge the gap
+  until the companion app next polls, same principle the always-on WOL
+  debug log already relies on).
+- `WolTraceStage` enum spans both connection-phase events
+  (`ConnPhaseConnecting/Securing/HidOpening/Ready/Disconnecting`,
+  `ConnSecurityTimeout`, `ConnHidOpeningTimeout`,
+  `ConnHidInterruptFollowupTimeout`, `ConnDisconnected` with the HCI reason
+  code as `detail`) and wolwifi events (`WolTriggerFired`/
+  `WolTriggerSkipped` -- the latter's `detail` is a bitmask of
+  enabled/have-ssid/have-target-mac, directly answering "did WOL even try"
+  -- `WolConnectDelayStart`, `WolResendBegin`, `WolResendConfirmed`,
+  `WolResendGaveUp`).
+- Append calls added at every `connection_phase` assignment site in
+  `bt.cpp` (there were 7: `begin_connection_attempt`, `note_acl_connected`,
+  `begin_hid_opening`, `begin_connection_disconnect`,
+  `finish_hid_session_if_ready`'s `Ready` assignment, the HID-channel-
+  closed-while-Ready recovery path, plus the three existing timeout
+  disconnect sites and the disconnection-complete handler) and at the
+  wolwifi.cpp trigger/resend-cycle call sites.
+- New `COMPANION_REPORT_WOL_TRACE` (`0x0B`, the one free slot between
+  `0x0A` FEEDBACK_TRACE and `0x0C` WOL_DEBUG_STATUS) + `build_wol_trace()`
+  in `companion.cpp`, packing 8-byte records
+  (u16 sequence + u32 timestamp_ms + stage + detail) per report, following
+  `build_trigger_trace()`'s paging pattern exactly.
+- Companion app: `parseWolTraceReport()`/`wolTraceStageLabel()` in
+  `protocol.ts`; `readWolTraceThrottled()` polls every tick (like
+  `readWolDebugStatus()`) and drains up to 32 reports per poll (matching
+  `TRIGGER_TRACE_MAX_READS_PER_POLL`), appending `event=board-trace` lines
+  to the *same* `ds5bridge-wol-debug.log` file the live WOL debug log
+  already writes to -- one file, one place to look, rather than a second
+  log or a Diagnostics-tab-only view (deferred Phase 11a's UI-facing trace
+  view; this is UI-less by design, matching the "keep it in the log file,
+  not the settings UI" pattern already established for the debug Ping/WOL
+  Test row).
+
+**Status:** implemented, tested (typecheck + full companion test suite
+both pass), debug firmware rebuilt at `build/waveshare/ds5-bridge.uf2`,
+companion app repackaged at
+`companion/artifacts/DS5 Bridge-win32-x64-2026-08-10T01-55-26-806Z`. Not
+yet used against a real failure -- this is diagnostic tooling, not a fix
+for the underlying "WOL never starts" bug itself, which remains
+unconfirmed pending the next test with this trace available to read.
+
+---
+
 ## 2026-08-10 — Sixth bug (the real one): USB-suspend controller power-off fires before WOL can finish
 
 **Context:** after confirming (via a real test) that the resend cycle,
