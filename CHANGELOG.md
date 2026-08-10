@@ -8,6 +8,25 @@ Architecture/known-issue knowledge that should inform future work lives in
 
 ---
 
+## 2026-08-10 — Fifteenth bug: connect state machine stuck in Unconfigured despite valid persisted config
+
+The fourteenth bug's new trace instrumentation paid off immediately: the
+next real test showed `wol-connect-started` (detail=1, first attempt) not
+firing until ~27 real seconds after `wol-trigger-fired`, with zero events
+in between. Root cause: `wolwifi_init()` always called
+`enter_state(WifiState::Unconfigured)` after loading persisted config from
+flash, even when a valid SSID was loaded (`g_have_ssid` true) —
+`Unconfigured`'s handler in `wolwifi_task()` never re-checks `g_have_ssid`,
+it's a dead end. Only the SSID/password setters ever call
+`enter_state(Idle)`, so the state machine only escaped once the companion
+app's slow post-connect settings-reapply sequence happened to re-send the
+SSID again — the same class of race the seventh-bug flash-persistence fix
+closed for the config *values*, just never closed for the state machine
+itself. Fixed: `wolwifi_init()` now enters `Idle` directly when a valid
+SSID was loaded. See `DECISIONS.md`'s flash-persistence entry for the full
+writeup. Debug firmware and companion app (`win-unpacked`) rebuilt. Not yet
+verified against a real PC-off test.
+
 ## 2026-08-10 — Fourteenth bug: trace instrumentation added for a 61s WOL-send delay (fix pending)
 
 Real test confirmed the thirteenth-bug fix (below) works — no controller
