@@ -8,6 +8,17 @@ Architecture/known-issue knowledge that should inform future work lives in
 
 ---
 
+## 2026-08-10 — Core WOL feature confirmed working end-to-end on real hardware
+
+With the fifteenth-bug fix in place: controller connects to the board while
+the target PC is fully off, WOL fires immediately (Wi-Fi already connecting
+from boot thanks to the fifteenth-bug fix), gets ARP-confirmed ~10s after
+the trigger, the PC wakes automatically, and the controller stays connected
+through the entire boot with no HCI `0x22` disconnect. This is the first
+real confirmation of the complete path working end to end, across fifteen
+rounds of hardware-tested bug fixes (see the entries below). Closes out
+Phase 7's smoke test.
+
 ## 2026-08-10 — Fifteenth bug: connect state machine stuck in Unconfigured despite valid persisted config
 
 The fourteenth bug's new trace instrumentation paid off immediately: the
@@ -24,8 +35,8 @@ SSID again — the same class of race the seventh-bug flash-persistence fix
 closed for the config *values*, just never closed for the state machine
 itself. Fixed: `wolwifi_init()` now enters `Idle` directly when a valid
 SSID was loaded. See `DECISIONS.md`'s flash-persistence entry for the full
-writeup. Debug firmware and companion app (`win-unpacked`) rebuilt. Not yet
-verified against a real PC-off test.
+writeup. Debug firmware and companion app (`win-unpacked`) rebuilt.
+**Confirmed working on a real PC-off test** — see the entry above.
 
 ## 2026-08-10 — Fourteenth bug: trace instrumentation added for a 61s WOL-send delay (fix pending)
 
