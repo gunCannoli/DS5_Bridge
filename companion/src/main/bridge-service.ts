@@ -1301,6 +1301,7 @@ export class BridgeService extends EventEmitter {
   private lastFeedbackTraceReadAt = 0;
   private lastWolTraceReadAt = 0;
   private wolTraceSupported: boolean | null = null;
+  private lastWolTraceDroppedCount = 0;
   private hostPersonaTransition: HostPersonaTransitionState | null = null;
   private completedHostPersonaMode: HostPersonaMode | null = null;
   private hostPersonaDefaultRenderRestore: HostPersonaDefaultRenderRestore | null = null;
@@ -2177,32 +2178,45 @@ export class BridgeService extends EventEmitter {
 
     try {
       const events: WolTraceEventPayload[] = [];
+      let droppedCount = 0;
       for (let readIndex = 0; readIndex < WOL_TRACE_MAX_READS_PER_POLL; readIndex += 1) {
         const trace = parseWolTraceReport(await this.device.getFeatureReport(REPORT_ID.WOL_TRACE, REPORT_LENGTH));
         this.wolTraceSupported = true;
+        droppedCount = trace.droppedCount;
         if (trace.events.length === 0) {
           break;
         }
         events.push(...trace.events);
       }
-      if (events.length > 0) {
-        await this.appendWolTraceLog(events);
+      if (events.length > 0 || droppedCount !== this.lastWolTraceDroppedCount) {
+        await this.appendWolTraceLog(events, droppedCount);
+        this.lastWolTraceDroppedCount = droppedCount;
       }
     } catch {
       this.wolTraceSupported = false;
     }
   }
 
-  private async appendWolTraceLog(events: WolTraceEventPayload[]): Promise<void> {
+  private async appendWolTraceLog(events: WolTraceEventPayload[], droppedCount: number): Promise<void> {
     if (!this.wolDebugLogDirectory) {
       return;
     }
     try {
       const logPath = path.join(this.wolDebugLogDirectory, 'ds5bridge-wol-debug.log');
-      const lines = events.map((event) => (
+      let lines = events.map((event) => (
         `${new Date().toISOString()} event=board-trace seq=${event.sequence} `
         + `board_time_ms=${event.timeMs} stage=${wolTraceStageLabel(event.stage)} detail=${event.detail}\n`
       )).join('');
+      // The ring buffer is fixed-size (48 records) -- if events happened
+      // faster than this app could poll and drain them, the oldest ones are
+      // overwritten before being read, and droppedCount tracks how many.
+      // Surfaced explicitly (rather than just silently missing from the
+      // log) so a gap in the trace is distinguishable from "nothing
+      // happened" -- see AGENTS.md's equivalent note for the firmware UART
+      // log's SRAM overwrite loss.
+      if (droppedCount > 0) {
+        lines += `${new Date().toISOString()} event=board-trace-dropped dropped_count=${droppedCount}\n`;
+      }
       await fsPromises.appendFile(logPath, lines);
       this.wolDebugLogPath = logPath;
       this.wolDebugLogLastError = null;
