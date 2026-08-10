@@ -5,6 +5,115 @@ Each entry: decision, rationale, alternatives considered, date.
 
 ---
 
+## 2026-08-10 — Thirteenth bug diagnosed: post-WOL Wi-Fi leave + lightbar confirm both contend with BT right when the controller must survive the PC boot
+
+**Context:** user reported the controller still drops while the target PC is
+booting after WOL fires, and pointed at
+`DevFreezing/DS5Dongle-WoL@4807cdf3` as a possible fix. Fetched that commit
+directly (`gh api repos/DevFreezing/DS5Dongle-WoL/commits/4807cdf3...`) and
+confirmed it's the same `wake_cancel_poweroff_suppress()` mechanism already
+read in full during the prior research pass (see the debounce/retry-cap
+entry above) -- a narrow fix for *their* `Observe`-phase "PC already on"
+gate, releasing a power-off suppression armed on connect when the gate
+aborts WoL because the PC turned out to already be on. We don't have that
+gate at all (deliberately not adopted, same entry above), so the commit
+doesn't apply here. Ruled out as directly actionable; moved to diagnosing
+our own drop from scratch using the always-on WOL debug log
+(`ds5bridge-wol-debug.log`, opened by the user), which had accumulated
+several hours of real `board-trace` data since the debounce/retry-cap work.
+
+**Method:** read the full log (361 lines) and cross-referenced every
+`stage=conn-disconnected detail=22` (HCI reason 0x22 =
+`ERROR_CODE_LMP_RESPONSE_TIMEOUT_LL_RESPONSE_TIMEOUT`, a genuine BT
+radio-level timeout, confirmed by grepping `bt.cpp` -- it's read directly
+off the HCI disconnection-complete event, not something firmware chooses to
+send) against the nearest preceding `wol-resend-confirmed`/
+`wol-resend-gave-up` trace event and its `board_time_ms` delta:
+
+| confirmed/gave-up @ ms | disconnected @ ms | gap |
+|---|---|---|
+| 84051 (confirmed) | 88888 | ~4.8s |
+| 275383 (confirmed) | 280309 | ~4.9s |
+| 113218 (confirmed) | 113574 | ~0.36s |
+| 501854 (confirmed) | 502822 | ~1.0s |
+| 272619 (gave-up) | 354220 | ~82s (no correlation) |
+
+Every `confirmed` case in the log lands within ~5s of the next disconnect;
+every `gave-up` case does not (tens of seconds to unrelated). One outlier
+(`317396` confirmed -> `1103290` disconnected, 13+ minutes) was excluded as
+unrelated -- consistent with the controller surviving fine for a while after
+some WOL cycles and dropping later for an independent reason, not every
+single disconnect in the log needing to trace back to WOL.
+
+**Root cause, from the `confirmed`-only pattern:** `drive_resend_cycle()`'s
+confirmed branch (`wolwifi.cpp`) calls, back to back, in the same tick:
+`bt_wol_indicator_confirm()` (sends a `bt_set_lightbar_color()` HID report
+over the BT ACL link, then holds solid green for
+`WOL_INDICATOR_CONFIRMED_HOLD_MS` = 2000ms before a second
+`bt_set_lightbar_color()` restore send -- both real over-the-air BT
+transmissions) and `disconnect_wifi_after_wol()` (calls `cyw43_wifi_leave()`
+-> `cyw43_ioctl(..., CYW43_IOCTL_SET_DISASSOC, ...)`, confirmed via the SDK
+source (`cyw43_ctrl.c`) to be a synchronous ioctl to the CYW43439 chip that
+kicks off an asynchronous over-the-air deauth/disassociation exchange and
+internal driver-firmware cleanup that continues on the shared radio after
+the ioctl call returns). The `gave-up` branch calls
+`bt_wol_indicator_cancel()` instead -- a single immediate restore send, no
+2s hold in between two sends -- which is the likely reason its disconnects
+don't cluster the same way.
+
+This is a **new, distinct contention window** from the one bug 8's
+`disconnect_wifi_after_wol()` fix (staying associated *after* WOL,
+indefinitely, contending with BT for the rest of the boot) was designed to
+eliminate. Bug 8 correctly stopped the *sustained* post-WOL contention; this
+is contention from the *act of leaving itself*, landing in the same few
+seconds the lightbar confirm/restore sequence is also generating BT traffic
+-- both introduced in fixes that shipped later in the same session (bug 8/9
+for the leave, Phase 11b for the lightbar), so neither was tested in
+isolation against this specific interaction before now.
+
+**Fix (implemented same session): defer the Wi-Fi leave instead of calling
+it synchronously.** Presented three directions to the user (delay the leave;
+shorten/drop the lightbar confirm hold; both) -- chose delaying the leave
+alone, since it naturally separates the leave's deauth burst from the
+lightbar's send-hold-send sequence too, without touching `bt.cpp`'s
+indicator code at all.
+
+**Implementation** (`src/wolwifi.cpp`):
+- `WOL_DISCONNECT_DELAY_MS = 3000` (3s, user-confirmed over a 5s or custom
+  alternative) -- clears the lightbar's `WOL_INDICATOR_CONFIRMED_HOLD_MS`
+  (2000ms) restore send with 1s margin, and roughly matches the resend
+  cycle's own `WOL_RESEND_INTERVAL_MS` (3000ms) so the leave doesn't land
+  right on the last send either.
+- `drive_resend_cycle()`'s confirmed and gave-up branches now call
+  `arm_deferred_wifi_leave()` (sets `g_wifi_leave_pending = true` and
+  `g_wifi_leave_not_before_ms = now_ms() + WOL_DISCONNECT_DELAY_MS`) instead
+  of calling `disconnect_wifi_after_wol()` directly -- the lightbar indicator
+  calls (`bt_wol_indicator_confirm()`/`_cancel()`) still fire immediately
+  in the same tick as before, unchanged UX timing; only the underlying
+  `cyw43_wifi_leave()` is pushed out.
+- `wolwifi_task()` checks the pending flag every tick (right next to
+  `drive_resend_cycle()`, same "runs every tick independent of
+  `g_wifi_state`" reasoning) and fires `disconnect_wifi_after_wol()` once
+  the delay elapses.
+- `wolwifi_wake_in_progress()` (drives `usb.cpp`'s USB-suspend
+  controller-power-off suppression) now also returns true while
+  `g_wifi_leave_pending` -- without this, the new delay window would have
+  been an unprotected gap, defeating part of the point of the fix.
+- A fresh `wolwifi_on_controller_connect()` trigger clears
+  `g_wifi_leave_pending` alongside its other per-attempt resets (debounce/
+  retry-cap work) -- a new attempt has its own reason to keep Wi-Fi up and
+  shouldn't have a stale leave fire mid-attempt.
+
+**Verification:** firmware compiles and links cleanly (manual objdump/
+objcopy/picotool workaround for this machine's known post-link crash, per
+AGENTS.md -- UF2 produced successfully). Debug-logging firmware rebuilt at
+`build/waveshare-debug/ds5-bridge.uf2`. Not yet bench-tested or verified
+against a real PC-off boot -- pending: repeat the same
+confirmed/gave-up-to-disconnected gap analysis against fresh board-trace
+data after this fix, per task.md's verification steps.
+
+---
+
 ## 2026-08-10 — Trigger debounce + bounded connect retries, from comparing against DevFreezing/DS5Dongle-WoL
 
 **Context:** the user asked to research `DevFreezing/DS5Dongle-WoL`'s

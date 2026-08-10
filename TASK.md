@@ -350,9 +350,34 @@ crash); companion app typecheck + full test suite (280/280) pass unchanged.
 Debug firmware rebuilt at `build/waveshare-debug/ds5-bridge.uf2`. Full
 writeup in decisions.md.
 
+**2026-08-10: thirteenth bug diagnosed and fixed -- deferred the post-WOL
+Wi-Fi leave, since it was stacking with the lightbar confirm sequence right
+when the controller needed to survive the PC boot.** User pointed at
+`DevFreezing/DS5Dongle-WoL@4807cdf3` as a possible fix for the still-dropping
+controller; that commit turned out to be a narrow fix for a "PC already on"
+gate we don't have, so not directly applicable. Instead analyzed the
+real accumulated `ds5bridge-wol-debug.log` directly: every
+`conn-disconnected detail=22` (genuine BT LMP/LL response timeout) following
+`wol-resend-confirmed` landed within ~0.3-5s; `wol-resend-gave-up` cases
+showed no such correlation. Root cause: `drive_resend_cycle()`'s confirmed
+branch called the lightbar's `bt_wol_indicator_confirm()` (two BT sends
+bracketing a 2s hold) and `disconnect_wifi_after_wol()`'s
+`cyw43_wifi_leave()` (an async over-the-air deauth/cleanup exchange
+continuing after the call returns, confirmed via the Pico SDK's
+`cyw43_ctrl.c`) back to back in the same tick -- two radio-contention bursts
+stacked right when the controller most needed to stay connected. Fixed
+(committed): the Wi-Fi leave is now deferred `WOL_DISCONNECT_DELAY_MS` (3s,
+user-confirmed) past the resend cycle ending, via a new
+`arm_deferred_wifi_leave()`/`g_wifi_leave_pending` mechanism in
+`wolwifi.cpp`, separating the two contention bursts instead of stacking
+them; `wolwifi_wake_in_progress()` extended to cover the new delay window
+so the USB-suspend power-off suppression doesn't have a gap during it.
+Firmware compiles/links cleanly. Debug firmware rebuilt at
+`build/waveshare-debug/ds5-bridge.uf2`. Full writeup in decisions.md.
+
 ## Current task
 
-- [ ] **Bench-test the two new changes via the existing debug Ping/WOL Test
+- [ ] **Bench-test all pending changes via the existing debug Ping/WOL Test
       tooling** (Wi-Fi already up, PC on) before the next real PC-off retest:
       (a) trigger two controller-connect edges within 90s (e.g. toggle the
       controller's Bluetooth off/on quickly) and confirm the second logs
@@ -360,7 +385,11 @@ writeup in decisions.md.
       temporarily set a wrong Wi-Fi password via the companion app, trigger
       a connect, and confirm it gives up after one retry
       (`wol-connect-retries-exhausted` in the trace) instead of retrying
-      forever -- then restore the correct password afterward.
+      forever -- then restore the correct password afterward; (c) confirm a
+      debug WOL Test / automatic trigger still eventually leaves Wi-Fi
+      (`link` transitions to `idle` in the debug log) a few seconds after
+      `result=success`, not immediately -- the new deferred-leave delay
+      should be visible as a short gap, not a missing leave.
 - [ ] **Flash the rebuilt debug firmware, install a rebuilt companion app,
       and re-attempt the real PC-off wake test.** WOL config is already
       persisted in flash, no re-save needed. Check `ds5bridge-wol-debug.log`
@@ -373,11 +402,15 @@ writeup in decisions.md.
       round by leaving the app open continuously through the whole test),
       (b) does `wol-trigger-fired` appear immediately at every
       `conn-ready` regardless of whether the app was already open before
-      the controller connected, (c) does the controller survive the
-      BT/Wi-Fi contention now that there's no pre-delay protection, (d) does
-      the PC actually wake from the automatic send alone, and (e) no
-      unexpected `wol-trigger-debounced`/`wol-connect-retries-exhausted`
-      entries show up (would indicate the new guards are firing when they
+      the controller connected, (c) **does the controller now survive
+      through the confirmed/gave-up-to-leave window without an HCI 0x22
+      disconnect** -- the specific thing the deferred-leave fix targets;
+      redo the same gap analysis (confirmed/gave-up timestamp vs. next
+      `conn-disconnected`) against the fresh trace data to confirm no more
+      clustering within a few seconds, (d) does the PC actually wake from
+      the automatic send alone, and (e) no unexpected
+      `wol-trigger-debounced`/`wol-connect-retries-exhausted` entries show
+      up (would indicate the debounce/retry-cap guards are firing when they
       shouldn't during a normal single-attempt wake).
 
 ## Next task
