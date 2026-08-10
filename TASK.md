@@ -115,22 +115,46 @@ resumes immediately once the wake ends (confirmed or timed out). Debug
 firmware rebuilt at `build/waveshare/ds5-bridge.uf2`. Full writeup in
 decisions.md.
 
+**2026-08-10: real PC-off retest of the suspend-power-off fix failed
+differently** -- controller connected, lightbar **never turned green** at
+all (meaning `wolwifi_on_controller_connect()` likely never even ran), and
+disconnected after ~15s. The WOL debug log had no new entries for this
+attempt -- confirmed both it and the firmware UART log are live-only
+(streamed over the companion HID channel), so neither can capture anything
+that happens while the target PC/companion app is off, which is exactly
+the scenario being tested. User's diagnosis: the last connection-persist
+change likely introduced a bug that stops WOL from ever starting, and
+asked for a board-level log that can be read back once the app reopens.
+Added (committed): a small RAM-only ring buffer
+(`wol_trace_ring`/`bt_append_wol_trace_event()` in `bt.cpp`) recording BT
+connection-phase transitions/timeouts/disconnect-reasons AND wolwifi.cpp's
+own trigger/resend events, survives across a disconnect, exposed via a new
+`COMPANION_REPORT_WOL_TRACE` HID report and drained into the same
+always-on WOL debug log file (`event=board-trace` lines) whenever the
+companion app next polls -- even minutes after the actual attempt. Debug
+firmware rebuilt at `build/waveshare/ds5-bridge.uf2`, companion app
+repackaged at
+`companion/artifacts/DS5 Bridge-win32-x64-2026-08-10T01-55-26-806Z`. Full
+writeup in decisions.md.
+
 ## Current task
 
-- [ ] **Flash the rebuilt debug firmware and re-attempt the real PC-off
-      wake test** (original Phase 7 Test 2), this time checking (a) the PC
-      actually wakes via the automatic WOL-on-controller-connect trigger
-      within the 15s resend budget, (b) **the controller/BT connection now
-      survives all the way until the PC wakes** (the actual open bug --
-      everything else has already been individually confirmed working:
-      resend, ARP confirmation, lightbar), (c) the debug log shows the
-      automatic-trigger resend cycle's own log lines
-      (`[WOL] Target confirmed awake...` or
-      `[WOL] Resend budget ... exhausted...`), and (d) the lightbar
-      visibly pulses green while resending and goes solid green briefly
-      once the PC wakes. Note: the target PC being off means no companion
-      app / log access during the test itself; check the log/companion
-      app only after, once the PC is back up.
+- [ ] **Flash the rebuilt debug firmware, install the repackaged companion
+      app, and re-attempt the real PC-off wake test** (original Phase 7
+      Test 2) one more time. This time even if it fails again, the new
+      board-level trace should show exactly what happened once the PC and
+      companion app come back up -- read `ds5bridge-wol-debug.log` for
+      `event=board-trace` lines after the test and look specifically for:
+      whether `stage=wol-trigger-fired` or `stage=wol-trigger-skipped`
+      appears at all (did wolwifi even get called), what `stage=conn-*`
+      sequence preceded any `stage=conn-disconnected` (did a connection-
+      phase timeout fire before WOL ever got a chance), and whether
+      `stage=wol-resend-begin`/`wol-resend-confirmed`/`wol-resend-gave-up`
+      appear. Note: the target PC being off means no companion app / log
+      access during the test itself as always; check the log only after,
+      once the PC is back up and the companion app has had a chance to
+      poll (may take a few seconds after reconnecting for the trace to
+      flush across multiple report reads if there are many records).
 
 ## Next task
 
