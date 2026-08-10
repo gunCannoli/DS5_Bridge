@@ -89,6 +89,35 @@ constexpr uint32_t WOL_RESEND_TOTAL_BUDGET_MS = 15000;
 // code (bt_wol_indicator_confirm()/_cancel() still fire immediately -- only
 // the underlying disassociation is delayed).
 constexpr uint32_t WOL_DISCONNECT_DELAY_MS = 3000;
+// See the ObserveHost mini-state-machine (begin_observe_host()/
+// drive_observe_host(), below) -- replaces an earlier, buggy design that
+// checked usb_host_active() once, synchronously, at the exact instant of
+// the controller-connect trigger. That instant check could never work:
+// this firmware's own USB persona is session-scoped (only mounts after a
+// controller-type-identification L2CAP handshake that itself only starts
+// *after* the trigger runs -- see ConnControllerTypeIdentified in bt.h),
+// so at check time the signal structurally could not yet be true,
+// independent of the target PC's actual power state. Confirmed via a real
+// test (PC on, USB solidly connected throughout) that WOL fired anyway.
+//
+// Fixed per explicit design correction: event-driven, not a timer
+// heuristic, and defaults to firing WOL unless the host is positively
+// observed -- matching both awalol/DS5Dongle#207 and
+// DevFreezing/DS5Dongle-WoL's Observe state (their Observe: HOST_OBSERVE_US
+// 3s window, HOST_ACTIVE_SUSTAIN_US 300ms debounce). Their design assumes
+// a USB persona that's always enumerated (confirmed via source review --
+// neither PR's diff touches tud_connect()/tud_disconnect()), which doesn't
+// hold here, so their exact values don't transfer -- these are grounded in
+// a real measurement on this hardware instead: a clean
+// ConnControllerTypeIdentified trace showed the handshake completing in
+// 23ms with no radio contention. WOL_OBSERVE_HOST_WINDOW_MS gives ~85x
+// margin over that for contention (this codebase's own BT-phase timeouts,
+// e.g. HID_OPENING_PHASE_TIMEOUT_US in bt.cpp, use 8s as their "something
+// is really wrong" bound -- 2s is a small fraction of that).
+// WOL_OBSERVE_HOST_SUSTAIN_MS debounces a single-tick blip without adding
+// much latency to the decision.
+constexpr uint32_t WOL_OBSERVE_HOST_WINDOW_MS = 2000;
+constexpr uint32_t WOL_OBSERVE_HOST_SUSTAIN_MS = 100;
 // A flapping BT link during a single PC boot can fire multiple
 // controller-connect edges in quick succession (several of the bugs in
 // decisions.md were this exact scenario), and without a guard every one of
@@ -177,6 +206,19 @@ bool g_badauth_seen = false;
 // guard shape as g_wifi_intentionally_idle, cleared by the same legitimate
 // reconnect triggers (fresh controller-connect edge, new SSID/password).
 bool g_wifi_retries_exhausted = false;
+
+// See WOL_OBSERVE_HOST_WINDOW_MS/WOL_OBSERVE_HOST_SUSTAIN_MS. Armed by
+// wolwifi_on_controller_connect() instead of proceeding immediately;
+// driven every wolwifi_task() tick by drive_observe_host(). Not used by
+// the debug WOL Test button (unconditional, on-demand, same as every
+// other WOL guard added this session).
+bool g_observe_host_active = false;
+uint32_t g_observe_host_started_ms = 0;
+// 0 = not currently seeing an active-host sample; otherwise the ms
+// timestamp the current unbroken run of active samples started at.
+// Cleared (reset to 0) on any tick that samples inactive, so a genuinely
+// sustained run is required, not just a cumulative total.
+uint32_t g_observe_host_active_since_ms = 0;
 
 WolDebugAction g_debug_action = WolDebugAction::None;
 WolDebugResult g_debug_result = WolDebugResult::Pending;
@@ -702,37 +744,12 @@ void drive_resend_cycle() {
     }
 }
 
-void wolwifi_on_controller_connect(void) {
-    if (!g_enabled || !g_have_ssid || !g_have_target_mac) {
-        // detail bitmask: bit0=enabled, bit1=have_ssid, bit2=have_target_mac
-        // -- lets the trace show *why* a connect-trigger edge did nothing,
-        // distinguishing "WOL genuinely off/unconfigured" from "trigger
-        // never fired at all" (the latter wouldn't appear in the trace at
-        // all, which is itself diagnostic).
-        const uint8_t detail = (g_enabled ? 1 : 0) | (g_have_ssid ? 2 : 0) | (g_have_target_mac ? 4 : 0);
-        bt_append_wol_trace_event(WolTraceStage::WolTriggerSkipped, detail);
-        return;
-    }
-#ifndef WOL_ALWAYS
-    // The board's USB persona is plugged into the same target PC WOL wakes,
-    // so usb_host_active() (enumerated and not suspended) directly answers
-    // "does this PC need waking." Skip before anything else WOL-related
-    // happens -- no Wi-Fi connect, no resend cycle, no lightbar pulse --
-    // since a magic packet (and the visible in-progress signal for it) is
-    // pointless when the target is already running. Checked before the
-    // debounce/retry-reset below: this is a free read of an existing flag,
-    // not a radio operation, so there's no cost to re-checking on every
-    // edge (unlike the Wi-Fi-connect debounce, which exists specifically to
-    // avoid radio contention). See WOL_ALWAYS in CMakeLists.txt for the
-    // build-time escape hatch on boards where this heuristic can't
-    // distinguish "off" from "on" (USB stays active in S5, or Modern
-    // Standby) -- matches awalol/DS5Dongle#207's identical design.
-    if (usb_host_active()) {
-        DS5_LOG("[WOL] Controller connected but host already active; WOL not needed\n");
-        bt_append_wol_trace_event(WolTraceStage::WolTriggerSkippedHostActive);
-        return;
-    }
-#endif
+// Everything a controller-connect edge does once it's actually allowed to
+// proceed (past the enabled/configured check and, when the observation
+// window is in play, past confirming the host is NOT active). Split out of
+// wolwifi_on_controller_connect() so both the immediate WOL_ALWAYS path and
+// drive_observe_host()'s window-elapsed path can share it.
+void proceed_with_wol_trigger() {
     // See WOL_TRIGGER_DEBOUNCE_MS: a flapping BT link during a single PC
     // boot can fire this multiple times in quick succession; one magic
     // packet getting through is enough, and re-running Wi-Fi connect/resend
@@ -775,13 +792,74 @@ void wolwifi_on_controller_connect(void) {
     } else {
         // Not connected yet: queue the send for once wolwifi_task() gets us
         // online, and let the Idle case start the Wi-Fi connect on its very
-        // next tick -- no artificial delay. WOL must fire the instant the
-        // controller connects (matching awalol/DS5Dongle#207's behavior),
-        // not some seconds later.
+        // next tick -- no artificial delay beyond the observation window
+        // above. WOL must fire promptly once the controller connects
+        // (matching awalol/DS5Dongle#207's behavior), not some seconds
+        // later.
         g_send_pending = true;
         bt_append_wol_trace_event(WolTraceStage::WolTriggerFired, 1);
         DS5_LOG("[WOL] Wi-Fi not ready; queuing magic packet, starting connect now\n");
     }
+}
+
+// See WOL_OBSERVE_HOST_WINDOW_MS/WOL_OBSERVE_HOST_SUSTAIN_MS at the top of
+// this file for why this exists (replaces a buggy instant usb_host_active()
+// check). Starts the observation window instead of proceeding immediately.
+void begin_observe_host() {
+    g_observe_host_active = true;
+    g_observe_host_started_ms = now_ms();
+    g_observe_host_active_since_ms = 0;
+}
+
+// Drives the host-observation window; called every wolwifi_task() tick.
+// No-op unless a window is active (started by begin_observe_host()).
+void drive_observe_host() {
+    if (!g_observe_host_active) {
+        return;
+    }
+    const bool active_now = usb_host_active();
+    if (!active_now) {
+        g_observe_host_active_since_ms = 0;
+    } else if (g_observe_host_active_since_ms == 0) {
+        g_observe_host_active_since_ms = now_ms();
+    } else if (now_ms() - g_observe_host_active_since_ms >= WOL_OBSERVE_HOST_SUSTAIN_MS) {
+        DS5_LOG("[WOL] Host observed active (sustained); WOL not needed\n");
+        bt_append_wol_trace_event(WolTraceStage::WolTriggerSkippedHostActive);
+        g_observe_host_active = false;
+        return;
+    }
+    if (now_ms() - g_observe_host_started_ms >= WOL_OBSERVE_HOST_WINDOW_MS) {
+        // Window elapsed with no sustained-active read -- default to firing
+        // WOL, per the corrected design: skip only on a positive
+        // observation, never require proving the host is off first.
+        g_observe_host_active = false;
+        proceed_with_wol_trigger();
+    }
+}
+
+void wolwifi_on_controller_connect(void) {
+    if (!g_enabled || !g_have_ssid || !g_have_target_mac) {
+        // detail bitmask: bit0=enabled, bit1=have_ssid, bit2=have_target_mac
+        // -- lets the trace show *why* a connect-trigger edge did nothing,
+        // distinguishing "WOL genuinely off/unconfigured" from "trigger
+        // never fired at all" (the latter wouldn't appear in the trace at
+        // all, which is itself diagnostic).
+        const uint8_t detail = (g_enabled ? 1 : 0) | (g_have_ssid ? 2 : 0) | (g_have_target_mac ? 4 : 0);
+        bt_append_wol_trace_event(WolTraceStage::WolTriggerSkipped, detail);
+        return;
+    }
+#ifdef WOL_ALWAYS
+    proceed_with_wol_trigger();
+#else
+    // Start the observation window instead of checking usb_host_active()
+    // synchronously here -- see WOL_OBSERVE_HOST_WINDOW_MS for why an
+    // instant check can never work (this firmware's own USB persona is
+    // session-scoped and hasn't mounted yet at this exact instant). See
+    // WOL_ALWAYS in CMakeLists.txt for the build-time escape hatch on
+    // boards where the underlying heuristic can't distinguish "off" from
+    // "on" (USB stays active in S5, or Modern Standby).
+    begin_observe_host();
+#endif
 }
 
 void wolwifi_debug_ping(void) {
@@ -864,7 +942,10 @@ bool wolwifi_wake_in_progress(void) {
     // and the deferred Wi-Fi leave actually firing -- without it, the
     // USB-suspend controller-power-off suppression this function drives
     // would have a gap during exactly the window this fix introduces.
-    return g_resend_active || g_send_pending || g_wifi_leave_pending;
+    // g_observe_host_active covers the new WOL_OBSERVE_HOST_WINDOW_MS gap
+    // before a trigger even decides whether to proceed -- same reasoning,
+    // the controller needs to stay present through that window too.
+    return g_resend_active || g_send_pending || g_wifi_leave_pending || g_observe_host_active;
 }
 
 void wolwifi_task(void) {
@@ -892,6 +973,12 @@ void wolwifi_task(void) {
     if (blocked) {
         return;
     }
+
+    // Drive any in-progress host-observation window every tick, before the
+    // resend cycle -- a confirmed-active host or a window timeout can
+    // itself kick off proceed_with_wol_trigger() (and therefore a resend
+    // cycle) on this same tick.
+    drive_observe_host();
 
     // Drive any in-progress resend-until-confirmed cycle every tick,
     // independent of g_wifi_state below -- a resend can span a Wi-Fi link
