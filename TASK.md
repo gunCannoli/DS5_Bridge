@@ -333,24 +333,52 @@ app without asking each time. Debug firmware rebuilt at
 `companion/artifacts/installer/DS5-Bridge-Companion-Setup-1.7.0.exe`. Full
 writeup in decisions.md.
 
+**2026-08-10: added trigger debounce + bounded connect retries, from
+comparing our design against `DevFreezing/DS5Dongle-WoL`'s `wake-on-lan`
+branch (user-requested research pass).** Two changes adopted: a 90s debounce
+on `wolwifi_on_controller_connect()` (armed only once a packet is actually
+sent, so a flapping BT link during one PC boot can't keep re-triggering
+Wi-Fi/WOL and re-contending with BT once one packet has gone out), and a
+capped Wi-Fi connect retry count with distinct `CYW43_LINK_BADAUTH` handling
+(wrong password gets one retry then stops, instead of retrying forever on
+the same 10s backoff as a transient AP issue). A third candidate (N-packets-
+with-gap instead of the ARP-confirm resend loop) was evaluated and rejected
+by the user -- it would have broken the lightbar's real ARP-based "confirmed
+awake" signal. Firmware compiles/links cleanly (verified via the manual
+objdump/objcopy/picotool workaround for this machine's known post-link
+crash); companion app typecheck + full test suite (280/280) pass unchanged.
+Debug firmware rebuilt at `build/waveshare-debug/ds5-bridge.uf2`. Full
+writeup in decisions.md.
+
 ## Current task
 
-- [ ] **Flash the rebuilt debug firmware, install the rebuilt companion
-      app (`DS5-Bridge-Companion-Setup-1.7.0.exe`), and re-attempt the
-      real PC-off wake test.** WOL config is already persisted in flash,
-      no re-save needed. Check `ds5bridge-wol-debug.log` afterward for:
-      (a) `stage=board-boot detail=N` at the very start of every trace
-      block -- if `detail` has bit0 or bit1 set, a real reboot happened and
-      we finally know it wasn't imagined; if it's always `0`, the board
-      never actually rebooted and the earlier "trace went silent" gap has
-      a different explanation (most likely: the companion app simply
+- [ ] **Bench-test the two new changes via the existing debug Ping/WOL Test
+      tooling** (Wi-Fi already up, PC on) before the next real PC-off retest:
+      (a) trigger two controller-connect edges within 90s (e.g. toggle the
+      controller's Bluetooth off/on quickly) and confirm the second logs
+      `wol-trigger-debounced` in the board trace instead of re-sending; (b)
+      temporarily set a wrong Wi-Fi password via the companion app, trigger
+      a connect, and confirm it gives up after one retry
+      (`wol-connect-retries-exhausted` in the trace) instead of retrying
+      forever -- then restore the correct password afterward.
+- [ ] **Flash the rebuilt debug firmware, install a rebuilt companion app,
+      and re-attempt the real PC-off wake test.** WOL config is already
+      persisted in flash, no re-save needed. Check `ds5bridge-wol-debug.log`
+      afterward for: (a) `stage=board-boot detail=N` at the very start of
+      every trace block -- if `detail` has bit0 or bit1 set, a real reboot
+      happened and we finally know it wasn't imagined; if it's always `0`,
+      the board never actually rebooted and the earlier "trace went silent"
+      gap has a different explanation (most likely: the companion app simply
       wasn't running/polling during that window -- worth confirming this
       round by leaving the app open continuously through the whole test),
       (b) does `wol-trigger-fired` appear immediately at every
       `conn-ready` regardless of whether the app was already open before
       the controller connected, (c) does the controller survive the
-      BT/Wi-Fi contention now that there's no pre-delay protection, and
-      (d) does the PC actually wake from the automatic send alone.
+      BT/Wi-Fi contention now that there's no pre-delay protection, (d) does
+      the PC actually wake from the automatic send alone, and (e) no
+      unexpected `wol-trigger-debounced`/`wol-connect-retries-exhausted`
+      entries show up (would indicate the new guards are firing when they
+      shouldn't during a normal single-attempt wake).
 
 ## Next task
 

@@ -5,6 +5,110 @@ Each entry: decision, rationale, alternatives considered, date.
 
 ---
 
+## 2026-08-10 — Trigger debounce + bounded connect retries, from comparing against DevFreezing/DS5Dongle-WoL
+
+**Context:** the user asked to research `DevFreezing/DS5Dongle-WoL`'s
+`wake-on-lan` branch (`src/wol.cpp`/`wake.cpp`), an independent WOL
+implementation on the same CYW43439 combo chip, and identify improvements to
+bring into our own design. Cloned the branch to a scratch directory, read
+both files in full plus the README's WOL section, then removed the clone.
+
+Three candidate improvements were identified and presented to the user; two
+were picked, one was evaluated and explicitly rejected:
+
+- **Adopted: 90s debounce on the WOL trigger.** Their `wol.cpp`
+  (`DEBOUNCE_US = 90_000_000`) arms a debounce only once a packet is
+  actually sent, not merely triggered, so an aborted attempt doesn't consume
+  the window. Directly targets a bug class several of our twelve
+  hardware-tested bugs above either caused or were caused by: a flapping BT
+  link during a single PC boot fires `wolwifi_on_controller_connect()`
+  repeatedly with no "did we just do this" guard, each edge restarting
+  Wi-Fi/WOL activity and re-contending with BT for no benefit once one
+  magic packet has already gone out.
+- **Adopted: bounded Wi-Fi connect retries + distinct BADAUTH handling.**
+  `wolwifi_task()`'s `Failed → WIFI_RETRY_BACKOFF_MS → Idle` loop previously
+  retried forever regardless of failure reason. A wrong Wi-Fi password
+  (`CYW43_LINK_BADAUTH`) can never succeed no matter how many retries, but
+  was indistinguishable from a transient "AP briefly unreachable" failure
+  and got the same infinite 10s-backoff treatment -- needless radio
+  activity/BT contention for a connect that will never work. Matches their
+  `MAX_RETRIES = 2` with a first-BADAUTH-gets-one-retry-then-stop path
+  (covers a genuine transient PSK handshake glitch on marginal signal before
+  treating it as a real auth failure).
+- **Rejected: N-packets-with-gap instead of resend-until-ARP-confirmed.**
+  Their `Sending` state fires 3 packets 200ms apart (capped at 6 attempts)
+  instead of our up-to-15s ARP-confirm resend loop -- simpler, avoids the
+  false-ARP-confirmation bug class entirely (our eleventh bug), and
+  shortens the Wi-Fi-up window. Asked the user directly since it has a real
+  UX trade-off: our lightbar WOL indicator's solid-green "confirmed awake"
+  stage (Phase 11b) is driven by a real ARP confirmation today, and without
+  it there's nothing genuine left for that stage to key off (only options
+  were "treat burst-sent as confirmed" -- no longer a real confirmation --
+  or drop the stage entirely). User chose to keep the existing ARP-confirm
+  design instead, since the confirmed-awake signal should remain a real
+  network confirmation, not just "we sent packets." Not implemented.
+
+Also considered and explicitly not adopted (no user sign-off requested,
+judged out of scope for this round): their `Observe` state (skip Wi-Fi
+entirely if `tud_mounted() && !tud_suspended()` shows the PC is already on)
+and `WAKE_BOOT_GRACE_US` (a blanket power-off suppression window armed on
+every USB mount, independent of WOL). Our WOL only fires from a
+controller-connect edge, which already implies something changed; both
+would add a new gate/failure mode to reason about without a concrete problem
+driving the need right now.
+
+**Implementation** (`src/wolwifi.cpp`, `src/bt.h`,
+`companion/src/shared/protocol.ts`):
+
+- `WOL_TRIGGER_DEBOUNCE_MS = 90000`, `g_last_wol_sent_ms` (0 = never sent).
+  Set only in `send_magic_packet_now()`'s `err == ERR_OK` path, and only for
+  the non-debug (automatic-trigger) caller -- the debug WOL Test button must
+  keep firing every press regardless of the automatic path's timing.
+  Checked at the top of `wolwifi_on_controller_connect()`, before the
+  existing enabled/have-ssid/have-target-mac guard; a debounced edge logs
+  and appends `WolTraceStage::WolTriggerDebounced` (19, detail = seconds
+  since last send, capped to 255) instead of proceeding.
+- `MAX_WIFI_CONNECT_RETRIES = 2`, `g_connect_retry_count`/`g_badauth_seen`
+  reset at the start of every fresh triggered attempt (alongside the
+  debounce check, in `wolwifi_on_controller_connect()`). In
+  `WifiState::Connecting`, `CYW43_LINK_BADAUTH` is now branched on
+  separately from the generic `status < 0`/timeout path: first BADAUTH
+  retries once via the existing `Failed` backoff path, a second consecutive
+  BADAUTH sets `g_wifi_retries_exhausted` and appends
+  `WolTraceStage::WolConnectRetriesExhausted` (20). The generic
+  timeout/failure path (both `Connecting` and the `WaitingForIp` DHCP-
+  timeout branch) increments `g_connect_retry_count` and sets the same
+  exhausted flag once `MAX_WIFI_CONNECT_RETRIES` is exceeded.
+  `WifiState::Idle`'s handler now checks `g_wifi_retries_exhausted` (new)
+  alongside the existing `g_wifi_intentionally_idle` guard before calling
+  `start_wifi_connect()`. Both flags are cleared together in
+  `wolwifi_on_controller_connect()`'s fresh-attempt reset, and by the
+  SSID/password setters (new credentials are a legitimate reason to retry
+  regardless of a prior exhausted state) -- same clearing sites already used
+  for `g_wifi_intentionally_idle`. Deliberately left the established-
+  `Connected`-then-link-lost path uncapped (a genuine post-connect link
+  drop isn't a repeated connect *failure*, out of scope for this change).
+- Two new `WolTraceStage` values in `bt.h` (append-only, per the file's
+  existing convention -- see the `WolConnectDelayStart` removal precedent),
+  mirrored in `companion/src/shared/protocol.ts`'s `WOL_TRACE_STAGE` map and
+  `WOL_TRACE_STAGE_LABELS` (`wol-trigger-debounced`,
+  `wol-connect-retries-exhausted`) so both show up in the board trace that
+  survives a host-off gap, not just the live-only debug log.
+
+**Verification:** firmware (`-DWAVESHARE_RP2350B_PLUS_W_BUILD=ON
+-DENABLE_COMPANION=ON`) compiles and links cleanly with both changes
+(confirmed via the manual objdump/objcopy/picotool workaround for this
+machine's known nested-shell post-link crash, per AGENTS.md -- UF2 produced
+successfully both times). Companion app: `npm run typecheck` clean, full
+`npx vitest run src` suite passes (280/280, no regressions). Debug-logging
+firmware rebuilt at `build/waveshare-debug/ds5-bridge.uf2`. Not yet verified
+on real hardware -- pending: bench-test the debounce (two connect edges
+within 90s) and the BADAUTH retry cap (wrong password) via the existing
+debug Ping/WOL Test tooling, then a full real PC-off wake retest with both
+changes in place (see task.md).
+
+---
+
 ## 2026-08-10 — Unconditional boot marker: closing the last "was it a reboot" ambiguity
 
 **Context:** retesting the twelfth-bug fix (no connect-start delay)
