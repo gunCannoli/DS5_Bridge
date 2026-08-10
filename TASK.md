@@ -26,21 +26,34 @@ built: debug-logging Waveshare firmware at
 `build/waveshare-debug2/ds5-bridge.uf2`, companion installer at
 `companion/artifacts/installer/DS5-Bridge-Companion-Setup-1.7.0.exe`.
 
+Debugging session (2026-08-09, continued): SSID/password length bug found
+and fixed (commands were sending value=0 instead of the actual payload
+length, so firmware always saw a zero-length string -- see decisions.md).
+After that fix, Wi-Fi genuinely associates with the AP (`raw_link_status`
+reaches `join`) but never progresses to getting an IP -- stuck oscillating
+`connecting` <-> `failed` <-> `connecting`, `raw_link_status` staying at
+`join` throughout. This points at a DHCP-layer or router-side issue (auth
+succeeds, IP lease doesn't), not a firmware bug in the WOL module itself.
+Not yet root-caused; deprioritized in favor of two diagnostic/UX features
+requested to make the next debugging round and general WOL feedback
+better (see Phase 11 below).
+
 ## Current task
 
-- [ ] Re-run Phase 7 smoke test using the new debug tooling: with the
-      target PC ON, flash the debug-logging firmware + install the updated
-      companion app, use Ping first (confirms Wi-Fi connects and the
-      target NIC answers ARP) then WOL Test (confirms the send path
-      works) before trusting an actual PC-off wake attempt again. Check
-      `ds5bridge-wol-debug.log` in the companion app's userData folder
-      after each click regardless of pass/fail.
+- [ ] Phase 11a: WOL trace ring buffer + Diagnostics UI section (see plan
+      below) -- next up.
 
 ## Next task
 
+- [ ] Phase 11b: lightbar pulse on WOL magic-packet send (see plan below).
+- [ ] Resume debugging the `join`-stuck DHCP issue -- once Phase 11a ships,
+      the trace will show every link-status transition in the Diagnostics
+      tab without needing to dig through the raw log file, which should
+      make it much faster to confirm whether this is a router DHCP pool
+      exhaustion, a MAC filtering issue, or something firmware-side in how
+      DHCP is being driven after association.
 - [ ] Once Ping/WOL Test both succeed with the PC on, re-attempt the
-      original PC-off wake test and use whatever the debug tooling showed
-      (or didn't show) to narrow down where the real failure was.
+      original PC-off wake test.
 - [ ] Phase 9: verify failure-behavior claims at test time (non-blocking
       design is already in place per 4d/4e, needs runtime confirmation)
 - [ ] Phase 10: PR prep — write PR description, fill in testing checklist
@@ -49,6 +62,79 @@ built: debug-logging Waveshare firmware at
       to keep in the upstream PR too, not just as our local dev tooling --
       decide before opening the PR whether to present it as part of the
       feature or strip it as internal-only.
+
+### Phase 11 — WOL trace log + lightbar pulse (planned 2026-08-09, not yet implemented)
+
+Two UX/diagnostic additions requested after the debug Ping/WOL Test row
+proved useful but (a) its log file requires digging through a text file by
+hand, and (b) there's no in-the-room visual signal that WOL fired at all.
+Researched existing patterns first (see decisions.md for the write-up);
+both build on infrastructure that already exists.
+
+**11a. WOL trace in the Diagnostics tab** (chosen: full ring-buffer
+pattern, matching Trigger Trace / Feedback Trace exactly, not a lighter
+tail-the-log-file option, since it needs to also capture automatic
+WOL-on-controller-connect events, not just companion-triggered
+Ping/WOL Test debug actions):
+- [ ] Firmware: small ring buffer struct in `wolwifi.cpp` (or
+      `companion.cpp`, TBD which owns it -- trigger/feedback trace ring
+      buffers currently live in `companion.cpp`) recording WOL events:
+      controller-connect trigger fired, ping started/result, WOL-send
+      started/result, link-state transitions. Sequence-numbered with a
+      dropped-count like `TriggerTraceEvent`/`FeedbackTraceEvent` (see
+      `src/companion.cpp` `kTriggerTraceRecordSize`,
+      `trigger_trace_ring`, `build_trigger_trace()`).
+- [ ] New `COMPANION_REPORT_WOL_TRACE` report id (next free companion
+      report slot) + `build_wol_trace()` packing multiple ring records
+      per HID feature-report read, same as `build_trigger_trace()`.
+- [ ] Protocol: `parseWolTraceReport` + `WolTraceEventPayload` type +
+      stage-label/format helper in `protocol.ts`, mirroring
+      `parseTriggerTraceReport`/`triggerTraceStageLabel`.
+- [ ] bridge-service.ts: `readWolTraceThrottled()`, `appendWolTraceLines()`
+      with a line-limit constant (existing traces use 300 lines), wired
+      into the diagnostics poll loop next to
+      `readTriggerTraceThrottled()`/`readFeedbackTraceThrottled()`; new
+      `wolTraceLines`/`wolTraceDroppedCount` fields on `BridgeDiagnostics`.
+- [ ] App.tsx: one more `useMemo` text builder + one more `.debug-entry`
+      `<textarea readOnly>` row in the Diagnostics `<dl>`, next to Trigger
+      Trace / Feedback Trace / Audio Events -- same pattern, no new CSS.
+- [ ] Decide: gate behind a new `DS5_WOL_TRACE_ENABLED` diagnostics-preset
+      flag (matching how trigger/feedback trace are opt-in) or leave
+      always-on like the current single-status `WOL_DEBUG_STATUS` report.
+
+**11b. Lightbar pulse when a WOL magic packet is actually sent:**
+- [ ] Firing point: inside `send_magic_packet_now()` in `wolwifi.cpp`, on
+      an attempted send (chosen over firing in
+      `wolwifi_on_controller_connect()`, since that can defer the actual
+      send until Wi-Fi comes up later via `g_send_pending` -- pulsing at
+      the trigger point could fire without a packet ever going out, or
+      fire well before the real send if Wi-Fi is slow to connect).
+- [ ] Restore behavior: true restore-to-previous-color was chosen over the
+      existing flash-then-refresh-same-color pattern PR #93 uses for
+      controller-wake (`bt.cpp:3900-3904`) -- `bt_set_lightbar_color()`
+      currently overwrites `saved_lightbar_*` immediately, so there's no
+      existing way to snapshot "what it was before". Needs either: (a) a
+      small new accessor exposing current `saved_lightbar_*` before
+      overwriting, captured by wolwifi.cpp/companion.cpp right before the
+      flash call, then explicitly restored via `bt_set_lightbar_color()`
+      again after the delay instead of relying on
+      `bt_schedule_lightbar_restore()`'s current "restore to last-set"
+      semantics; or (b) a small change to `bt_schedule_lightbar_restore`
+      itself to snapshot before the caller's `bt_set_lightbar_color` call
+      (needs call-order changes at the one existing call site too, so
+      wake-flash doesn't regress).
+- [ ] New function `bt_flash_lightbar_and_restore(r, g, b, brightness,
+      duration_ms)` (name TBD) in `bt.cpp`/`bt.h` combining
+      snapshot+flash+scheduled-true-restore in one call, so `wolwifi.cpp`
+      doesn't need to know lightbar internals -- just calls this once, as
+      a thin dependency on `bt.h` (already an established pattern;
+      `companion.cpp` already depends on both modules).
+- [x] Policy decided: always fires when WOL is enabled and a send is
+      attempted, regardless of `lightbarOverrideEnabled`/
+      `lightbarRestoreEnabled` -- it's a distinct "WOL fired" confirmation
+      signal, not general lightbar behavior.
+- [x] Color decided: green (`0x00, 0xFF, 0x00` or similar), distinct from
+      the existing blue (`0x00, 0x00, 0xFF`) controller-wake flash.
 
 ---
 

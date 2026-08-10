@@ -5,6 +5,62 @@ Each entry: decision, rationale, alternatives considered, date.
 
 ---
 
+## 2026-08-09 — WOL trace log + lightbar pulse: research and scope (Phase 11, planned)
+
+**Context:** the debug Ping/WOL Test feature (previous entries) proved
+useful for the second real smoke test, but two gaps showed up: (1) its log
+is a flat on-disk file you have to open and read by hand, no in-app trace
+view; (2) there's no physical/visual confirmation in the room that a WOL
+packet actually got sent when a controller connects -- you only find out
+by opening the companion app.
+
+**Research findings** (full detail in an Explore-agent pass, not
+reproduced here): the app already has a ring-buffer trace pattern (Trigger
+Trace, Feedback Trace) -- `TriggerTraceEvent ring[]` in `companion.cpp`,
+sequence-numbered with a dropped-count, packed multiple-per-report via
+`build_trigger_trace()`, polled via `readTriggerTraceThrottled()`, and
+rendered as a scrollable read-only `<textarea>` in the Diagnostics tab
+(`App.tsx`'s `.debug-entry` rows). The lightbar already has a working
+"flash a color, then re-apply" primitive (`bt_set_lightbar_color()` +
+`bt_schedule_lightbar_restore()`, used today for the controller-wake flash
+at `bt.cpp:3900-3904`) -- but that primitive restores to "whatever was
+last explicitly set," not a true snapshot of the prior color, since
+`bt_set_lightbar_color()` overwrites `saved_lightbar_*` immediately when
+called.
+
+**Decisions:**
+- **WOL trace**: build the full ring-buffer + new report type pattern
+  (matching Trigger/Feedback Trace exactly), not the lighter "tail the
+  existing on-disk debug log into a textarea" option. Chosen because the
+  on-disk log only captures actions triggered through the companion app's
+  Ping/WOL Test buttons -- it has no visibility into automatic
+  WOL-on-controller-connect events, which is exactly the case that matters
+  most (the debug buttons are for testing, the real feature is the
+  automatic trigger). A ring-buffer report captures both.
+- **Lightbar pulse trigger point**: inside `send_magic_packet_now()` in
+  `wolwifi.cpp`, on an attempted send -- not in
+  `wolwifi_on_controller_connect()`. That function can defer the actual
+  send via `g_send_pending` until Wi-Fi comes up later in `wolwifi_task()`,
+  so pulsing at the trigger point could fire before (or without) an actual
+  packet going out.
+- **Lightbar restore behavior**: true restore-to-previous-color, not the
+  existing flash-then-refresh-same-color semantics the wake-flash uses.
+  Requires new firmware work (a snapshot point before the flash, or a
+  small `bt_flash_lightbar_and_restore(...)` helper in `bt.cpp`/`bt.h`
+  that wolwifi.cpp calls without needing lightbar internals) since no
+  "restore to true prior state" primitive exists today.
+- **Lightbar pulse policy**: always fires when WOL is enabled and a send
+  is attempted, regardless of `lightbarOverrideEnabled`/
+  `lightbarRestoreEnabled`. Treated as a distinct "WOL fired" confirmation
+  signal rather than general lightbar behavior those settings govern.
+- **Pulse color**: green, distinct from the existing blue
+  (`0x00,0x00,0xFF`) controller-wake flash so the two are visually
+  distinguishable.
+
+See task.md's Phase 11 for the concrete implementation checklist.
+
+---
+
 ## 2026-08-09 — WOL debug Ping/Test feature: motivation and mechanism
 
 **Context:** First real smoke test failed silently -- PC off, controller off,
