@@ -8,6 +8,27 @@ Architecture/known-issue knowledge that should inform future work lives in
 
 ---
 
+## 2026-08-10 — ObserveHost still not skipping WOL with the host confirmed active; deep diagnostics added
+
+A real test with the companion app open (so USB was genuinely mounted and
+active) and the target PC confirmed on still showed `wol-trigger-fired`
+instead of the `ObserveHost` window aborting it — the window elapsed
+without ever registering a sustained-active host, contradicting the known
+test conditions. Rather than keep guessing at the state-machine logic, per
+explicit instruction added deep diagnostics to see exactly what the window
+observed: new `usb_host_active_debug_bits()` (`usb.cpp`/`usb.h`) exposing
+the individual flags `usb_host_active()` depends on (`usb_mounted`,
+`tud_inited()`, `tud_suspended()`, the suspend-debounce flag, and the
+controller-transport session-scoping flags) as one bitmask, plus three new
+trace stages: `ObserveHostBegin` (state at window start),
+`ObserveHostSampleEdge` (every rising/falling edge of `usb_host_active()`
+during the window — not every tick, to avoid flooding), and
+`ObserveHostWindowElapsed` (state at the moment the window gave up). The
+next real test's trace should show precisely which of `usb_host_active()`'s
+component flags was false, closing the question instead of re-guessing.
+Firmware/companion build clean, debug firmware rebuilt at
+`build/waveshare-debug/ds5-bridge.uf2`, companion app rebuilt.
+
 ## 2026-08-10 — Host-alive gate rebuilt as an event-driven observation window
 
 Got a real measurement from the prior change's `ConnControllerTypeIdentified`

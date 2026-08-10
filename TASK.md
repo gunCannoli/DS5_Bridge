@@ -6,29 +6,44 @@ knowledge and known issues belong in `DECISIONS.md`, not here.
 
 ## Current task
 
-Real measurement came back (23ms clean handshake time) and the actual fix
-is implemented: `ObserveHost` mini-state-machine replacing the buggy
-instant `usb_host_active()` check, `WOL_OBSERVE_HOST_WINDOW_MS = 2000` /
-`WOL_OBSERVE_HOST_SUSTAIN_MS = 100`, default-fires-WOL-unless-host-observed-
-active. See `DECISIONS.md` for the full corrected design writeup. Firmware
-compiles clean (both `WOL_ALWAYS` on/off); no companion changes needed.
-Debug firmware rebuilt at `build/waveshare-debug/ds5-bridge.uf2`.
+The `ObserveHost` window (previous round) still didn't skip WOL in a real
+test where it should have (companion app open, USB genuinely mounted/
+active, PC confirmed on) — `wol-trigger-fired` fired instead of
+`wol-trigger-skipped-host-active`. Rather than keep guessing at the
+state-machine logic, added deep diagnostics: `usb_host_active_debug_bits()`
+(bitmask of every flag `usb_host_active()` depends on) plus three new
+trace stages (`ObserveHostBegin`, `ObserveHostSampleEdge`,
+`ObserveHostWindowElapsed`) so the next trace shows exactly what the
+window observed instead of requiring inference. See `CHANGELOG.md` for the
+full writeup. Firmware/companion rebuilt (`win-unpacked` refreshed).
 
-Still open from two rounds ago: the board-transport-recovery-reboot
+Still open from three rounds ago: the board-transport-recovery-reboot
 instrumentation (`BoardTransportRecoveryReboot`/`ConnDisconnectRetrySent`)
-hasn't been exercised by a real test yet — same next test should also
-capture this.
+hasn't been exercised by a real test yet — same next test should capture
+this too.
 
-- [ ] **Real test with the PC on**: confirm `wol-trigger-skipped-host-active`
-      now correctly fires (instead of `wol-trigger-fired`) within ~2s of a
-      controller reconnect while the PC is on, and the lightbar does **not**
-      pulse.
-- [ ] **Real PC-off retest**: confirm WOL still fires within the bounded
-      window (not indefinitely delayed) when the PC is genuinely off — the
-      fifteenth-bug-fixed end-to-end path must stay unaffected.
-- [ ] Same test(s): check for `board-transport-recovery-reboot`/
+- [ ] **Real test with the PC on, companion app open** (reproduce the same
+      conditions as the failing test). Read `ds5bridge-wol-debug.log` for:
+      - `observe-host-begin`'s `detail` bitmask — what did
+        `usb_host_active_debug_bits()` read the instant the window armed?
+        (bit0=usb_mounted, bit1=tud_inited, bit2=tud_suspended,
+        bit3=usb_host_suspended-flag, bit4=controller_transport_ready,
+        bit5=controller_transport_attached)
+      - every `observe-host-sample-edge` during the window — did
+        `usb_host_active()` ever read true at all? If yes, for how long
+        before flipping back (compare against the 100ms sustain
+        threshold)? If never, which bit(s) stayed wrong the whole time?
+      - `observe-host-window-elapsed`'s final bitmask, if the window did
+        time out.
+- [ ] Same test: check for `board-transport-recovery-reboot`/
       `conn-disconnect-retry-sent` (still unexplained) and confirm/deny
       whether it recurs.
+- [ ] Once the real cause is visible: fix `usb_host_active()`/the
+      `ObserveHost` logic accordingly — no more guessing until this data
+      is in hand.
+- [ ] **Real PC-off retest**: confirm WOL still fires within the bounded
+      window when the PC is genuinely off — the fifteenth-bug-fixed
+      end-to-end path must stay unaffected by all of this.
 - [ ] `-DWOL_ALWAYS=ON` escape hatch: not urgent, only matters if a real
       board hits the known USB-stays-active-in-S5 limitation.
 
