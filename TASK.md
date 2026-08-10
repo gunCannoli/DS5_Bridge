@@ -6,33 +6,27 @@ knowledge and known issues belong in `DECISIONS.md`, not here.
 
 ## Current task
 
-Fourteenth bug: WOL fires ~61 real seconds after the controller-connect
-trigger (see `DECISIONS.md`'s CYW43 radio-contention entry and
-`CHANGELOG.md`'s fourteenth-bug entry for background). Root cause not yet
-found — trace instrumentation was added (`WolConnectStarted`,
-`WolWifiLinkLostAfterConnect`, `WolWifiConnected`, `WolWifiBackoffElapsed`)
-to make it visible on the next real test.
+Fifteenth bug just fixed (not yet verified): the fourteenth bug's new trace
+instrumentation showed a ~27s gap between `wol-trigger-fired` and the first
+`wol-connect-started` on a fresh boot with persisted config — root cause
+found (`wolwifi_init()` left the connect state machine stuck in
+`Unconfigured` even after loading a valid SSID from flash; only the
+SSID/password setters ever call `enter_state(Idle)`, so the state machine
+only escaped once the companion app's slow settings-reapply happened to
+re-send the SSID). See `DECISIONS.md`'s flash-persistence entry for the
+full writeup. Fixed: `wolwifi_init()` now enters `Idle` directly when a
+valid SSID was loaded. Debug firmware and companion app (`win-unpacked`)
+both rebuilt.
 
-- [ ] **Real PC-off wake test with the new instrumentation**, companion app
-      left open/polling continuously through the whole test. WOL config
-      already persisted in flash. Read `ds5bridge-wol-debug.log`:
-      - Every `wol-connect-started` line between `wol-trigger-fired` and
-        the eventual `wol-resend-begin`/`wol-resend-gave-up` — how many
-        connect attempts happened, at what board-time each started.
-      - For each attempt: does it end in `wol-wifi-connected` (detail says
-        whether a resend cycle actually started),
-        `wol-wifi-link-lost-after-connect`, `wol-wifi-assoc-timeout`,
-        `wol-dhcp-wait-timeout`, or nothing (still unexplained)?
-      - Does `wol-wifi-backoff-elapsed` appear between attempts, and does
-        the timing now account for the full delay?
-      - `wol-wifi-connected detail=0` (connected but `g_send_pending` was
-        already false) is the specific "silently connected, did nothing"
-        case to confirm or rule out.
-- [ ] Also re-verify: no HCI `0x22` disconnect (thirteenth-bug fix should
-      still hold), no unexpected `wol-trigger-debounced`/
-      `wol-connect-retries-exhausted` entries (debounce/retry-cap guards
-      firing when they shouldn't).
-- [ ] Once the trace explains the gap, design and implement the actual fix.
+- [ ] **Real PC-off wake test with this fix.** WOL config already persisted
+      in flash. Confirm: (a) `wol-connect-started` now appears within
+      ~1 tick of `wol-trigger-fired` (no multi-second gap), (b) WOL actually
+      reaches the PC before it's manually powered on, (c) no HCI `0x22`
+      disconnect (thirteenth-bug fix should still hold), (d) no unexpected
+      `wol-trigger-debounced`/`wol-connect-retries-exhausted` entries.
+- [ ] If a gap still remains, the fourteenth-bug trace stages
+      (`wol-wifi-connected`, `wol-wifi-link-lost-after-connect`,
+      `wol-wifi-backoff-elapsed`) are still in place to diagnose further.
 
 ## Next task
 

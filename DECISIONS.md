@@ -135,6 +135,26 @@ that has never had WOL configured starts empty, so WOL must be
 (re)configured once via the companion app post-flash before a true
 "PC fully off, no prior companion-app session this boot" test is valid.
 
+**Known issue this fix didn't fully close (found and fixed later):**
+persisting the config *values* to flash wasn't enough — `wolwifi_init()`
+unconditionally called `enter_state(WifiState::Unconfigured)` after loading
+them, and `WifiState::Unconfigured`'s handler in `wolwifi_task()` never
+re-checks `g_have_ssid`; it's a dead end. The *only* code that calls
+`enter_state(Idle)` is the SSID/password setters — so even with a valid
+SSID loaded from flash, the connect state machine stayed stuck in
+`Unconfigured` until the companion app's slow post-connect settings-reapply
+sequence happened to re-send the SSID again, sometimes tens of seconds
+after the controller had already connected and fired the trigger. Found via
+the new `WolConnectStarted` trace stage (added to diagnose a "WOL fires ~61s
+late" symptom) showing a ~27s gap between `wol-trigger-fired` and the first
+actual `start_wifi_connect()` call, with zero explanatory events in between.
+Fixed: `wolwifi_init()` now enters `Idle` directly (not `Unconfigured`) when
+`wolwifi_load_persisted_config()` loaded a valid SSID. **Lesson for
+anything else that loads persisted state on boot:** loading the values is
+necessary but not sufficient — check whether a dependent state machine also
+needs an explicit kick to notice the values are now valid, rather than
+assuming it'll get there on its own.
+
 ---
 
 ## Architecture: wire-format and protocol decisions
