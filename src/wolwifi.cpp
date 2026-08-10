@@ -64,6 +64,10 @@ uint8_t g_target_mac[6] = {0};
 
 WifiState g_wifi_state = WifiState::Unconfigured;
 uint32_t g_state_entered_ms = 0;
+uint32_t g_connect_attempt_count = 0;
+uint32_t g_link_lost_count = 0;
+uint32_t g_dhcp_timeout_count = 0;
+uint32_t g_wifi_connect_timeout_count = 0;
 
 udp_pcb *g_udp_pcb = nullptr;
 bool g_send_pending = false;
@@ -210,7 +214,25 @@ void start_wifi_connect() {
         enter_state(WifiState::Unconfigured);
         return;
     }
-    DS5_LOG("[WOL] Wi-Fi connecting to \"%s\"\n", g_ssid);
+    g_connect_attempt_count++;
+    // cyw43_arch_wifi_connect_async() -> cyw43_wifi_join() does not clean up
+    // a prior association itself (the SDK docs say cyw43_wifi_leave() is a
+    // separate, caller-managed step) -- confirmed via wifi_join_state that a
+    // retry after a genuine link loss was joining on top of stale driver
+    // state and failing immediately (raw_link_status=fail) where the first
+    // connect from a clean boot succeeded. Explicitly leave first on every
+    // attempt after the first so retries start from a clean join state.
+    if (g_connect_attempt_count > 1) {
+        const int leave_err = cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
+        DS5_LOG(
+            "[WOL] Wi-Fi leave before reconnect attempt #%u: err=%d, prior join_state=0x%04x\n",
+            g_connect_attempt_count, leave_err, cyw43_state.wifi_join_state
+        );
+    }
+    DS5_LOG(
+        "[WOL] Wi-Fi connecting to \"%s\" (attempt #%u)\n",
+        g_ssid, g_connect_attempt_count
+    );
     cyw43_arch_enable_sta_mode();
     const int err = cyw43_arch_wifi_connect_async(
         g_ssid, g_password, CYW43_AUTH_WPA2_AES_PSK
@@ -377,6 +399,11 @@ WolDebugStatus wolwifi_debug_status(void) {
         status.dhcp_state = 0;
         status.dhcp_tries = 0;
     }
+    status.wifi_join_state = cyw43_state.wifi_join_state;
+    status.connect_attempt_count = g_connect_attempt_count;
+    status.wifi_connect_timeout_count = g_wifi_connect_timeout_count;
+    status.dhcp_timeout_count = g_dhcp_timeout_count;
+    status.link_lost_count = g_link_lost_count;
     return status;
 }
 
@@ -446,7 +473,14 @@ void wolwifi_task(void) {
                 DS5_LOG("[WOL] Wi-Fi link up; waiting for IP lease\n");
                 enter_state(WifiState::WaitingForIp);
             } else if (status < 0 || now_ms() - g_state_entered_ms > WIFI_CONNECT_TIMEOUT_MS) {
-                DS5_LOG("[WOL] Wi-Fi connect failed/timed out (status=%d)\n", status);
+                g_wifi_connect_timeout_count++;
+                DS5_LOG(
+                    "[WOL] Wi-Fi connect failed/timed out (status=%d, join_state=0x%04x, "
+                    "elapsed_ms=%lu, connect_timeout_count=%lu)\n",
+                    status, cyw43_state.wifi_join_state,
+                    static_cast<unsigned long>(now_ms() - g_state_entered_ms),
+                    static_cast<unsigned long>(g_wifi_connect_timeout_count)
+                );
                 enter_state(WifiState::Failed);
             }
             return;
@@ -456,8 +490,8 @@ void wolwifi_task(void) {
             if (have_ip_lease()) {
                 const ip4_addr_t *addr = netif_ip4_addr(netif_default);
                 DS5_LOG(
-                    "[WOL] Wi-Fi connected: %s\n",
-                    ip4addr_ntoa(addr)
+                    "[WOL] Wi-Fi connected: %s (attempt #%lu)\n",
+                    ip4addr_ntoa(addr), static_cast<unsigned long>(g_connect_attempt_count)
                 );
                 enter_state(WifiState::Connected);
                 ensure_arp_snoop_installed();
@@ -466,7 +500,14 @@ void wolwifi_task(void) {
                     send_magic_packet_now(false);
                 }
             } else if (now_ms() - g_state_entered_ms > WIFI_CONNECT_TIMEOUT_MS) {
-                DS5_LOG("[WOL] Timed out waiting for DHCP lease\n");
+                g_dhcp_timeout_count++;
+                const struct dhcp *dhcp = netif_default != nullptr ? netif_dhcp_data(netif_default) : nullptr;
+                DS5_LOG(
+                    "[WOL] Timed out waiting for DHCP lease (dhcp_state=%u, dhcp_tries=%u, "
+                    "join_state=0x%04x, dhcp_timeout_count=%lu)\n",
+                    dhcp != nullptr ? dhcp->state : 0, dhcp != nullptr ? dhcp->tries : 0,
+                    cyw43_state.wifi_join_state, static_cast<unsigned long>(g_dhcp_timeout_count)
+                );
                 enter_state(WifiState::Failed);
             }
             return;
@@ -475,9 +516,13 @@ void wolwifi_task(void) {
         case WifiState::Connected: {
             const int status = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
             if (status != CYW43_LINK_UP || !have_ip_lease()) {
+                g_link_lost_count++;
                 DS5_LOG(
-                    "[WOL] Wi-Fi link lost; will retry (status=%d, have_ip=%d)\n",
-                    status, have_ip_lease() ? 1 : 0
+                    "[WOL] Wi-Fi link lost; will retry (status=%d, have_ip=%d, "
+                    "join_state=0x%04x, connected_for_ms=%lu, link_lost_count=%lu)\n",
+                    status, have_ip_lease() ? 1 : 0, cyw43_state.wifi_join_state,
+                    static_cast<unsigned long>(now_ms() - g_state_entered_ms),
+                    static_cast<unsigned long>(g_link_lost_count)
                 );
                 enter_state(WifiState::Failed);
             }

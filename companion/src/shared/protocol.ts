@@ -635,7 +635,7 @@ export interface WolDebugStatusPayload {
   haveTargetMac: boolean;
   nowMs: number;
   linkStateEnteredMs: number;
-  // Raw cyw43_wifi_link_status() value (see wolwifi.h) -- our own linkState
+  // Raw cyw43_tcpip_link_status() value (see wolwifi.h) -- our own linkState
   // collapses several distinct CYW43 states into CONNECTING, which isn't
   // enough to tell a flapping auth failure from a slow DHCP lease from a
   // weak signal. -3=badauth, -2=nonet, -1=fail, 0=down, 1=join, 2=noip, 3=up.
@@ -648,6 +648,17 @@ export interface WolDebugStatusPayload {
   // 6=selecting, 10=bound are the common ones seen in practice.
   dhcpState: number;
   dhcpTries: number;
+  // Raw CYW43 driver internal join-state bitmask (cyw43_state.wifi_join_state
+  // -- WIFI_JOIN_STATE_* bits for ACTIVE/FAIL/NONET/BADAUTH/AUTH/LINK/KEYED
+  // in cyw43_ctrl.c). Shows exactly which sub-step of association completed
+  // when rawLinkStatus alone isn't enough.
+  wifiJoinState: number;
+  // Lifetime counters (not reset between connect attempts), so a single
+  // status/log line shows the full history, not just the latest event.
+  connectAttemptCount: number;
+  wifiConnectTimeoutCount: number;
+  dhcpTimeoutCount: number;
+  linkLostCount: number;
 }
 
 export interface AudioStatusPayload {
@@ -1108,7 +1119,12 @@ export function parseWolDebugStatusReport(report: ArrayLike<number>): WolDebugSt
     linkStateEnteredMs: readU32(report, 24),
     rawLinkStatus: report[15] > 127 ? report[15] - 256 : report[15],
     dhcpState: report[28],
-    dhcpTries: report[29]
+    dhcpTries: report[29],
+    wifiJoinState: readU16(report, 30),
+    connectAttemptCount: readU32(report, 32),
+    wifiConnectTimeoutCount: readU32(report, 36),
+    dhcpTimeoutCount: readU32(report, 40),
+    linkLostCount: readU32(report, 44)
   };
 }
 
