@@ -14,91 +14,6 @@
 #include <cstdint>
 #include <cstddef>
 
-// Debug-status types are declared unconditionally (cheap; just enums/a
-// struct) so wolwifi_debug_status()'s signature is identical whether or not
-// ENABLE_WOLWIFI is set -- callers never need an #ifdef around the type.
-enum class WolDebugAction : uint8_t {
-    None = 0,
-    Ping = 1,
-    SendWol = 2,
-};
-
-enum class WolDebugResult : uint8_t {
-    Pending = 0,
-    Success = 1,
-    Timeout = 2,
-    NoWifi = 3,
-    SendFailed = 4,
-    NotConfigured = 5,
-};
-
-enum class WolWifiLinkState : uint8_t {
-    Unconfigured = 0,
-    Idle = 1,
-    Connecting = 2,
-    WaitingForIp = 3,
-    Connected = 4,
-    Failed = 5,
-};
-
-struct WolDebugStatus {
-    WolWifiLinkState link_state;
-    WolDebugAction last_action;
-    WolDebugResult last_result;
-    uint32_t last_action_started_ms;
-    // Dotted-quad octets in display order (ip_octets[0] is the first number
-    // shown, e.g. the "192" in "192.168.1.5"), all zero if no IP lease.
-    // Raw octets rather than a packed uint32_t so there's no ambiguity
-    // between lwIP's network-byte-order ip4_addr and this wire format's
-    // little-endian write_u32 -- see decisions.md.
-    uint8_t ip_octets[4];
-    // Raw config-reached-firmware flags. Exposed so a stuck link_state
-    // (e.g. permanently Idle) can be diagnosed from the debug status alone
-    // -- Idle with wol_enabled=false means wolwifi_task() is intentionally
-    // not progressing (see the early-return at the top of wolwifi_task()),
-    // not a connect failure.
-    bool wol_enabled;
-    bool have_ssid;
-    bool have_target_mac;
-    uint32_t now_ms;              // firmware's current tick, for age math
-    uint32_t link_state_entered_ms;
-    // Raw cyw43_tcpip_link_status() return value (CYW43_LINK_DOWN/JOIN/NOIP/
-    // UP/FAIL/NONET/BADAUTH -- see cyw43.h; range is -3..3, fits in int8_t).
-    // NOTE: this is cyw43_tcpip_link_status(), not cyw43_wifi_link_status()
-    // -- the latter never returns NOIP/UP at all (it only reflects the
-    // low-level wifi_join_state, with no DHCP/IP awareness), which was a
-    // real bug here: wolwifi_task() polled cyw43_wifi_link_status() and
-    // could never see CYW43_LINK_UP even once DHCP had a bound lease, so
-    // it always eventually timed out and restarted the connect from
-    // scratch. Exposed because our own WolWifiLinkState collapses several
-    // distinct CYW43 states into "Connecting", which isn't enough to tell
-    // a flapping auth failure from a slow DHCP lease from a weak signal.
-    int8_t raw_link_status;
-    // lwIP's own DHCP client state machine (struct dhcp.state, see
-    // lwip/prot/dhcp.h DHCP_STATE_*: 0=off, 1=requesting, 2=init,
-    // 6=selecting, 10=bound, etc.) and retry count (struct dhcp.tries).
-    // This is what caught the cyw43_wifi_link_status() bug above: dhcp_state
-    // showed "bound" (a real IP lease) while raw_link_status stayed "join"
-    // and our WifiState kept cycling connecting -> failed -> connecting.
-    uint8_t dhcp_state;
-    uint8_t dhcp_tries;
-    // CYW43 driver's raw internal join-state bitmask (cyw43_state.wifi_join_state
-    // -- see WIFI_JOIN_STATE_* in cyw43_ctrl.c: bits for ACTIVE/FAIL/NONET/
-    // BADAUTH/AUTH/LINK/KEYED). raw_link_status collapses this to one of 7
-    // values; the raw bitmask shows exactly which sub-step of association
-    // completed, which mattered for diagnosing a reconnect that failed
-    // immediately after a working connection dropped (see decisions.md --
-    // cyw43_arch_wifi_connect_async() doesn't clean up a prior association
-    // itself; a stale join_state on retry was the suspected cause).
-    uint16_t wifi_join_state;
-    // Lifetime counters, not reset between connect attempts, so the log
-    // shows a running history instead of only the most recent event.
-    uint32_t connect_attempt_count;   // every time start_wifi_connect() runs
-    uint32_t wifi_connect_timeout_count; // Connecting state timed out without CYW43_LINK_UP
-    uint32_t dhcp_timeout_count;      // WaitingForIp state timed out without an IP lease
-    uint32_t link_lost_count;         // Connected state detected link/IP loss
-};
-
 #ifdef ENABLE_WOLWIFI
 
 // Must be called once during boot, after cyw43_arch_init() (main.cpp already
@@ -132,35 +47,14 @@ bool wolwifi_set_wifi_password(const char *password, uint8_t password_len);
 // (leaving prior config untouched) on a null pointer.
 bool wolwifi_set_target_mac(const uint8_t mac[6]);
 
-// Debug/smoke-test entry points, triggered on demand from the companion
-// app's WOL debug row (see decisions.md). Both are fire-and-forget: they
-// start (or restart) an async operation and return immediately; poll
-// wolwifi_debug_status() for the result.
-//
-// Ping: broadcasts an ARP request, then watches inbound ARP traffic for a
-// reply/announcement whose source MAC matches the configured target --
-// lwIP's ARP API only resolves IP->MAC, not the reverse, so this snoops
-// the netif's raw input rather than using etharp_query/etharp_request
-// directly. Confirms the target's NIC is on the network and answering ARP,
-// which is what actually matters for a WOL target (its NIC listens for
-// magic packets even with the OS off/asleep).
-void wolwifi_debug_ping(void);
-
-// Re-sends the magic packet right now (bypassing the controller-connect
-// trigger), regardless of Wi-Fi/target-MAC state -- the result reports
-// exactly why if it can't.
-void wolwifi_debug_send_wol(void);
-
-WolDebugStatus wolwifi_debug_status(void);
-
 // True while an automatic-trigger resend cycle is actively sending/waiting
 // for the target to confirm it woke up (see begin_resend_cycle()/
-// drive_resend_cycle() in wolwifi.cpp). Used by usb.cpp to suppress the
-// USB-suspend controller-power-off behavior for exactly this window --
-// without it, the board would power off the controller ~3s after the PC
-// suspends, before WOL has a chance to actually wake it back up. Not true
-// for a single debug WOL Test send, which doesn't need the controller kept
-// alive for any particular duration.
+// drive_resend_cycle() in wolwifi.cpp), or the host-observation window
+// ahead of it is still running (see begin_observe_host()/
+// drive_observe_host()). Used by usb.cpp to suppress the USB-suspend
+// controller-power-off behavior for exactly this window -- without it, the
+// board would power off the controller ~3s after the PC suspends, before
+// WOL has a chance to actually wake it back up.
 bool wolwifi_wake_in_progress(void);
 
 #else
@@ -173,15 +67,6 @@ static inline bool wolwifi_is_enabled(void) { return false; }
 static inline bool wolwifi_set_wifi_ssid(const char *, uint8_t) { return false; }
 static inline bool wolwifi_set_wifi_password(const char *, uint8_t) { return false; }
 static inline bool wolwifi_set_target_mac(const uint8_t[6]) { return false; }
-static inline void wolwifi_debug_ping(void) {}
-static inline void wolwifi_debug_send_wol(void) {}
-static inline WolDebugStatus wolwifi_debug_status(void) {
-    WolDebugStatus status{};
-    status.link_state = WolWifiLinkState::Unconfigured;
-    status.last_action = WolDebugAction::None;
-    status.last_result = WolDebugResult::NotConfigured;
-    return status;
-}
 static inline bool wolwifi_wake_in_progress(void) { return false; }
 
 #endif // ENABLE_WOLWIFI

@@ -31,13 +31,8 @@ import {
   parseFeedbackTraceReport,
   parseFirmwareLogReport,
   parseStatusReport,
-  parseWolDebugStatusReport,
-  parseWolTraceReport,
-  wolTraceStageLabel,
   readReportProtocolVersion,
   SHORTCUT_EVENT,
-  WOL_DEBUG_ACTION,
-  WOL_DEBUG_RESULT,
   buildButtonRemapPayload,
   hostPersonaModeValue,
   normalizeChordControllerSettingStepPercent,
@@ -65,8 +60,6 @@ import type {
   RemapButtonId,
   HostPersonaMode,
   AudioStatusPayload,
-  WolDebugStatusPayload,
-  WolTraceEventPayload,
   TriggerTraceEventPayload,
   FeedbackTraceEventPayload,
   BridgeStatusPayload,
@@ -117,8 +110,6 @@ const AUDIO_STATUS_READ_INTERVAL_MS = 500;
 const AUDIO_DEBUG_READ_INTERVAL_MS = 500;
 const TRIGGER_TRACE_READ_INTERVAL_MS = 250;
 const FEEDBACK_TRACE_READ_INTERVAL_MS = 250;
-const WOL_TRACE_READ_INTERVAL_MS = 250;
-const WOL_TRACE_MAX_READS_PER_POLL = 32;
 const BRIDGE_CENSUS_INTERVAL_MS = 10000;
 const AUDIO_DEBUG_DIAGNOSTICS_ENABLED = CompanionDebugConfig.audioDebugDiagnosticsEnabled;
 const TRIGGER_TRACE_DIAGNOSTICS_ENABLED = CompanionDebugConfig.triggerTraceDiagnosticsEnabled;
@@ -179,8 +170,6 @@ type BridgeDiagnosticsWithoutAudioLog = Omit<
   | 'feedbackTraceLines'
   | 'feedbackTraceDroppedCount'
   | 'audioStatus'
-  | 'wolDebugStatus'
-  | 'wolDebugLogPath'
 >;
 
 type CommandOptions = {
@@ -345,9 +334,7 @@ function emptyDiagnostics(rawDevices: HidDeviceSummary[]): BridgeDiagnostics {
     triggerTraceDroppedCount: 0,
     feedbackTraceLines: [],
     feedbackTraceDroppedCount: 0,
-    audioStatus: null,
-    wolDebugStatus: null,
-    wolDebugLogPath: null
+    audioStatus: null
   };
 }
 
@@ -1287,9 +1274,6 @@ export class BridgeService extends EventEmitter {
   private feedbackTraceDroppedCount = 0;
   private feedbackTraceSupported: boolean | null = null;
   private audioStatus: AudioStatusPayload | null = null;
-  private wolDebugStatus: WolDebugStatusPayload | null = null;
-  private wolDebugLogPath: string | null = null;
-  private wolDebugLogLastError: string | null = null;
   private incompatibleCompanionProtocolVersion: ReportProtocolVersion | null = null;
   private lastAudioStatsSignature: string | null = null;
   private systemAudioHapticsRetryAt = 0;
@@ -1299,9 +1283,6 @@ export class BridgeService extends EventEmitter {
   private lastAudioDebugReadAt = 0;
   private lastTriggerTraceReadAt = 0;
   private lastFeedbackTraceReadAt = 0;
-  private lastWolTraceReadAt = 0;
-  private wolTraceSupported: boolean | null = null;
-  private lastWolTraceDroppedCount = 0;
   private hostPersonaTransition: HostPersonaTransitionState | null = null;
   private completedHostPersonaMode: HostPersonaMode | null = null;
   private hostPersonaDefaultRenderRestore: HostPersonaDefaultRenderRestore | null = null;
@@ -1319,8 +1300,7 @@ export class BridgeService extends EventEmitter {
   };
 
   constructor(
-    private readonly settingsStore: SettingsStore,
-    private readonly wolDebugLogDirectory?: string
+    private readonly settingsStore: SettingsStore
   ) {
     super();
     this.snapshot = {
@@ -1630,9 +1610,7 @@ export class BridgeService extends EventEmitter {
       triggerTraceDroppedCount: this.triggerTraceDroppedCount,
       feedbackTraceLines: [...this.feedbackTraceLines],
       feedbackTraceDroppedCount: this.feedbackTraceDroppedCount,
-      audioStatus: this.audioStatus ? { ...this.audioStatus } : null,
-      wolDebugStatus: this.wolDebugStatus ? { ...this.wolDebugStatus } : null,
-      wolDebugLogPath: this.wolDebugLogPath
+      audioStatus: this.audioStatus ? { ...this.audioStatus } : null
     };
   }
 
@@ -2108,186 +2086,6 @@ export class BridgeService extends EventEmitter {
       this.audioStatus = null;
     }
     this.publishAudioDiagnosticsSnapshot();
-  }
-
-  // Polled every tick like readAudioStatus(); cheap even when no WOL debug
-  // action is in flight. Writes one line per action to a small always-on
-  // log file (independent of the separate Firmware UART Log feature) so a
-  // Ping/WOL Test click is debuggable even without that capture running --
-  // see decisions.md for why this can't rely on the UART log alone (the
-  // target PC and the PC running this companion app can be the same
-  // machine, so once WOL actually needs to fire, there is no PC left to
-  // read logs from).
-  private async readWolDebugStatus(): Promise<void> {
-    if (!this.device) {
-      this.wolDebugStatus = null;
-      this.publishAudioDiagnosticsSnapshot();
-      return;
-    }
-
-    try {
-      const status = parseWolDebugStatusReport(
-        await this.device.getFeatureReport(REPORT_ID.WOL_DEBUG_STATUS, REPORT_LENGTH)
-      );
-      const previous = this.wolDebugStatus;
-      this.wolDebugStatus = status;
-      const actionChanged = previous?.lastActionStartedMs !== status.lastActionStartedMs;
-      const resultSettled = status.lastResult !== WOL_DEBUG_RESULT.PENDING;
-      const resultChanged = previous?.lastResult !== status.lastResult;
-      if (status.lastAction !== WOL_DEBUG_ACTION.NONE && resultSettled && (actionChanged || resultChanged)) {
-        await this.appendWolDebugLog(status, 'debug-action');
-      }
-      // Also log on every linkState transition on its own, independent of
-      // whether a Ping/WOL Test button was clicked -- otherwise the log
-      // only captures a snapshot at the instant a debug button happens to
-      // be pressed, which can catch a connection attempt mid-flight
-      // (e.g. "connecting") and never show whether it went on to succeed
-      // or fail a few seconds later, since nothing else writes a line.
-      if (previous !== null && previous.linkState !== status.linkState) {
-        await this.appendWolDebugLog(status, 'link-state-change');
-      }
-    } catch {
-      this.wolDebugStatus = null;
-    }
-    this.publishAudioDiagnosticsSnapshot();
-  }
-
-  // Drains the board-level WOL/connection trace ring buffer (bt.cpp
-  // wol_trace_ring) into the same always-on WOL debug log file. Unlike
-  // readWolDebugStatus() above -- which only sees a live snapshot at the
-  // moment it happens to poll -- this ring buffer survives on the board
-  // across the gap between an event happening and the companion app next
-  // connecting, so a WOL attempt that occurred while the target PC (and
-  // this app) was off is still recoverable once the PC/app comes back. See
-  // decisions.md: added after neither the WOL debug log nor the firmware
-  // UART log could show what happened during an actual PC-off attempt,
-  // since both require a live companion connection at the moment the event
-  // happens, which by definition isn't available in that scenario.
-  private async readWolTraceThrottled(force = false): Promise<void> {
-    if (!this.device) {
-      return;
-    }
-    if (this.wolTraceSupported === false) {
-      return;
-    }
-    const now = Date.now();
-    if (!force && now - this.lastWolTraceReadAt < WOL_TRACE_READ_INTERVAL_MS) {
-      return;
-    }
-    this.lastWolTraceReadAt = now;
-
-    try {
-      const events: WolTraceEventPayload[] = [];
-      let droppedCount = 0;
-      for (let readIndex = 0; readIndex < WOL_TRACE_MAX_READS_PER_POLL; readIndex += 1) {
-        const trace = parseWolTraceReport(await this.device.getFeatureReport(REPORT_ID.WOL_TRACE, REPORT_LENGTH));
-        this.wolTraceSupported = true;
-        droppedCount = trace.droppedCount;
-        if (trace.events.length === 0) {
-          break;
-        }
-        events.push(...trace.events);
-      }
-      if (events.length > 0 || droppedCount !== this.lastWolTraceDroppedCount) {
-        await this.appendWolTraceLog(events, droppedCount);
-        this.lastWolTraceDroppedCount = droppedCount;
-      }
-    } catch {
-      this.wolTraceSupported = false;
-    }
-  }
-
-  private async appendWolTraceLog(events: WolTraceEventPayload[], droppedCount: number): Promise<void> {
-    if (!this.wolDebugLogDirectory) {
-      return;
-    }
-    try {
-      const logPath = path.join(this.wolDebugLogDirectory, 'ds5bridge-wol-debug.log');
-      let lines = events.map((event) => (
-        `${new Date().toISOString()} event=board-trace seq=${event.sequence} `
-        + `board_time_ms=${event.timeMs} stage=${wolTraceStageLabel(event.stage)} detail=${event.detail}\n`
-      )).join('');
-      // The ring buffer is fixed-size (48 records) -- if events happened
-      // faster than this app could poll and drain them, the oldest ones are
-      // overwritten before being read, and droppedCount tracks how many.
-      // Surfaced explicitly (rather than just silently missing from the
-      // log) so a gap in the trace is distinguishable from "nothing
-      // happened" -- see AGENTS.md's equivalent note for the firmware UART
-      // log's SRAM overwrite loss.
-      if (droppedCount > 0) {
-        lines += `${new Date().toISOString()} event=board-trace-dropped dropped_count=${droppedCount}\n`;
-      }
-      await fsPromises.appendFile(logPath, lines);
-      this.wolDebugLogPath = logPath;
-      this.wolDebugLogLastError = null;
-    } catch (error) {
-      this.wolDebugLogLastError = error instanceof Error ? error.message : String(error);
-    }
-  }
-
-  private async appendWolDebugLog(
-    status: WolDebugStatusPayload,
-    event: 'debug-action' | 'link-state-change'
-  ): Promise<void> {
-    if (!this.wolDebugLogDirectory) {
-      return;
-    }
-    try {
-      const logPath = path.join(this.wolDebugLogDirectory, 'ds5bridge-wol-debug.log');
-      const actionName = status.lastAction === WOL_DEBUG_ACTION.NONE
-        ? 'none'
-        : status.lastAction === WOL_DEBUG_ACTION.PING ? 'ping' : 'send-wol';
-      const resultName = Object.entries(WOL_DEBUG_RESULT).find(
-        ([, value]) => value === status.lastResult
-      )?.[0] ?? String(status.lastResult);
-      const linkStateNames = ['unconfigured', 'idle', 'connecting', 'waiting-for-ip', 'connected', 'failed'];
-      const linkStateName = linkStateNames[status.linkState] ?? String(status.linkState);
-      const ip = status.ipAddress ?? 'none';
-      const linkStateAgeMs = status.nowMs - status.linkStateEnteredMs;
-      const rawLinkStatusNames: Record<number, string> = {
-        [-3]: 'badauth', [-2]: 'nonet', [-1]: 'fail', 0: 'down', 1: 'join', 2: 'noip', 3: 'up'
-      };
-      const rawLinkStatusName = rawLinkStatusNames[status.rawLinkStatus] ?? String(status.rawLinkStatus);
-      // See lwip/prot/dhcp.h DHCP_STATE_*: 0=off, 1=requesting, 2=init,
-      // 3=rebooting, 4=rebinding, 5=renewing, 6=selecting, 7=informing,
-      // 8=checking, 10=bound, 12=backing-off.
-      const dhcpStateNames: Record<number, string> = {
-        0: 'off', 1: 'requesting', 2: 'init', 3: 'rebooting', 4: 'rebinding',
-        5: 'renewing', 6: 'selecting', 7: 'informing', 8: 'checking', 10: 'bound', 12: 'backing-off'
-      };
-      const dhcpStateName = dhcpStateNames[status.dhcpState] ?? String(status.dhcpState);
-      // wifi_join_state bit meanings, see WIFI_JOIN_STATE_* in cyw43-driver's
-      // cyw43_ctrl.c: 0x0002=active, 0x0200=auth, 0x0400=link, 0x0800=keyed,
-      // (0x0002|0x0004)=fail, (0x0002|0x0008)=nonet, distinct badauth value.
-      // Shown as a raw hex bitmask here rather than decoded -- decoding
-      // needs the exact bit layout from that file, which isn't part of the
-      // public cyw43.h API and could change between driver versions.
-      const joinStateHex = `0x${status.wifiJoinState.toString(16).padStart(4, '0')}`;
-      const line = `${new Date().toISOString()} event=${event} action=${actionName} result=${resultName.toLowerCase()} `
-        + `link=${linkStateName} link_age_ms=${linkStateAgeMs} raw_link_status=${rawLinkStatusName} `
-        + `join_state=${joinStateHex} ip=${ip} `
-        + `dhcp_state=${dhcpStateName} dhcp_tries=${status.dhcpTries} `
-        + `wol_enabled=${status.wolEnabled} have_ssid=${status.haveSsid} have_target_mac=${status.haveTargetMac} `
-        + `connect_attempts=${status.connectAttemptCount} connect_timeouts=${status.wifiConnectTimeoutCount} `
-        + `dhcp_timeouts=${status.dhcpTimeoutCount} link_lost_count=${status.linkLostCount}\n`;
-      await fsPromises.appendFile(logPath, line);
-      this.wolDebugLogPath = logPath;
-      this.wolDebugLogLastError = null;
-    } catch (error) {
-      this.wolDebugLogLastError = error instanceof Error ? error.message : String(error);
-    }
-  }
-
-  async triggerWolDebugPing(): Promise<BridgeSnapshot> {
-    await this.sendCommand(COMMAND_ID.TRIGGER_WOL_DEBUG_PING, 0);
-    await this.readWolDebugStatus();
-    return this.getSnapshot();
-  }
-
-  async triggerWolDebugSend(): Promise<BridgeSnapshot> {
-    await this.sendCommand(COMMAND_ID.TRIGGER_WOL_DEBUG_SEND, 0);
-    await this.readWolDebugStatus();
-    return this.getSnapshot();
   }
 
   private async readAudioStatusThrottled(force = false, intervalMs = AUDIO_STATUS_READ_INTERVAL_MS): Promise<void> {
@@ -3829,8 +3627,6 @@ export class BridgeService extends EventEmitter {
     await this.readFirmwareLog();
     await this.readAudioDebugThrottled(true);
     await this.readAudioStatus();
-    await this.readWolDebugStatus();
-    await this.readWolTraceThrottled();
     const deviceIdentity = await this.readDeviceIdentity();
     this.updateConnectedDeviceIdentity(deviceIdentity, status.controllerConnected);
     this.maybeEmitStatusToasts(status);
@@ -4607,9 +4403,7 @@ export class BridgeService extends EventEmitter {
         feedbackTraceLineCount: this.snapshot.diagnostics.feedbackTraceLines.length,
         feedbackTraceTail: this.snapshot.diagnostics.feedbackTraceLines.at(-1) ?? null,
         feedbackTraceDroppedCount: this.snapshot.diagnostics.feedbackTraceDroppedCount,
-        audioStatus: this.snapshot.diagnostics.audioStatus,
-        wolDebugStatus: this.snapshot.diagnostics.wolDebugStatus,
-        wolDebugLogPath: this.snapshot.diagnostics.wolDebugLogPath
+        audioStatus: this.snapshot.diagnostics.audioStatus
       }
     });
     if (signature === this.lastEmittedSnapshotSignature) {

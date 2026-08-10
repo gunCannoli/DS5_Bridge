@@ -9,7 +9,6 @@ import type {
   ControllerProfile,
   CompanionDeviceIdentityPayload,
   AudioStatusPayload,
-  WolDebugStatusPayload,
   BridgePresetId,
   HostPersonaMode,
   AudioReactiveHapticsSource,
@@ -160,8 +159,6 @@ export interface BridgeDiagnostics {
   feedbackTraceLines: string[];
   feedbackTraceDroppedCount: number;
   audioStatus: AudioStatusPayload | null;
-  wolDebugStatus: WolDebugStatusPayload | null;
-  wolDebugLogPath: string | null;
 }
 
 export interface BridgeSnapshot {

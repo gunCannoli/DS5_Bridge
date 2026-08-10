@@ -9,11 +9,6 @@
 // Bluetooth are never affected (see decisions.md: this module owns Wi-Fi,
 // bt.cpp only fires the trigger).
 //
-// Debug ping/send (wolwifi_debug_*) let the companion app exercise this
-// path on demand while the target PC is on, since that PC and the one the
-// board's USB hub is plugged into can be the same machine -- once WOL
-// actually needs to fire (PC off), there is no PC left to run the
-// companion app and read logs from. See decisions.md.
 #include "wolwifi.h"
 
 #ifdef ENABLE_WOLWIFI
@@ -51,7 +46,6 @@ constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;
 // below picks it back up.
 constexpr uint32_t DHCP_WAIT_TIMEOUT_MS = 3000;
 constexpr uint32_t WIFI_RETRY_BACKOFF_MS = 10000;
-constexpr uint32_t DEBUG_PING_TIMEOUT_MS = 4000;
 // CYW43439 is a combo Wi-Fi/Bluetooth chip that time-shares one radio, so
 // a Wi-Fi STA association + DHCP handshake right at controller-connect
 // does contend with the still-fresh BT session. An earlier fix delayed
@@ -66,10 +60,9 @@ constexpr uint32_t DEBUG_PING_TIMEOUT_MS = 4000;
 // avoiding the contention window in the first place.
 // A single UDP magic packet has no delivery guarantee, and the first send
 // can land during the brief post-connect reconnect flap seen in testing
-// (see decisions.md, first successful WOL Test) and simply be lost.
-// Resend periodically until the target confirms it's awake (via the same
-// ARP-snoop liveness check the debug Ping button uses) or this budget runs
-// out, rather than firing once and hoping.
+// (see decisions.md) and simply be lost. Resend periodically until the
+// target confirms it's awake (via an ARP-snoop liveness check) or this
+// budget runs out, rather than firing once and hoping.
 constexpr uint32_t WOL_RESEND_INTERVAL_MS = 3000;
 constexpr uint32_t WOL_RESEND_TOTAL_BUDGET_MS = 15000;
 // Real board-trace data (see decisions.md, "Thirteenth bug diagnosed")
@@ -209,9 +202,7 @@ bool g_wifi_retries_exhausted = false;
 
 // See WOL_OBSERVE_HOST_WINDOW_MS/WOL_OBSERVE_HOST_SUSTAIN_MS. Armed by
 // wolwifi_on_controller_connect() instead of proceeding immediately;
-// driven every wolwifi_task() tick by drive_observe_host(). Not used by
-// the debug WOL Test button (unconditional, on-demand, same as every
-// other WOL guard added this session).
+// driven every wolwifi_task() tick by drive_observe_host().
 bool g_observe_host_active = false;
 uint32_t g_observe_host_started_ms = 0;
 // 0 = not currently seeing an active-host sample; otherwise the ms
@@ -219,24 +210,13 @@ uint32_t g_observe_host_started_ms = 0;
 // Cleared (reset to 0) on any tick that samples inactive, so a genuinely
 // sustained run is required, not just a cumulative total.
 uint32_t g_observe_host_active_since_ms = 0;
-// Last usb_host_active() sample seen during the current window, used only
-// to detect edges for WolTraceStage::ObserveHostSampleEdge (avoids
-// tracing every tick, which would flood the ring buffer over a 2s
-// window). Reset whenever a window (re)starts so the first sample of a
-// new window is always traced as an edge.
-bool g_observe_host_last_sample = false;
 
-WolDebugAction g_debug_action = WolDebugAction::None;
-WolDebugResult g_debug_result = WolDebugResult::Pending;
-uint32_t g_debug_started_ms = 0;
 bool g_arp_snoop_installed = false;
 netif_input_fn g_original_netif_input = nullptr;
 
 // Automatic-trigger resend tracking (see WOL_RESEND_INTERVAL_MS above).
-// Not used by the debug WOL Test button, which is a single fire-and-forget
-// send. g_resend_active also gates the liveness ARP watch in
-// arp_snoop_input() below -- separate from the debug Ping's own watch, so
-// the two can't clobber each other's result if run back to back.
+// g_resend_active also gates the liveness ARP watch in arp_snoop_input()
+// below.
 bool g_resend_active = false;
 uint32_t g_resend_started_ms = 0;
 uint32_t g_resend_last_sent_ms = 0;
@@ -263,33 +243,6 @@ void enter_state(WifiState s) {
     g_state_entered_ms = now_ms();
 }
 
-WolWifiLinkState public_link_state() {
-    switch (g_wifi_state) {
-        case WifiState::Unconfigured: return WolWifiLinkState::Unconfigured;
-        case WifiState::Idle: return WolWifiLinkState::Idle;
-        case WifiState::Connecting: return WolWifiLinkState::Connecting;
-        case WifiState::WaitingForIp: return WolWifiLinkState::WaitingForIp;
-        case WifiState::Connected: return WolWifiLinkState::Connected;
-        case WifiState::Failed: return WolWifiLinkState::Failed;
-    }
-    return WolWifiLinkState::Unconfigured;
-}
-
-void start_debug_action(WolDebugAction action) {
-    g_debug_action = action;
-    g_debug_result = WolDebugResult::Pending;
-    g_debug_started_ms = now_ms();
-}
-
-void finish_debug_action(WolDebugResult result) {
-    g_debug_result = result;
-    DS5_LOG(
-        "[WOL] Debug action %s finished: result=%u\n",
-        g_debug_action == WolDebugAction::Ping ? "ping" : "send-wol",
-        static_cast<unsigned>(result)
-    );
-}
-
 bool build_magic_packet(uint8_t out[102], const uint8_t mac[6]) {
     std::memset(out, 0xFF, 6);
     for (int i = 0; i < 16; ++i) {
@@ -298,14 +251,8 @@ bool build_magic_packet(uint8_t out[102], const uint8_t mac[6]) {
     return true;
 }
 
-// Returns true (and reports the debug result) on failure, so callers can
-// early-return; only the "actually sent" DS5_LOG path is shared with the
-// non-debug trigger.
-bool send_magic_packet_now(bool is_debug_action) {
+bool send_magic_packet_now() {
     if (g_udp_pcb == nullptr || !g_have_target_mac) {
-        if (is_debug_action) {
-            finish_debug_action(WolDebugResult::NotConfigured);
-        }
         return false;
     }
     uint8_t payload[102];
@@ -314,9 +261,6 @@ bool send_magic_packet_now(bool is_debug_action) {
     pbuf *p = pbuf_alloc(PBUF_TRANSPORT, sizeof(payload), PBUF_RAM);
     if (p == nullptr) {
         DS5_LOG("[WOL] Magic packet alloc failed\n");
-        if (is_debug_action) {
-            finish_debug_action(WolDebugResult::SendFailed);
-        }
         return false;
     }
     std::memcpy(p->payload, payload, sizeof(payload));
@@ -336,24 +280,12 @@ bool send_magic_packet_now(bool is_debug_action) {
         );
         // Arms WOL_TRIGGER_DEBOUNCE_MS from the moment a packet actually
         // went out -- not from when the trigger fired -- so a failed/
-        // aborted attempt doesn't consume the debounce window. Only the
-        // automatic trigger's sends should debounce future automatic
-        // triggers; the debug WOL Test button is on-demand tooling and
-        // must keep working every time it's pressed regardless of the
-        // automatic path's timing.
-        if (!is_debug_action) {
-            g_last_wol_sent_ms = now_ms();
-        }
-        if (is_debug_action) {
-            finish_debug_action(WolDebugResult::Success);
-        }
+        // aborted attempt doesn't consume the debounce window.
+        g_last_wol_sent_ms = now_ms();
         return true;
     }
 
     DS5_LOG("[WOL] Magic packet send failed (err=%d)\n", static_cast<int>(err));
-    if (is_debug_action) {
-        finish_debug_action(WolDebugResult::SendFailed);
-    }
     return false;
 }
 
@@ -382,10 +314,8 @@ bool have_ip_lease() {
 // confirmation, before the target's NIC had actually had a chance to
 // wake the machine and come back on the network for real.
 err_t arp_snoop_input(pbuf *p, netif *inp) {
-    const bool debug_ping_watching =
-        g_debug_action == WolDebugAction::Ping && g_debug_result == WolDebugResult::Pending;
     if (
-        (debug_ping_watching || g_resend_active)
+        g_resend_active
         && g_have_target_mac
         && p->len >= ETH_HEADER_LEN
     ) {
@@ -397,12 +327,7 @@ err_t arp_snoop_input(pbuf *p, netif *inp) {
             uint8_t src_mac[6];
             if (pbuf_copy_partial(p, src_mac, sizeof(src_mac), ETH_SRC_MAC_OFFSET) == sizeof(src_mac)) {
                 if (std::memcmp(src_mac, g_target_mac, sizeof(src_mac)) == 0) {
-                    if (debug_ping_watching) {
-                        finish_debug_action(WolDebugResult::Success);
-                    }
-                    if (g_resend_active) {
-                        g_target_confirmed_awake = true;
-                    }
+                    g_target_confirmed_awake = true;
                 }
             }
         }
@@ -445,10 +370,6 @@ void start_wifi_connect() {
     DS5_LOG(
         "[WOL] Wi-Fi connecting to \"%s\" (attempt #%u)\n",
         g_ssid, g_connect_attempt_count
-    );
-    bt_append_wol_trace_event(
-        WolTraceStage::WolConnectStarted,
-        static_cast<uint8_t>(std::min<uint32_t>(g_connect_attempt_count, 255))
     );
     cyw43_arch_enable_sta_mode();
     const int err = cyw43_arch_wifi_connect_async(
@@ -699,10 +620,9 @@ void begin_resend_cycle() {
     g_target_confirmed_awake = false;
     g_resend_started_ms = now_ms();
     g_resend_last_sent_ms = g_resend_started_ms;
-    bt_append_wol_trace_event(WolTraceStage::WolResendBegin);
     ensure_arp_snoop_installed();
     bt_wol_indicator_begin();
-    send_magic_packet_now(false);
+    send_magic_packet_now();
 }
 
 // Drives the resend-until-confirmed cycle; called every wolwifi_task() tick.
@@ -717,10 +637,6 @@ void drive_resend_cycle() {
             "[WOL] Target confirmed awake via ARP after %lu ms; stopping resend\n",
             static_cast<unsigned long>(took_ms)
         );
-        bt_append_wol_trace_event(
-            WolTraceStage::WolResendConfirmed,
-            static_cast<uint8_t>(std::min<uint32_t>(took_ms / 1000, 255))
-        );
         g_resend_active = false;
         bt_wol_indicator_confirm();
         arm_deferred_wifi_leave();
@@ -732,7 +648,6 @@ void drive_resend_cycle() {
             "[WOL] Resend budget (%lu ms) exhausted without ARP confirmation; giving up\n",
             static_cast<unsigned long>(WOL_RESEND_TOTAL_BUDGET_MS)
         );
-        bt_append_wol_trace_event(WolTraceStage::WolResendGaveUp);
         g_resend_active = false;
         bt_wol_indicator_cancel();
         arm_deferred_wifi_leave();
@@ -740,13 +655,13 @@ void drive_resend_cycle() {
     }
     if (now_ms() - g_resend_last_sent_ms >= WOL_RESEND_INTERVAL_MS) {
         g_resend_last_sent_ms = now_ms();
-        // Broadcast an ARP request too, same as the debug Ping, to prompt a
-        // reply from an already-awake target sooner rather than waiting
-        // only on ambient ARP chatter.
+        // Broadcast an ARP request too, to prompt a reply from an
+        // already-awake target sooner rather than waiting only on ambient
+        // ARP chatter.
         if (netif_default != nullptr) {
             etharp_request(netif_default, netif_ip4_addr(netif_default));
         }
-        send_magic_packet_now(false);
+        send_magic_packet_now();
     }
 }
 
@@ -769,10 +684,6 @@ void proceed_with_wol_trigger() {
             static_cast<unsigned long>(since_last_ms),
             static_cast<unsigned long>(WOL_TRIGGER_DEBOUNCE_MS)
         );
-        bt_append_wol_trace_event(
-            WolTraceStage::WolTriggerDebounced,
-            static_cast<uint8_t>(std::min<uint32_t>(since_last_ms / 1000, 255))
-        );
         return;
     }
     DS5_LOG("[WOL] Controller connected\n");
@@ -793,7 +704,6 @@ void proceed_with_wol_trigger() {
     if (g_wifi_state == WifiState::Connected && have_ip_lease()) {
         // Wi-Fi is already up from a prior session -- no new radio activity
         // about to start, so no reason to delay; begin resending right away.
-        bt_append_wol_trace_event(WolTraceStage::WolTriggerFired, 0);
         begin_resend_cycle();
     } else {
         // Not connected yet: queue the send for once wolwifi_task() gets us
@@ -803,7 +713,6 @@ void proceed_with_wol_trigger() {
         // (matching awalol/DS5Dongle#207's behavior), not some seconds
         // later.
         g_send_pending = true;
-        bt_append_wol_trace_event(WolTraceStage::WolTriggerFired, 1);
         DS5_LOG("[WOL] Wi-Fi not ready; queuing magic packet, starting connect now\n");
     }
 }
@@ -815,8 +724,6 @@ void begin_observe_host() {
     g_observe_host_active = true;
     g_observe_host_started_ms = now_ms();
     g_observe_host_active_since_ms = 0;
-    g_observe_host_last_sample = false;
-    bt_append_wol_trace_event(WolTraceStage::ObserveHostBegin, usb_host_active_debug_bits());
 }
 
 // Drives the host-observation window; called every wolwifi_task() tick.
@@ -826,17 +733,12 @@ void drive_observe_host() {
         return;
     }
     const bool active_now = usb_host_active();
-    if (active_now != g_observe_host_last_sample) {
-        g_observe_host_last_sample = active_now;
-        bt_append_wol_trace_event(WolTraceStage::ObserveHostSampleEdge, usb_host_active_debug_bits());
-    }
     if (!active_now) {
         g_observe_host_active_since_ms = 0;
     } else if (g_observe_host_active_since_ms == 0) {
         g_observe_host_active_since_ms = now_ms();
     } else if (now_ms() - g_observe_host_active_since_ms >= WOL_OBSERVE_HOST_SUSTAIN_MS) {
         DS5_LOG("[WOL] Host observed active (sustained); WOL not needed\n");
-        bt_append_wol_trace_event(WolTraceStage::WolTriggerSkippedHostActive);
         g_observe_host_active = false;
         return;
     }
@@ -844,7 +746,6 @@ void drive_observe_host() {
         // Window elapsed with no sustained-active read -- default to firing
         // WOL, per the corrected design: skip only on a positive
         // observation, never require proving the host is off first.
-        bt_append_wol_trace_event(WolTraceStage::ObserveHostWindowElapsed, usb_host_active_debug_bits());
         g_observe_host_active = false;
         proceed_with_wol_trigger();
     }
@@ -852,13 +753,6 @@ void drive_observe_host() {
 
 void wolwifi_on_controller_connect(void) {
     if (!g_enabled || !g_have_ssid || !g_have_target_mac) {
-        // detail bitmask: bit0=enabled, bit1=have_ssid, bit2=have_target_mac
-        // -- lets the trace show *why* a connect-trigger edge did nothing,
-        // distinguishing "WOL genuinely off/unconfigured" from "trigger
-        // never fired at all" (the latter wouldn't appear in the trace at
-        // all, which is itself diagnostic).
-        const uint8_t detail = (g_enabled ? 1 : 0) | (g_have_ssid ? 2 : 0) | (g_have_target_mac ? 4 : 0);
-        bt_append_wol_trace_event(WolTraceStage::WolTriggerSkipped, detail);
         return;
     }
 #ifdef WOL_ALWAYS
@@ -873,77 +767,6 @@ void wolwifi_on_controller_connect(void) {
     // "on" (USB stays active in S5, or Modern Standby).
     begin_observe_host();
 #endif
-}
-
-void wolwifi_debug_ping(void) {
-    DS5_LOG("[WOL] Debug ping requested\n");
-    start_debug_action(WolDebugAction::Ping);
-    if (!g_have_target_mac) {
-        finish_debug_action(WolDebugResult::NotConfigured);
-        return;
-    }
-    if (g_wifi_state != WifiState::Connected || !have_ip_lease()) {
-        finish_debug_action(WolDebugResult::NoWifi);
-        return;
-    }
-    ensure_arp_snoop_installed();
-    // Broadcast an ARP request for our own address (gratuitous-style) to
-    // prompt any listening host to update its ARP cache and, incidentally,
-    // generate ARP chatter on the segment; the snoop above is what actually
-    // detects the target -- this isn't targeted at the target IP since we
-    // may not know it, only its MAC.
-    etharp_request(netif_default, netif_ip4_addr(netif_default));
-}
-
-void wolwifi_debug_send_wol(void) {
-    DS5_LOG("[WOL] Debug send requested\n");
-    start_debug_action(WolDebugAction::SendWol);
-    if (!g_have_target_mac) {
-        finish_debug_action(WolDebugResult::NotConfigured);
-        return;
-    }
-    if (g_wifi_state != WifiState::Connected || !have_ip_lease()) {
-        finish_debug_action(WolDebugResult::NoWifi);
-        return;
-    }
-    send_magic_packet_now(true);
-}
-
-WolDebugStatus wolwifi_debug_status(void) {
-    WolDebugStatus status{};
-    status.link_state = public_link_state();
-    status.last_action = g_debug_action;
-    status.last_result = g_debug_result;
-    status.last_action_started_ms = g_debug_started_ms;
-    if (have_ip_lease()) {
-        const ip4_addr_t *addr = netif_ip4_addr(netif_default);
-        status.ip_octets[0] = ip4_addr1(addr);
-        status.ip_octets[1] = ip4_addr2(addr);
-        status.ip_octets[2] = ip4_addr3(addr);
-        status.ip_octets[3] = ip4_addr4(addr);
-    } else {
-        status.ip_octets[0] = status.ip_octets[1] = status.ip_octets[2] = status.ip_octets[3] = 0;
-    }
-    status.wol_enabled = g_enabled;
-    status.have_ssid = g_have_ssid;
-    status.have_target_mac = g_have_target_mac;
-    status.now_ms = now_ms();
-    status.link_state_entered_ms = g_state_entered_ms;
-    status.raw_link_status = static_cast<int8_t>(cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA));
-    if (netif_default != nullptr) {
-        const struct dhcp *dhcp = netif_dhcp_data(netif_default);
-        status.dhcp_state = dhcp != nullptr ? dhcp->state : 0;
-        status.dhcp_tries = dhcp != nullptr ? dhcp->tries : 0;
-    } else {
-        status.dhcp_state = 0;
-        status.dhcp_tries = 0;
-    }
-    status.wifi_join_state = cyw43_state.wifi_join_state;
-    status.connect_attempt_count = g_connect_attempt_count;
-    status.wifi_connect_timeout_count = g_wifi_connect_timeout_count;
-    status.dhcp_timeout_count = g_dhcp_timeout_count;
-    status.link_lost_count = g_link_lost_count;
-    return status;
 }
 
 bool wolwifi_wake_in_progress(void) {
@@ -962,14 +785,6 @@ bool wolwifi_wake_in_progress(void) {
 }
 
 void wolwifi_task(void) {
-    if (
-        g_debug_action == WolDebugAction::Ping
-        && g_debug_result == WolDebugResult::Pending
-        && now_ms() - g_debug_started_ms > DEBUG_PING_TIMEOUT_MS
-    ) {
-        finish_debug_action(WolDebugResult::Timeout);
-    }
-
     // Rate-limited: logs only on the edge into/out of the blocked state,
     // not every poll tick, to avoid flooding the log while WOL is
     // intentionally off/unconfigured.
@@ -1042,7 +857,7 @@ void wolwifi_task(void) {
             // the terminal ones) -- CYW43_LINK_JOIN/NOIP/UP/FAIL/NONET/
             // BADAUTH are all distinct and a flapping link (associate,
             // get an IP, drop) looks identical to "still connecting" from
-            // our WolWifiLinkState alone without this.
+            // our WifiState alone without this.
             static int last_logged_status = -100; // sentinel outside CYW43_LINK_* range
             if (status != last_logged_status) {
                 DS5_LOG("[WOL] Wi-Fi link status: %d\n", status);
@@ -1064,7 +879,6 @@ void wolwifi_task(void) {
                     enter_state(WifiState::Failed);
                 } else {
                     DS5_LOG("[WOL] Wi-Fi BADAUTH again; wrong credentials, giving up\n");
-                    bt_append_wol_trace_event(WolTraceStage::WolConnectRetriesExhausted, status & 0xFF);
                     g_wifi_retries_exhausted = true;
                     enter_state(WifiState::Failed);
                 }
@@ -1078,17 +892,12 @@ void wolwifi_task(void) {
                     static_cast<unsigned long>(elapsed_ms),
                     static_cast<unsigned long>(g_wifi_connect_timeout_count)
                 );
-                bt_append_wol_trace_event(
-                    WolTraceStage::WolWifiAssocTimeout,
-                    static_cast<uint8_t>(std::min<uint32_t>(elapsed_ms / 1000, 255))
-                );
                 g_connect_retry_count++;
                 if (g_connect_retry_count > MAX_WIFI_CONNECT_RETRIES) {
                     DS5_LOG(
                         "[WOL] Wi-Fi connect retries exhausted (%u > max %u); giving up until next trigger\n",
                         g_connect_retry_count, MAX_WIFI_CONNECT_RETRIES
                     );
-                    bt_append_wol_trace_event(WolTraceStage::WolConnectRetriesExhausted, g_connect_retry_count);
                     g_wifi_retries_exhausted = true;
                 }
                 enter_state(WifiState::Failed);
@@ -1102,10 +911,6 @@ void wolwifi_task(void) {
                 DS5_LOG(
                     "[WOL] Wi-Fi connected: %s (attempt #%lu)\n",
                     ip4addr_ntoa(addr), static_cast<unsigned long>(g_connect_attempt_count)
-                );
-                bt_append_wol_trace_event(
-                    WolTraceStage::WolWifiConnected,
-                    g_send_pending ? 1 : 0
                 );
                 enter_state(WifiState::Connected);
                 ensure_arp_snoop_installed();
@@ -1123,10 +928,6 @@ void wolwifi_task(void) {
                     dhcp != nullptr ? dhcp->state : 0, dhcp != nullptr ? dhcp->tries : 0,
                     cyw43_state.wifi_join_state, static_cast<unsigned long>(g_dhcp_timeout_count)
                 );
-                bt_append_wol_trace_event(
-                    WolTraceStage::WolDhcpWaitTimeout,
-                    static_cast<uint8_t>(std::min<uint32_t>(elapsed_ms / 1000, 255))
-                );
                 // A stalled DHCP exchange counts against the same connect
                 // retry budget as an association failure (both are "this
                 // attempt cycle isn't working") -- see MAX_WIFI_CONNECT_RETRIES.
@@ -1137,7 +938,6 @@ void wolwifi_task(void) {
                         "giving up until next trigger\n",
                         g_connect_retry_count, MAX_WIFI_CONNECT_RETRIES
                     );
-                    bt_append_wol_trace_event(WolTraceStage::WolConnectRetriesExhausted, g_connect_retry_count);
                     g_wifi_retries_exhausted = true;
                 }
                 enter_state(WifiState::Failed);
@@ -1156,10 +956,6 @@ void wolwifi_task(void) {
                     static_cast<unsigned long>(now_ms() - g_state_entered_ms),
                     static_cast<unsigned long>(g_link_lost_count)
                 );
-                bt_append_wol_trace_event(
-                    WolTraceStage::WolWifiLinkLostAfterConnect,
-                    static_cast<uint8_t>(std::min<uint32_t>(g_link_lost_count, 255))
-                );
                 enter_state(WifiState::Failed);
             }
             return;
@@ -1167,7 +963,6 @@ void wolwifi_task(void) {
 
         case WifiState::Failed:
             if (now_ms() - g_state_entered_ms > WIFI_RETRY_BACKOFF_MS) {
-                bt_append_wol_trace_event(WolTraceStage::WolWifiBackoffElapsed);
                 enter_state(WifiState::Idle);
             }
             return;

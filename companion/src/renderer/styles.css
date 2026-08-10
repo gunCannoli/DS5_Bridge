@@ -2137,24 +2137,6 @@ button {
   line-height: 1.16;
 }
 
-/* Debug Target is label-left/buttons-right like a normal settings row --
-   detailed status (link state, raw cyw43 status, IP, etc.) intentionally
-   doesn't live here; it goes to the debug log file and (eventually) the
-   Diagnostics tab's WOL trace, keeping this settings row a plain action
-   row instead of a variable-height status readout. */
-.wol-debug-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.wol-debug-actions .secondary-action {
-  min-height: 26px;
-  padding: 0 10px;
-  font-size: 11px;
-  white-space: nowrap;
-}
-
 .settings-menu-controls {
   flex: 0 0 auto;
   display: grid;
