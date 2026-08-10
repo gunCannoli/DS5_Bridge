@@ -5,6 +5,70 @@ Each entry: decision, rationale, alternatives considered, date.
 
 ---
 
+## 2026-08-10 — Eleventh bug: false-positive ARP liveness confirmation cutting resends short
+
+**Context:** the `BoardWatchdogReboot` trace stage (previous entry) was
+retested and never fired -- cleanly ruling out a silent watchdog reboot as
+the explanation for the earlier trace anomaly. At this point the
+investigation's framing needed correcting: the user clarified that
+**WOL sending itself had never been broken** -- it reliably woke the PC
+before this session's changes. The actual sequence was: WOL + the
+lightbar both worked, but the controller was disconnecting mid-boot (bugs
+4 and 8's radio-contention issues); bug 9's `disconnect_wifi_after_wol()`
+fixed that disconnect, but its side effect (tearing down Wi-Fi as soon as
+a resend cycle reports "confirmed") interacting with a *separate*,
+previously-latent bug produced a new symptom: WOL appearing to only take
+effect very late in the boot, well after when a working send should have
+landed.
+
+**Root cause, found by re-reading the trace with the corrected framing:**
+`wol-resend-confirmed` was consistently firing 1-3 seconds after
+`wol-resend-begin` on every cycle across multiple real-boot tests -- far
+too fast for an actual cold-booting PC to answer ARP. `arp_snoop_input()`
+(shared by the resend cycle's liveness watch and the debug Ping button)
+matched the configured target MAC against the **source address of any
+inbound Ethernet frame** -- `ETHTYPE_ARP` (0x0806) was defined as a named
+constant right next to the matching logic but never actually checked
+against the frame's EtherType field. Any non-ARP broadcast/multicast
+traffic that happened to carry the target's MAC as source (AP/switch-level
+relaying or proxy behavior being the most likely source on a typical home
+network) would satisfy the match.
+
+This false positive, once introduced, chained directly into the two most
+recent fixes: a false "confirmed" stops the resend cycle (bug 5's design)
+and immediately tears down Wi-Fi (bug 9's `disconnect_wifi_after_wol()`)
+-- both correct behavior *given* a real confirmation, but devastating
+given a false one, since it cuts the real 15-second resend window down to
+essentially one send before giving up, well before the target's NIC could
+plausibly have finished actually waking the machine. The PC's eventual
+real wake (sometimes observed later, sometimes requiring a manual power
+press in earlier tests before this specific bug was isolated) was either
+a genuine but under-resent WOL attempt getting lucky, or unrelated manual
+intervention -- not evidence the automatic path was working end-to-end.
+
+**Fix:** check the Ethernet frame's EtherType field (bytes 12-13) equals
+`ETHTYPE_ARP` before comparing the source MAC in `arp_snoop_input()`. One
+fix covers both call sites (resend-cycle liveness watch, debug Ping),
+since they share the same snoop function.
+
+**Process note:** this bug was found only after the user corrected a
+misread on my part -- I had initially reasoned my way toward the ARP
+false-positive theory independently, but was simultaneously carrying an
+incorrect premise (that WOL sending itself might be broken) that shaped
+how I was interpreting the trace. The user's direct clarification
+("wol was working fine... what changed was we were trying to keep the
+controller awake... we fix the disconnect issue but introduced the wol
+delay") was what correctly re-scoped the investigation to "a new
+regression on top of previously-working WOL," which is what made the
+1-3-second-confirm timing actually register as anomalous rather than just
+another data point.
+
+**Status:** implemented and committed, debug firmware rebuilt at
+`build/waveshare/ds5-bridge.uf2`. Not yet verified against a real PC-off
+test with this fix in place.
+
+---
+
 ## 2026-08-10 — Watchdog-reboot visibility: closing the last blind spot in the trace
 
 **Context:** retesting the tenth-bug (DHCP timeout) fix produced the same
