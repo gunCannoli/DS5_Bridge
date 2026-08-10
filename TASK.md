@@ -6,38 +6,31 @@ knowledge and known issues belong in `DECISIONS.md`, not here.
 
 ## Current task
 
-Fifteenth bug just fixed (not yet verified): the fourteenth bug's new trace
-instrumentation showed a ~27s gap between `wol-trigger-fired` and the first
-`wol-connect-started` on a fresh boot with persisted config — root cause
-found (`wolwifi_init()` left the connect state machine stuck in
-`Unconfigured` even after loading a valid SSID from flash; only the
-SSID/password setters ever call `enter_state(Idle)`, so the state machine
-only escaped once the companion app's slow settings-reapply happened to
-re-send the SSID). See `DECISIONS.md`'s flash-persistence entry for the
-full writeup. Fixed: `wolwifi_init()` now enters `Idle` directly when a
-valid SSID was loaded. Debug firmware and companion app (`win-unpacked`)
-both rebuilt.
+**Core WOL feature confirmed working end-to-end on real hardware**
+(2026-08-10): controller connects while the target PC is off, WOL fires and
+gets ARP-confirmed within ~10s, the PC wakes automatically, and the
+controller stays connected through the whole boot with no disconnect. This
+closes out the fifteenth-bug fix and, with it, Phase 7's smoke test.
 
-- [ ] **Real PC-off wake test with this fix.** WOL config already persisted
-      in flash. Confirm: (a) `wol-connect-started` now appears within
-      ~1 tick of `wol-trigger-fired` (no multi-second gap), (b) WOL actually
-      reaches the PC before it's manually powered on, (c) no HCI `0x22`
-      disconnect (thirteenth-bug fix should still hold), (d) no unexpected
-      `wol-trigger-debounced`/`wol-connect-retries-exhausted` entries.
-- [ ] If a gap still remains, the fourteenth-bug trace stages
-      (`wol-wifi-connected`, `wol-wifi-link-lost-after-connect`,
-      `wol-wifi-backoff-elapsed`) are still in place to diagnose further.
+- [ ] Phase 9 — failure-behavior verification: confirm Wi-Fi/WOL failure
+      never blocks or delays BT/controller init or normal operation
+      (non-blocking by construction; needs a runtime check — e.g. WOL
+      disabled/misconfigured, or Wi-Fi genuinely unreachable, shouldn't
+      affect controller connect/input latency at all).
+- [ ] Phase 10 — PR prep: commits already reasonably separated by feature
+      area (firmware Wi-Fi/WOL, companion app config, build integration) —
+      review the branch's full commit log for anything to squash/reorder
+      before opening the PR. Write the PR description (why WOL, how it
+      works, supported board, config requirements, test results — the real
+      end-to-end success above is the headline result). Decide whether the
+      debug Ping/WOL Test tooling ships as part of the feature or stays
+      internal-only (see `DECISIONS.md`'s closing note — leaning toward
+      shipping it, given how many real bugs it caught). Review the whole
+      diff for anything unrelated to WOL before opening the PR.
 
 ## Next task
 
-- If the real wake test fully succeeds (WOL fires promptly, PC wakes, no
-  disconnect): proceed to Phase 9 (failure-behavior verification) and
-  Phase 10 (PR prep) — see `README.md`/git history for what those phases
-  cover, or ask if the original plan document is needed.
-- If it fails differently: the debug Ping/WOL Test tooling (Wi-Fi already
-  working) should narrow it down quickly. Likely candidates not yet ruled
-  out: the magic packet not reaching the target NIC specifically (the
-  debug ARP ping only proves general network reachability, not that the
-  NIC's WOL listener is armed), or an OS/BIOS-level WOL setting on the
-  target PC (Windows fast-startup/hybrid-shutdown can silently disable WOL
-  after a "shutdown" that isn't a true power-off).
+- Once Phase 9/10 are done, open the PR against `upstream/port-dev`.
+- Longer-running/soak testing (WOL across many PC on/off cycles, different
+  network conditions) is optional polish, not a blocker — the core
+  end-to-end path is proven.
