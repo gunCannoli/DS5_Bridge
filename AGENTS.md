@@ -24,12 +24,29 @@ Treat this fork's changes as **our own patch**, not a divergent product:
 
 ## Tracking files (repo root)
 
-- **task.md** — current + next task, organized by phase of the active plan.
-  Updated as work progresses within a plan. Cleared and reset when a plan
-  completes (its summary moves to changelog.md).
-- **changelog.md** — durable record of completed plans/phases, newest first.
-- **decisions.md** — architecture/technical decisions made along the way,
-  with rationale, so later rebases or PR reviewers understand *why*.
+All-caps filenames (`TASK.md`, `CHANGELOG.md`, `DECISIONS.md`,
+`AGENTS.md`) — keep them that way; this filesystem is case-insensitive so a
+lowercase variant can silently coexist, but git tracks the all-caps name.
+
+- **TASK.md** — **current + next task only, kept lean.** As soon as a task
+  is done, its outcome is purged from here: a one-line pointer stays if
+  useful ("see CHANGELOG.md's Nth-bug entry"), but the narrative goes to
+  CHANGELOG.md, not this file. This file should be short enough to read in
+  full every session, not an accumulating log — if it's growing long,
+  something that finished wasn't purged yet.
+- **CHANGELOG.md** — durable record of completed work, newest first. This
+  is where bug-fix narratives, phase completions, and "what happened and
+  when" belong once done. Fine for this to be long; it's a history, not
+  something read in full every session.
+- **DECISIONS.md** — **only** genuine architecture decisions and
+  known-issue/root-cause discoveries that should inform *future* work —
+  not a log of every bug fixed (that's CHANGELOG.md). The test: would a
+  future agent hitting a similar symptom, or a PR reviewer asking "why does
+  this code look like this," need to know this? If it's just "here's what
+  we tried and what happened," it's a changelog entry. If it's "here's a
+  recurring failure mode / wire-format choice / API gotcha that will matter
+  again," it's a decision. Keep this short enough to actually serve as a
+  knowledge base — bloat defeats the purpose.
 - **AGENTS.md** — this file.
 
 ## SDK / library install location
@@ -52,7 +69,7 @@ not project-local or user-profile locations.
 Keep `origin` (the fork) reasonably up to date as work progresses, but don't
 push on every single commit.
 
-- Push when a phase (or a meaningful chunk of one) from task.md is complete
+- Push when a phase (or a meaningful chunk of one) from TASK.md is complete
   and builds/tests cleanly — e.g. after Wi-Fi bring-up compiles, after the
   companion app changes are wired end-to-end, after a smoke-test round passes.
 - Push before ending a work session, so nothing is stranded only in the local
@@ -60,7 +77,7 @@ push on every single commit.
 - Prefer pushing a branch (`feature/wol-wifi`) over pushing to a shared
   branch; never force-push without explicit confirmation.
 - Commit locally frequently (small, logically separated commits per
-  decisions.md/task.md phase breakdown) — pushing is about syncing to GitHub,
+  DECISIONS.md/TASK.md phase breakdown) — pushing is about syncing to GitHub,
   not about commit granularity.
 
 ## Build output locations (use upstream's existing conventions, don't invent new ones)
@@ -89,7 +106,7 @@ since that adds nothing but rebase friction for zero benefit.
 If a future version of this feature needs a genuinely new output location
 (e.g. bundling the Waveshare UF2 into the companion installer the way
 `pico-universal-flash-nuke.uf2` is bundled via `companion/firmware/` +
-`extraResources` in `package.json`), record that decision in `decisions.md`
+`extraResources` in `package.json`), record that decision in `DECISIONS.md`
 with the reasoning, so it's clear it was an intentional addition and not
 drift from upstream's layout.
 
@@ -259,7 +276,7 @@ companion app writes them to a file on disk:
   Settings Revision) are useful for confirming the companion app and
   firmware are actually talking and agreeing on protocol version — relevant
   if `wolControl`/other WOL UI controls appear disabled unexpectedly (see
-  the protocol-minor gate decision in `decisions.md`).
+  the protocol-minor gate decision in `DECISIONS.md`).
 
 ## Local build environment notes
 
@@ -286,9 +303,9 @@ When upstream `port-dev` moves forward:
 2. Rebase (or merge) our feature branch onto the new `port-dev` tip.
 3. Because WOL lives mostly in `wolwifi.h/.cpp` (firmware) and isolated
    companion-app additions, conflicts should be limited to the few hook
-   points documented in `decisions.md` (e.g. the `bt.cpp` connect-event call
+   points documented in `DECISIONS.md` (e.g. the `bt.cpp` connect-event call
    site, `CMakeLists.txt` option block, `protocol.ts` COMMAND_ID list).
-4. Re-run the smoke tests in task.md/changelog.md before re-opening or
+4. Re-run the smoke tests in TASK.md/CHANGELOG.md before re-opening or
    updating the PR.
 
 ## Working style
@@ -296,6 +313,6 @@ When upstream `port-dev` moves forward:
 - Research before implementing; do not assume a referenced PR (e.g. upstream
   PR #93) applies cleanly without verifying against the current branch.
 - Confirm non-trivial architecture decisions with the user before committing
-  to them (see decisions.md for the log of decisions already made).
+  to them (see DECISIONS.md for the log of decisions already made).
 - Keep commits logically separated (firmware Wi-Fi/WOL, companion app config,
   build integration) rather than one large commit.
