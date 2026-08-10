@@ -146,7 +146,11 @@ enum class WolTraceStage : uint8_t {
     ConnDisconnected = 8,
     WolTriggerFired = 9,
     WolTriggerSkipped = 10,
-    WolConnectDelayStart = 11,
+    // 11 was WolConnectDelayStart (removed -- WOL now starts the Wi-Fi
+    // connect immediately on a controller-connect edge, no pre-delay; see
+    // decisions.md). Left unassigned rather than renumbering the stages
+    // after it, so old trace records/log lines from prior firmware still
+    // decode to the same stage names.
     WolResendBegin = 12,
     WolResendConfirmed = 13,
     WolResendGaveUp = 14,

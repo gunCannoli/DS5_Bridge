@@ -51,16 +51,18 @@ constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;
 constexpr uint32_t DHCP_WAIT_TIMEOUT_MS = 3000;
 constexpr uint32_t WIFI_RETRY_BACKOFF_MS = 10000;
 constexpr uint32_t DEBUG_PING_TIMEOUT_MS = 4000;
-// CYW43439 is a combo Wi-Fi/Bluetooth chip that time-shares one radio.
-// Starting a Wi-Fi STA association + DHCP handshake (comparatively heavy
-// RF/firmware-scheduling activity) at the exact instant a controller's BT
-// session becomes Ready contends with that still-fresh BT connection for
-// the shared radio and was observed dropping it. Delay the Wi-Fi connect
-// attempt after a controller-connect edge so the BT session has time to
-// settle first; the eventual WOL send is not time-critical enough to need
-// to start immediately. Does not apply to debug Ping/WOL Test triggers,
-// which are user-initiated on demand rather than tied to a fresh BT event.
-constexpr uint32_t WIFI_CONNECT_START_DELAY_MS = 2000;
+// CYW43439 is a combo Wi-Fi/Bluetooth chip that time-shares one radio, so
+// a Wi-Fi STA association + DHCP handshake right at controller-connect
+// does contend with the still-fresh BT session. An earlier fix delayed
+// the Wi-Fi connect start by 2s to let BT settle first, but per-user
+// requirement WOL must fire the instant the controller connects (matching
+// awalol/DS5Dongle#207, which starts its Wi-Fi connect immediately with
+// no pre-delay) -- a delayed, best-effort wake isn't acceptable even if
+// it's occasionally more radio-contention-safe. The controller is instead
+// protected from the resulting contention by wolwifi_wake_in_progress()
+// (bug 6: suppresses the USB-suspend controller power-off for the whole
+// attempt) and by BT's own reconnect behavior tolerating a drop -- not by
+// avoiding the contention window in the first place.
 // A single UDP magic packet has no delivery guarantee, and the first send
 // can land during the brief post-connect reconnect flap seen in testing
 // (see decisions.md, first successful WOL Test) and simply be lost.
@@ -105,13 +107,6 @@ uint32_t g_wifi_connect_timeout_count = 0;
 
 udp_pcb *g_udp_pcb = nullptr;
 bool g_send_pending = false;
-// 0 = no delay pending (start immediately once Idle); otherwise the earliest
-// tick, per now_ms(), that start_wifi_connect() may run. Set by
-// wolwifi_on_controller_connect() to let a fresh BT session settle before
-// Wi-Fi activity contends for the shared CYW43 radio -- see
-// WIFI_CONNECT_START_DELAY_MS. Not used for debug Ping/WOL Test triggers,
-// which are user-initiated on demand, not tied to a fresh BT connect event.
-uint32_t g_connect_start_not_before_ms = 0;
 // Set by disconnect_wifi_after_wol() after a resend cycle ends; stops
 // wolwifi_task()'s Idle case from immediately reconnecting Wi-Fi on its
 // very next tick (the Idle state is otherwise "connect whenever possible"
@@ -626,21 +621,13 @@ void wolwifi_on_controller_connect(void) {
         begin_resend_cycle();
     } else {
         // Not connected yet: queue the send for once wolwifi_task() gets us
-        // online. Delay the *start* of the Wi-Fi connect sequence itself
-        // (not just the send) so the just-opened BT session isn't competing
-        // with a fresh Wi-Fi association/DHCP handshake for the shared
-        // CYW43 radio -- see WIFI_CONNECT_START_DELAY_MS.
+        // online, and let the Idle case start the Wi-Fi connect on its very
+        // next tick -- no artificial delay. WOL must fire the instant the
+        // controller connects (matching awalol/DS5Dongle#207's behavior),
+        // not some seconds later.
         g_send_pending = true;
-        g_connect_start_not_before_ms = now_ms() + WIFI_CONNECT_START_DELAY_MS;
         bt_append_wol_trace_event(WolTraceStage::WolTriggerFired, 1);
-        bt_append_wol_trace_event(
-            WolTraceStage::WolConnectDelayStart,
-            static_cast<uint8_t>(WIFI_CONNECT_START_DELAY_MS / 1000)
-        );
-        DS5_LOG(
-            "[WOL] Wi-Fi not ready; queuing magic packet, delaying connect start %lu ms\n",
-            static_cast<unsigned long>(WIFI_CONNECT_START_DELAY_MS)
-        );
+        DS5_LOG("[WOL] Wi-Fi not ready; queuing magic packet, starting connect now\n");
     }
 }
 
@@ -779,13 +766,6 @@ void wolwifi_task(void) {
         case WifiState::Idle:
             if (g_wifi_intentionally_idle) {
                 return;
-            }
-            if (g_connect_start_not_before_ms != 0) {
-                if (now_ms() < g_connect_start_not_before_ms) {
-                    return;
-                }
-                DS5_LOG("[WOL] Connect-start delay elapsed; starting Wi-Fi connect\n");
-                g_connect_start_not_before_ms = 0;
             }
             start_wifi_connect();
             return;
