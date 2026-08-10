@@ -5,6 +5,75 @@ Each entry: decision, rationale, alternatives considered, date.
 
 ---
 
+## 2026-08-10 — Fifth bug/gap: single magic-packet send has no delivery guarantee; resend until confirmed
+
+**Context:** after the connect-start-delay fix (below), the user re-ran
+the real PC-off automatic-trigger wake test and the PC still didn't wake,
+even though the debug log showed a clean Wi-Fi connect and a
+`result=success` send. On inspection, that particular log entry was
+tagged `event=debug-action action=send-wol` -- the *manual* WOL Test
+button, run after the fact once the PC was confirmed back on to check the
+log, not the automatic trigger from the actual off-PC attempt. The
+automatic path's own log line from the real attempt wasn't available to
+inspect this round.
+
+That ambiguity aside, the underlying design was genuinely fragile
+regardless of which specific attempt failed: `wolwifi_on_controller_connect()`
+(directly, or via `g_send_pending` once Wi-Fi comes up) only ever called
+`send_magic_packet_now()` once. A UDP magic packet has no delivery
+guarantee, no ack, and no retry -- if it's lost (dropped by the AP, lost
+during the brief post-connect reconnect flap already observed once in
+testing, or simply missed by the target NIC's WOL listener), there is no
+recovery. A "worked once in manual testing" result doesn't mean the
+automatic path is reliable.
+
+**Decision:** resend the magic packet periodically until either the
+target confirms it woke up, or a time budget runs out, rather than firing
+once and hoping. Asked the user for the retry shape; chose "retry every 3s
+for 15s, stop early on ARP confirm" over a simpler fixed-retry-count
+option with no liveness detection.
+
+**Implementation** (`wolwifi.cpp`):
+- `WOL_RESEND_INTERVAL_MS = 3000`, `WOL_RESEND_TOTAL_BUDGET_MS = 15000`.
+- `begin_resend_cycle()`: sends immediately and arms the cycle
+  (`g_resend_active`, `g_resend_started_ms`, `g_resend_last_sent_ms`,
+  resets `g_target_confirmed_awake`). Called from both branches of
+  `wolwifi_on_controller_connect()` (immediate case) and from the
+  `g_send_pending` handling in `WifiState::WaitingForIp` (deferred case),
+  replacing the old single `send_magic_packet_now(false)` calls in both
+  places.
+- `drive_resend_cycle()`: called every `wolwifi_task()` tick, independent
+  of `g_wifi_state` -- a resend can span a Wi-Fi link drop/reconnect, and
+  the cycle's own budget/confirmation logic (not the connect state
+  machine) decides when to stop. Each interval also broadcasts a fresh
+  `etharp_request()` before resending, to actively prompt a reply instead
+  of only listening for ambient ARP chatter.
+- Liveness confirmation reuses `arp_snoop_input()` -- the same
+  ARP-snoop-on-inbound-Ethernet-frames mechanism the debug Ping button
+  already uses to detect a target's MAC on the wire -- generalized with a
+  separate `g_resend_active` gate alongside the existing debug-Ping gate,
+  so a debug Ping and an automatic resend cycle running back to back can't
+  clobber each other's result.
+- Debug WOL Test button (`wolwifi_debug_send_wol()`) intentionally
+  unchanged: still a single fire-and-forget `send_magic_packet_now()`
+  call, since it's a manual on-demand smoke-test action, not the
+  reliability-critical automatic path.
+
+**Alternative considered and rejected:** skip sending on the automatic
+trigger entirely if an ARP liveness check shows the target is already
+awake (raised again in this context, having been rejected once already
+for a different reason -- see the entry below). Still not adopted here:
+this fix is about *guaranteeing delivery of a needed packet*, not avoiding
+an unneeded one; the ARP watch here is used only to know *when to stop*
+resending, not to decide *whether to send at all*.
+
+**Status:** implemented and committed, debug firmware rebuilt at
+`build/waveshare/ds5-bridge.uf2`. Not yet verified against a real PC-off
+automatic-trigger test (pending user retest; this fix and the previous
+connect-start-delay fix are both awaiting the same next real test).
+
+---
+
 ## 2026-08-10 — Fourth bug: CYW43 Wi-Fi/Bluetooth radio contention drops the controller during a real WOL trigger
 
 **Context:** after the first successful WOL Test (via the manual debug
