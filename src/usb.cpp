@@ -220,6 +220,17 @@ bool usb_host_suspended_active() {
     return usb_bus_suspended();
 }
 
+// True only while the host is both enumerated and awake -- i.e. actually
+// running, not merely powered enough to keep the bus alive. Used by
+// wolwifi.cpp to skip sending WOL (and the lightbar's in-progress pulse)
+// when the target PC this board is plugged into is already on; see
+// WOL_ALWAYS in CMakeLists.txt for the escape hatch on boards where this
+// heuristic can't distinguish "off" from "on" (USB stays active in S5, or
+// Modern Standby).
+bool usb_host_active() {
+    return usb_mounted && !usb_bus_suspended();
+}
+
 bool __not_in_flash_func(usb_speaker_streaming_active)() {
     return usb_speaker_streaming;
 }

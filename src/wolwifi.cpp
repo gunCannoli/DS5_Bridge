@@ -32,6 +32,7 @@
 #include "btstack_tlv.h"
 
 #include "bt.h"
+#include "usb.h"
 #include "utils.h"
 
 namespace {
@@ -712,6 +713,26 @@ void wolwifi_on_controller_connect(void) {
         bt_append_wol_trace_event(WolTraceStage::WolTriggerSkipped, detail);
         return;
     }
+#ifndef WOL_ALWAYS
+    // The board's USB persona is plugged into the same target PC WOL wakes,
+    // so usb_host_active() (enumerated and not suspended) directly answers
+    // "does this PC need waking." Skip before anything else WOL-related
+    // happens -- no Wi-Fi connect, no resend cycle, no lightbar pulse --
+    // since a magic packet (and the visible in-progress signal for it) is
+    // pointless when the target is already running. Checked before the
+    // debounce/retry-reset below: this is a free read of an existing flag,
+    // not a radio operation, so there's no cost to re-checking on every
+    // edge (unlike the Wi-Fi-connect debounce, which exists specifically to
+    // avoid radio contention). See WOL_ALWAYS in CMakeLists.txt for the
+    // build-time escape hatch on boards where this heuristic can't
+    // distinguish "off" from "on" (USB stays active in S5, or Modern
+    // Standby) -- matches awalol/DS5Dongle#207's identical design.
+    if (usb_host_active()) {
+        DS5_LOG("[WOL] Controller connected but host already active; WOL not needed\n");
+        bt_append_wol_trace_event(WolTraceStage::WolTriggerSkippedHostActive);
+        return;
+    }
+#endif
     // See WOL_TRIGGER_DEBOUNCE_MS: a flapping BT link during a single PC
     // boot can fire this multiple times in quick succession; one magic
     // packet getting through is enough, and re-running Wi-Fi connect/resend
