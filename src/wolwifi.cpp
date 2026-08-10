@@ -28,6 +28,7 @@
 #include "lwip/etharp.h"
 #include "netif/ethernet.h"
 
+#include "bt.h"
 #include "utils.h"
 
 namespace {
@@ -372,6 +373,7 @@ void begin_resend_cycle() {
     g_resend_started_ms = now_ms();
     g_resend_last_sent_ms = g_resend_started_ms;
     ensure_arp_snoop_installed();
+    bt_wol_indicator_begin();
     send_magic_packet_now(false);
 }
 
@@ -387,6 +389,7 @@ void drive_resend_cycle() {
             static_cast<unsigned long>(now_ms() - g_resend_started_ms)
         );
         g_resend_active = false;
+        bt_wol_indicator_confirm();
         return;
     }
     const uint32_t elapsed = now_ms() - g_resend_started_ms;
@@ -396,6 +399,7 @@ void drive_resend_cycle() {
             static_cast<unsigned long>(WOL_RESEND_TOTAL_BUDGET_MS)
         );
         g_resend_active = false;
+        bt_wol_indicator_cancel();
         return;
     }
     if (now_ms() - g_resend_last_sent_ms >= WOL_RESEND_INTERVAL_MS) {
