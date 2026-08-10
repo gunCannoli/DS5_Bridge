@@ -5,6 +5,89 @@ Each entry: decision, rationale, alternatives considered, date.
 
 ---
 
+## 2026-08-10 — Fourth bug: CYW43 Wi-Fi/Bluetooth radio contention drops the controller during a real WOL trigger
+
+**Context:** after the first successful WOL Test (via the manual debug
+button, Wi-Fi already connected), the user reported that a real
+automatic-trigger WOL left the controller disconnected from the board
+until the PC was already awake -- unlike the existing "Wake PC on
+Controller" (USB) feature, which the user believed kept the controller
+connected through a wake.
+
+**Research:**
+- `gh pr diff` on `SundayMoments/DS5_Bridge#93` (USB Wake Feature) and a
+  reading of the existing "Wake PC on Controller" implementation in
+  `bt.cpp`/`main.cpp`: neither actually keeps the *Bluetooth* link itself
+  connected during a USB suspend/wake cycle. "Wake PC on Controller" holds
+  the USB-enumerated persona on the bus during suspend and calls
+  `tud_remote_wakeup()` from the BT ACL-connect HCI event; PR #93 uses a
+  different, keyboard-HID-tap-based mechanism. In both cases the BT link
+  itself always drops and reconnects fresh -- there was no existing
+  "keep BT connected through wake" pattern to reuse, contrary to the
+  initial assumption.
+- `gh pr diff` on `awalol/DS5Dongle#207` (independent prior-art
+  WOL-over-Wi-Fi implementation for the same CYW43439 combo chip),
+  `#186`, `#136`: confirmed `cyw43_tcpip_link_status()` (not
+  `cyw43_wifi_link_status()`) is the correct call, matching this repo's
+  bug-2 fix. Its `Observe` state (checking `tud_mounted() &&
+  !tud_suspended()` to see if the PC is already on before doing anything)
+  incidentally imposes a ~3s delay before Wi-Fi starts, though for an
+  unrelated reason (waiting to see if WOL is even needed), not explicit
+  BT-settling. Also revealed two lwIP options this repo didn't have set:
+  `DHCP_DOES_ARP_CHECK=0` and `LWIP_DHCP_DOES_ACD_CHECK=0`, which skip the
+  DHCP client's post-lease ARP conflict-detection probe and shorten the
+  handshake.
+
+**Root cause:** `wolwifi_on_controller_connect()` fires at the exact
+BT-connection-Ready edge (see the 4c call-site decision below). If Wi-Fi
+isn't already connected, the very next `wolwifi_task()` tick immediately
+starts a full WPA2 association + DHCP handshake -- comparatively heavy
+RF/firmware-scheduling activity on the CYW43439, which time-shares one
+radio between Wi-Fi and Bluetooth. That fresh Wi-Fi activity, starting the
+instant the BT session is still stabilizing, contends for the shared radio
+and was observed dropping the controller.
+
+**Fix:** delay the *start* of the Wi-Fi connect sequence (not just the
+eventual magic-packet send, which was already deferred via
+`g_send_pending`) by `WIFI_CONNECT_START_DELAY_MS = 2000` after a
+controller-connect edge. Implemented as `g_connect_start_not_before_ms`,
+set in `wolwifi_on_controller_connect()` and checked in the `Idle` case of
+`wolwifi_task()`'s state machine before calling `start_wifi_connect()`.
+User chose 2 seconds over 5 seconds when asked -- WOL is not time-critical
+enough to need faster, but 2s should be enough for a BT session to
+stabilize without a needlessly long delay.
+
+Scoped narrowly:
+- Only applies when Wi-Fi isn't already connected. If a prior session's
+  Wi-Fi link is still up (e.g. a second controller connect shortly after
+  the first), there's no new radio activity about to start, so the packet
+  still sends immediately -- no reason to delay when there's nothing to
+  contend with.
+- Does not apply to the debug Ping/WOL Test buttons, which are
+  user-initiated on demand rather than tied to a fresh BT-connect event,
+  so there's no adjacent BT session to protect.
+
+Also applied the `DHCP_DOES_ARP_CHECK`/`LWIP_DHCP_DOES_ACD_CHECK` options
+found via the #207 research to `boards/headers/lwipopts.h` as a
+complementary shrink of the same contention window (shorter DHCP handshake
+= less time Wi-Fi RF activity overlaps with a fresh BT session), since it
+was a low-risk, directly-relevant finding from the same research pass.
+
+**Alternative considered and rejected:** skip sending the magic packet
+entirely if an ARP check shows the target host is already awake (reusing
+the debug Ping's ARP-snoop mechanism). Asked the user; rejected in favor
+of always sending unconditionally on the automatic trigger -- a stray
+magic packet to an already-on host is harmless (the NIC just ignores it),
+so the added latency (waiting out an ARP timeout) and complexity isn't
+worth it for a trigger that isn't time-critical either way. The ARP-based
+liveness check remains debug-tooling-only (the existing Ping button).
+
+**Status:** implemented and committed, debug firmware rebuilt at
+`build/waveshare/ds5-bridge.uf2`. Not yet verified against a real PC-off
+automatic-trigger test (pending user retest).
+
+---
+
 ## 2026-08-09/10 — Three real Wi-Fi bugs found and fixed via the debug tooling
 
 **Context:** the first hardware smoke test failed silently (PC off,
