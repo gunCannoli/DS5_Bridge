@@ -26,34 +26,62 @@ built: debug-logging Waveshare firmware at
 `build/waveshare-debug2/ds5-bridge.uf2`, companion installer at
 `companion/artifacts/installer/DS5-Bridge-Companion-Setup-1.7.0.exe`.
 
-Debugging session (2026-08-09, continued): SSID/password length bug found
-and fixed (commands were sending value=0 instead of the actual payload
-length, so firmware always saw a zero-length string -- see decisions.md).
-After that fix, Wi-Fi genuinely associates with the AP (`raw_link_status`
-reaches `join`) but never progresses to getting an IP -- stuck oscillating
-`connecting` <-> `failed` <-> `connecting`, `raw_link_status` staying at
-`join` throughout. This points at a DHCP-layer or router-side issue (auth
-succeeds, IP lease doesn't), not a firmware bug in the WOL module itself.
-Not yet root-caused; deprioritized in favor of two diagnostic/UX features
-requested to make the next debugging round and general WOL feedback
-better (see Phase 11 below).
+Debugging session (2026-08-09, continued) -- three real firmware bugs found
+and fixed via the debug tooling, in order:
+1. SSID/password commands sent `value=0` instead of the actual payload
+   length, so firmware always saw a zero-length string (`have_ssid` stuck
+   false no matter what was typed in the UI).
+2. `wolwifi_task()` polled `cyw43_wifi_link_status()`, which can never
+   return `CYW43_LINK_UP`/`NOIP` at all (driver-level join state only, no
+   DHCP/IP awareness) -- our state machine's guards all required
+   `status == CYW43_LINK_UP`, so it could never see a real connection
+   complete, no matter how long DHCP had a bound lease. Fixed by switching
+   to `cyw43_tcpip_link_status()`, the IP-aware superset function.
+3. `cyw43_arch_wifi_connect_async()` doesn't clean up a prior association
+   itself; retrying after a genuine link drop was joining on top of stale
+   driver state and failing immediately. Fixed by calling
+   `cyw43_wifi_leave()` before every reconnect attempt after the first.
+
+Also added comprehensive diagnostics (raw `wifi_join_state` bitmask,
+lifetime attempt/timeout/link-loss counters, DHCP client state) and
+automatic link-state-change logging (not just on debug-button clicks) so
+the full connect timeline is visible without guessing.
+
+**2026-08-10: first successful end-to-end WOL Test** --
+`result=success`, `link=connected`, `raw_link_status=up`, magic packet
+actually sent. There was a brief ~2.5s reconnect flap right at send time
+(self-healed via the leave-before-rejoin fix, `connect_attempts` jumped
+2->4) but the send ultimately succeeded. Full debugging narrative and
+fixes recorded in decisions.md.
 
 ## Current task
 
-- [ ] Phase 11a: WOL trace ring buffer + Diagnostics UI section (see plan
-      below) -- next up.
+- [ ] **Re-attempt the real PC-off wake test** (original Phase 7 Test 2):
+      with the target PC OFF (hibernate first, then full shutdown if the
+      NIC supports it) and the board on a powered USB hub as before, connect
+      the DualSense and confirm the PC actually wakes via the automatic
+      WOL-on-controller-connect trigger (not the manual debug buttons this
+      time -- this is the real feature path). Note: the target PC being off
+      means no companion app / log access during the test itself; check the
+      log/companion app only after, once the PC is back up.
 
 ## Next task
 
-- [ ] Phase 11b: lightbar pulse on WOL magic-packet send (see plan below).
-- [ ] Resume debugging the `join`-stuck DHCP issue -- once Phase 11a ships,
-      the trace will show every link-status transition in the Diagnostics
-      tab without needing to dig through the raw log file, which should
-      make it much faster to confirm whether this is a router DHCP pool
-      exhaustion, a MAC filtering issue, or something firmware-side in how
-      DHCP is being driven after association.
-- [ ] Once Ping/WOL Test both succeed with the PC on, re-attempt the
-      original PC-off wake test.
+- [ ] If the real wake test succeeds: proceed to Phase 9 (failure-behavior
+      verification) and Phase 10 (PR prep).
+- [ ] If it fails: the same debug tooling (Ping/WOL Test buttons, now with
+      working Wi-Fi) should narrow it down quickly -- likely candidates
+      would be the magic packet not reaching the target's NIC specifically
+      (vs. the debug ARP ping, which only proves general network
+      reachability, not that the NIC's WOL listener is armed), or an
+      OS/BIOS-level WOL setting on the target PC itself (a common real-world
+      gap: WOL must be allowed in both the NIC driver's power-management
+      settings and Windows' fast-startup/hybrid-shutdown settings, which
+      can silently disable WOL after a "shutdown" that isn't a true
+      power-off).
+- [ ] Phase 11a/11b (WOL trace in Diagnostics, lightbar pulse) -- still
+      planned, deprioritized behind confirming the core feature actually
+      works end to end first. Revisit once Phase 7 passes.
 - [ ] Phase 9: verify failure-behavior claims at test time (non-blocking
       design is already in place per 4d/4e, needs runtime confirmation)
 - [ ] Phase 10: PR prep — write PR description, fill in testing checklist
@@ -61,9 +89,12 @@ better (see Phase 11 below).
       Note: the WOL debug feature (Ping/WOL Test) is a reasonable candidate
       to keep in the upstream PR too, not just as our local dev tooling --
       decide before opening the PR whether to present it as part of the
-      feature or strip it as internal-only.
+      feature or strip it as internal-only. The three bugs found and fixed
+      via this tooling are also a strong argument for keeping it: without
+      it, upstream reviewers/users hitting the same issues would have no
+      way to diagnose them either.
 
-### Phase 11 — WOL trace log + lightbar pulse (planned 2026-08-09, not yet implemented)
+### Phase 11 — WOL trace log + lightbar pulse (planned 2026-08-09, deferred until Phase 7 passes)
 
 Two UX/diagnostic additions requested after the debug Ping/WOL Test row
 proved useful but (a) its log file requires digging through a text file by

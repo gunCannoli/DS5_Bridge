@@ -5,6 +5,84 @@ Each entry: decision, rationale, alternatives considered, date.
 
 ---
 
+## 2026-08-09/10 — Three real Wi-Fi bugs found and fixed via the debug tooling
+
+**Context:** the first hardware smoke test failed silently (PC off,
+controller connected, no wake, no way to diagnose since the target PC and
+the companion-app PC were the same machine). Building the debug Ping/WOL
+Test tooling (documented separately below) and iteratively expanding its
+diagnostics surfaced three distinct, real firmware bugs in sequence,
+rather than one root cause -- worth recording each since they're the kind
+of thing a future rebase/PR reviewer would want to know were found and
+why the fixes look the way they do.
+
+**Bug 1 -- SSID/password length never sent.** `setWolWifiSsid`/
+`setWolWifiPassword` in `bridge-service.ts` hardcoded the command's wire
+`value` field (which firmware reads as the exact byte count to copy from
+the payload) to `0`, instead of the actual payload length. Every SSID/
+password update silently told firmware "here are 0 bytes" -- the command
+still acked OK and `settings_revision` incremented, so nothing in the UI
+indicated a problem, but `wolwifi_set_wifi_ssid(ssid, 0)` sets
+`have_ssid = false` regardless of what was in the payload. Caught by
+adding `have_ssid`/`have_target_mac`/`wol_enabled` flags to the debug
+status: `have_target_mac` was true (fixed 6-byte field, no length
+ambiguity) while `have_ssid` stayed false despite a correct SSID typed in
+the UI. Fixed by sending `payload.length` as the command value at both
+call sites (the direct setters and the reconnect-reapply path). No
+existing test caught this; added a regression test asserting the wire
+value byte matches the payload length, not just that a command with the
+right ID gets sent.
+
+**Bug 2 -- polling the wrong CYW43 link-status function.**
+`wolwifi_task()` polled `cyw43_wifi_link_status()` (`cyw43_ctrl.c`) to
+decide when to advance from Connecting to WaitingForIp to Connected. That
+function only reflects the low-level radio join state
+(`WIFI_JOIN_STATE_*`) -- per its own switch statement it can return
+`CYW43_LINK_JOIN/FAIL/NONET/BADAUTH/DOWN`, but it can **never** return
+`CYW43_LINK_NOIP` or `CYW43_LINK_UP`, regardless of DHCP/IP status. Every
+one of our state-machine guards keyed off `status == CYW43_LINK_UP`,
+which that function could never produce, so every connect attempt
+eventually timed out or was judged "link lost" and restarted from
+scratch -- even while genuinely associated with a bound DHCP lease the
+whole time. Caught by adding lwIP's own DHCP client state
+(`struct dhcp.state` via `netif_dhcp_data()`) to the debug status:
+`dhcp_state=bound` (a real, successful lease) while `raw_link_status`
+stayed stuck at `join` and `WifiState` cycled connecting -> failed ->
+connecting forever was the tell. Fixed by switching all three call sites
+to `cyw43_tcpip_link_status()` (`cyw43_lwip.c`), the documented "superset"
+function that actually checks `netif->ip_addr`.
+
+**Bug 3 -- no cleanup before reconnecting.** After fixing bug 2, a fresh
+boot's first connect attempt succeeded correctly, but a *retry* after a
+genuine link drop failed immediately (`raw_link_status=fail`,
+`dhcp_state=init`) where the first attempt had worked. Root cause:
+`cyw43_arch_wifi_connect_async()` -> `cyw43_wifi_join()` does not clean up
+a prior association itself -- the SDK docs describe `cyw43_wifi_leave()`
+as a separate, caller-managed disassociation step, and `start_wifi_connect()`
+never called it. Retrying was joining on top of stale driver join state.
+Fixed by calling `cyw43_wifi_leave()` before every reconnect attempt after
+the first (skipped on the very first attempt, since there's nothing to
+leave yet).
+
+**Process note:** after finding bug 2, the user asked to stop adding one
+diagnostic field per guess and add comprehensive diagnostics in one pass
+instead -- see the "comprehensive diagnostics" work: raw
+`cyw43_state.wifi_join_state` bitmask, four lifetime counters
+(`connect_attempt_count`, `wifi_connect_timeout_count`,
+`dhcp_timeout_count`, `link_lost_count`) that persist across the whole
+session rather than only reflecting the latest event, and automatic
+link-state-change logging (not just logging when a debug button's result
+settles) so a connection attempt mid-flight at the moment of a button
+click doesn't leave a gap in the log with no record of what happened next.
+
+**Result (2026-08-10):** first successful end-to-end WOL Test --
+`result=success`, `link=connected`, `raw_link_status=up`, magic packet
+sent. A brief ~2.5s reconnect flap occurred right at send time
+(`connect_attempts` jumped 2->4 in under a second) but self-healed via the
+bug-3 fix and the send succeeded on the retry.
+
+---
+
 ## 2026-08-09 — WOL trace log + lightbar pulse: research and scope (Phase 11, planned)
 
 **Context:** the debug Ping/WOL Test feature (previous entries) proved
