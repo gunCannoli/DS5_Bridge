@@ -219,6 +219,12 @@ uint32_t g_observe_host_started_ms = 0;
 // Cleared (reset to 0) on any tick that samples inactive, so a genuinely
 // sustained run is required, not just a cumulative total.
 uint32_t g_observe_host_active_since_ms = 0;
+// Last usb_host_active() sample seen during the current window, used only
+// to detect edges for WolTraceStage::ObserveHostSampleEdge (avoids
+// tracing every tick, which would flood the ring buffer over a 2s
+// window). Reset whenever a window (re)starts so the first sample of a
+// new window is always traced as an edge.
+bool g_observe_host_last_sample = false;
 
 WolDebugAction g_debug_action = WolDebugAction::None;
 WolDebugResult g_debug_result = WolDebugResult::Pending;
@@ -809,6 +815,8 @@ void begin_observe_host() {
     g_observe_host_active = true;
     g_observe_host_started_ms = now_ms();
     g_observe_host_active_since_ms = 0;
+    g_observe_host_last_sample = false;
+    bt_append_wol_trace_event(WolTraceStage::ObserveHostBegin, usb_host_active_debug_bits());
 }
 
 // Drives the host-observation window; called every wolwifi_task() tick.
@@ -818,6 +826,10 @@ void drive_observe_host() {
         return;
     }
     const bool active_now = usb_host_active();
+    if (active_now != g_observe_host_last_sample) {
+        g_observe_host_last_sample = active_now;
+        bt_append_wol_trace_event(WolTraceStage::ObserveHostSampleEdge, usb_host_active_debug_bits());
+    }
     if (!active_now) {
         g_observe_host_active_since_ms = 0;
     } else if (g_observe_host_active_since_ms == 0) {
@@ -832,6 +844,7 @@ void drive_observe_host() {
         // Window elapsed with no sustained-active read -- default to firing
         // WOL, per the corrected design: skip only on a positive
         // observation, never require proving the host is off first.
+        bt_append_wol_trace_event(WolTraceStage::ObserveHostWindowElapsed, usb_host_active_debug_bits());
         g_observe_host_active = false;
         proceed_with_wol_trigger();
     }
