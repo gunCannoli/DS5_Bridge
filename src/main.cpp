@@ -772,6 +772,7 @@ int main() {
         });
         RUN_MAIN_PHASE(WatchdogMainLoopPhase::Lightbar, {
             bt_lightbar_loop();
+            bt_wol_indicator_loop();
         });
         RUN_MAIN_PHASE(WatchdogMainLoopPhase::Rssi, {
             bt_signal_strength_loop();
