@@ -5,6 +5,82 @@ Each entry: decision, rationale, alternatives considered, date.
 
 ---
 
+## 2026-08-10 — Seventh bug (root cause of "WOL never starts"): boot-time settings race
+
+**Context:** with the board-level trace working (after fixing a stale
+desktop-shortcut build issue -- see below), a real PC-off retest produced
+actual trace data:
+
+```
+seq=1 stage=conn-connecting
+seq=2 stage=conn-securing
+seq=3 stage=conn-hid-opening
+seq=4 stage=conn-ready
+seq=5 stage=wol-trigger-skipped detail=0
+```
+
+...twice, on two consecutive fresh boots. `detail=0` decodes via the
+bitmask (`bit0=enabled, bit1=have_ssid, bit2=have_target_mac`) to **all
+three false** at the exact moment the connection reached Ready -- despite
+the companion app's own live `WOL_DEBUG_STATUS` polling showing
+`wol_enabled=true have_ssid=true have_target_mac=true` a few seconds
+later in the same log.
+
+**Root cause:** WOL config (`g_enabled`/`g_ssid`/`g_password`/
+`g_target_mac` in `wolwifi.cpp`) lived only in RAM. The companion app
+re-sends it via `SET_WOL_ENABLED`/`SET_WOL_WIFI_SSID`/etc. as part of
+`applyCurrentSettings()` in `bridge-service.ts` -- a long sequential list
+of ~40 `await this.sendCommand(...)` calls, with the WOL commands placed
+near the end (after LED, idle-disconnect, USB-suspend, wake-on-connect,
+and others). This whole sequence only runs once per new companion HID
+session (`reapplySettingsUntilSettled()`), i.e. after the companion app
+itself reconnects post-boot. Meanwhile, a *paired* controller's own BT
+reconnect is fast -- pairing/link-key exchange is already done, so it's
+just page scan + security + HID channel open, confirmed by the trace to
+complete in well under half a second (`board_time_ms` 73889 to 74279
+across all four `conn-*` stages). The controller was reliably winning that
+race and firing the trigger before the companion app got anywhere near
+the WOL commands, so `wolwifi_on_controller_connect()` saw completely
+unconfigured state and (correctly, given what it could see) skipped.
+
+This explains every prior "WOL never starts" observation cleanly and
+retroactively invalidates nothing about the fourth/fifth/sixth-bug fixes --
+those were all real, independently-verified issues (radio contention,
+single-send reliability, USB-suspend power-off) that would still need
+fixing once WOL actually starts firing. This bug just meant it often never
+got the chance to.
+
+**Fix:** persist WOL config to on-board flash via BTstack's TLV store --
+the exact mechanism `bt.cpp` already uses for pairing-key and blacklist
+persistence (`bt_blacklist_persist()`/`_load()`, `store_tag`/`get_tag`
+under a 4-ASCII-char tag). Added `wolwifi_persist_config()` (called from
+every setter: `wolwifi_set_enabled`/`_wifi_ssid`/`_wifi_password`/
+`_target_mac`) and `wolwifi_load_persisted_config()` (called from
+`wolwifi_init()`). Tag `'WOLC'` (0x574f4c43), versioned struct
+(`WolPersistedConfig`, `version` field for future migration room).
+
+**Why `wolwifi_init()` and not `HCI_STATE_WORKING`:** initially considered
+loading alongside `bt_blacklist_load()` in `bt.cpp`'s `HCI_STATE_WORKING`
+handler (same event bt.cpp already uses for its own flash loads), but
+`wolwifi_init()` is called in `main.cpp` immediately after `bt_init()`
+*starts* -- `bt_init()` only kicks off the async HCI power-on sequence,
+`HCI_STATE_WORKING` fires later as a callback. Loading in `wolwifi_init()`
+is strictly earlier and simpler (no need to hook into bt.cpp's event
+handler for an unrelated module), and still trivially before BT can
+possibly complete any reconnect.
+
+**Caveat for testing:** this only closes the race for config set *after*
+flashing this firmware -- flash starts empty, so WOL must be (re)entered
+once via the companion app post-flash (which persists it going forward)
+before a true "fresh boot, no companion app involved yet" test is valid.
+
+**Status:** implemented and committed, debug firmware rebuilt at
+`build/waveshare/ds5-bridge.uf2`. Not yet verified against a real PC-off
+test with the persisted config in place (pending: configure once, power-
+cycle to confirm persistence, then retest).
+
+---
+
 ## 2026-08-10 — Board-level connection/WOL trace: diagnosing a host-off-only failure
 
 **Context:** the sixth-bug fix (below) was retested for real (PC off) and

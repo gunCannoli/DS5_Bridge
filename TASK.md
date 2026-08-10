@@ -137,24 +137,46 @@ repackaged at
 `companion/artifacts/DS5 Bridge-win32-x64-2026-08-10T01-55-26-806Z`. Full
 writeup in decisions.md.
 
+**2026-08-10: trace worked -- root cause found and fixed: WOL config
+boot-time race.** After fixing a stale-shortcut issue (desktop shortcut
+was launching an old `win-unpacked` build predating the trace feature;
+rebuilt via `npm run installer:win`), a real trace came through:
+`wol-trigger-skipped detail=0` (enabled/have-ssid/have-target-mac all
+false) fired the instant `conn-ready` was reached, on two consecutive
+fresh boots. Root cause: WOL config only ever lived in RAM, re-sent by the
+companion app as one of the last of ~40 sequential commands in its
+startup-reapply sequence -- a paired controller's BT reconnect (fast,
+since pairing is already done) was completing and firing the trigger
+before the companion app got anywhere near the WOL commands. Fixed
+(committed): WOL config (enabled/SSID/password/target-MAC) now persists
+to on-board flash via BTstack's TLV store (same mechanism already used for
+pairing-key/blacklist persistence in `bt.cpp`), saved on every setter call
+and loaded in `wolwifi_init()` -- which runs at boot before BT can
+possibly finish a reconnect, closing the race entirely. Debug firmware
+rebuilt at `build/waveshare/ds5-bridge.uf2`. Full writeup in decisions.md.
+
+**Important for the next test:** this fix only takes effect for WOL
+config set *after* flashing this firmware -- the very first boot post-flash
+still starts with nothing in flash, so WOL needs to be (re)configured once
+via the companion app after flashing (which will now persist it) before a
+true "PC fully off, no prior companion-app session this boot" test is
+valid.
+
 ## Current task
 
-- [ ] **Flash the rebuilt debug firmware, install the repackaged companion
-      app, and re-attempt the real PC-off wake test** (original Phase 7
-      Test 2) one more time. This time even if it fails again, the new
-      board-level trace should show exactly what happened once the PC and
-      companion app come back up -- read `ds5bridge-wol-debug.log` for
-      `event=board-trace` lines after the test and look specifically for:
-      whether `stage=wol-trigger-fired` or `stage=wol-trigger-skipped`
-      appears at all (did wolwifi even get called), what `stage=conn-*`
-      sequence preceded any `stage=conn-disconnected` (did a connection-
-      phase timeout fire before WOL ever got a chance), and whether
+- [ ] **Flash the rebuilt debug firmware, open the companion app once to
+      re-enter/re-save the WOL SSID/password/target MAC (so it's freshly
+      persisted to flash under this firmware build), then power-cycle the
+      board once** (to prove the persisted config survives a reboot with
+      no companion app involved) before re-attempting the real PC-off wake
+      test. Check `ds5bridge-wol-debug.log` for `event=board-trace` lines
+      afterward -- specifically whether `stage=wol-trigger-fired` (not
+      `skipped`) now appears immediately at `conn-ready`, and whether
       `stage=wol-resend-begin`/`wol-resend-confirmed`/`wol-resend-gave-up`
-      appear. Note: the target PC being off means no companion app / log
-      access during the test itself as always; check the log only after,
-      once the PC is back up and the companion app has had a chance to
-      poll (may take a few seconds after reconnecting for the trace to
-      flush across multiple report reads if there are many records).
+      follow it. If `wol-trigger-fired` still doesn't appear, the flash
+      load itself needs debugging (check for `[WOL] Loaded persisted
+      config...` vs `[WOL] No persisted config found...` in the firmware
+      UART log, captured with the companion app running so it's visible).
 
 ## Next task
 
