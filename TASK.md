@@ -276,17 +276,44 @@ source MAC, in both the resend cycle's watch and the debug Ping button's
 watch (shared code path). Debug firmware rebuilt at
 `build/waveshare/ds5-bridge.uf2`. Full writeup in decisions.md.
 
+**2026-08-10: ARP fix retested -- still no automatic wake, and user
+clarified WOL's actual requirement.** The EtherType fix worked as designed
+(`wol-resend-gave-up` after a genuine full 15s, no more false-positive
+early confirm), but the PC still didn't wake automatically -- and user
+pointed out the deeper problem: with the current design, Wi-Fi (and
+therefore the magic packet) only starts after a 2s delay plus however long
+Wi-Fi/DHCP takes, which can be tens of seconds -- so by the time WOL
+actually sends, it's too late to matter; the user was manually powering
+the PC by then anyway. Per the user's explicit requirement -- "board to
+trigger the wol once the controller connects to it, at that instant, like
+[awalol/DS5Dongle#207]" -- built and tested a debug firmware from the
+much older commit `91f1cd8` (before any bug 6-11 fixes) in an isolated git
+worktree to check whether this was a recent regression: **WOL didn't work
+there either**, ruling out the recent disconnect-fix work as the cause and
+confirming this is a longstanding design gap, not a regression. Compared
+directly against PR #207's actual source (saved research diff): it starts
+its Wi-Fi connect immediately on the controller-connect trigger, no
+pre-delay at all, and protects the controller from the resulting BT/Wi-Fi
+contention via a USB-suspend power-off suppression during the attempt
+(directly analogous to our own bug 6 fix) rather than by delaying Wi-Fi.
+Fixed (committed): removed `WIFI_CONNECT_START_DELAY_MS` (the 2s delay)
+entirely -- `wolwifi_on_controller_connect()` now queues the send and lets
+`wolwifi_task()`'s `Idle` case start the Wi-Fi connect on the very next
+tick, matching #207. Debug firmware rebuilt at
+`build/waveshare/ds5-bridge.uf2`. Full writeup in decisions.md.
+
 ## Current task
 
 - [ ] **Flash the rebuilt debug firmware and re-attempt the real PC-off
       wake test.** WOL config is already persisted in flash, no re-save
-      needed. Check `ds5bridge-wol-debug.log` afterward for: (a) does
-      `wol-resend-confirmed` now take a realistic amount of time (several
-      seconds to tens of seconds, matching an actual PC boot) rather than
-      1-3s, (b) does the controller still survive the entire boot without
-      disconnecting (confirming bug 9's fix still holds now that the
-      resend cycle runs longer), and (c) does the PC actually wake from
-      the automatic magic packet alone, without a manual power-on.
+      needed. This is the most direct test yet of the actual requirement:
+      does the magic packet go out immediately (check
+      `ds5bridge-wol-debug.log` for `wol-trigger-fired` immediately
+      followed by Wi-Fi connect activity, not a multi-second gap), does the
+      controller survive the BT/Wi-Fi contention this reintroduces (no
+      pre-delay protection anymore -- relying entirely on bug 6's
+      USB-suspend suppression), and does the PC actually wake from the
+      automatic send alone.
 
 ## Next task
 
