@@ -46,6 +46,14 @@ constexpr uint32_t DEBUG_PING_TIMEOUT_MS = 4000;
 // to start immediately. Does not apply to debug Ping/WOL Test triggers,
 // which are user-initiated on demand rather than tied to a fresh BT event.
 constexpr uint32_t WIFI_CONNECT_START_DELAY_MS = 2000;
+// A single UDP magic packet has no delivery guarantee, and the first send
+// can land during the brief post-connect reconnect flap seen in testing
+// (see decisions.md, first successful WOL Test) and simply be lost.
+// Resend periodically until the target confirms it's awake (via the same
+// ARP-snoop liveness check the debug Ping button uses) or this budget runs
+// out, rather than firing once and hoping.
+constexpr uint32_t WOL_RESEND_INTERVAL_MS = 3000;
+constexpr uint32_t WOL_RESEND_TOTAL_BUDGET_MS = 15000;
 constexpr uint8_t MAX_SSID_LEN = 32;               // 802.11 SSID max
 // WPA2-PSK passphrases can be up to 63 chars, but the companion protocol's
 // fixed 63-byte HID report (11-byte command header) only has 53 bytes of
@@ -94,6 +102,16 @@ WolDebugResult g_debug_result = WolDebugResult::Pending;
 uint32_t g_debug_started_ms = 0;
 bool g_arp_snoop_installed = false;
 netif_input_fn g_original_netif_input = nullptr;
+
+// Automatic-trigger resend tracking (see WOL_RESEND_INTERVAL_MS above).
+// Not used by the debug WOL Test button, which is a single fire-and-forget
+// send. g_resend_active also gates the liveness ARP watch in
+// arp_snoop_input() below -- separate from the debug Ping's own watch, so
+// the two can't clobber each other's result if run back to back.
+bool g_resend_active = false;
+uint32_t g_resend_started_ms = 0;
+uint32_t g_resend_last_sent_ms = 0;
+bool g_target_confirmed_awake = false;
 
 uint32_t now_ms() {
     return to_ms_since_boot(get_absolute_time());
@@ -198,16 +216,22 @@ bool have_ip_lease() {
 // then always forwards to the netif's original input function (normally
 // ethernet_input) so nothing about ordinary lwIP operation changes.
 err_t arp_snoop_input(pbuf *p, netif *inp) {
+    const bool debug_ping_watching =
+        g_debug_action == WolDebugAction::Ping && g_debug_result == WolDebugResult::Pending;
     if (
-        g_debug_action == WolDebugAction::Ping
-        && g_debug_result == WolDebugResult::Pending
+        (debug_ping_watching || g_resend_active)
         && g_have_target_mac
         && p->len >= ETH_HEADER_LEN
     ) {
         uint8_t src_mac[6];
         if (pbuf_copy_partial(p, src_mac, sizeof(src_mac), ETH_SRC_MAC_OFFSET) == sizeof(src_mac)) {
             if (std::memcmp(src_mac, g_target_mac, sizeof(src_mac)) == 0) {
-                finish_debug_action(WolDebugResult::Success);
+                if (debug_ping_watching) {
+                    finish_debug_action(WolDebugResult::Success);
+                }
+                if (g_resend_active) {
+                    g_target_confirmed_awake = true;
+                }
             }
         }
     }
@@ -338,6 +362,54 @@ bool wolwifi_set_target_mac(const uint8_t mac[6]) {
     return true;
 }
 
+// Starts (or restarts) the resend-until-confirmed cycle: sends immediately,
+// then wolwifi_task()'s drive_resend_cycle() takes over to resend every
+// WOL_RESEND_INTERVAL_MS until either the target confirms awake via ARP or
+// WOL_RESEND_TOTAL_BUDGET_MS elapses.
+void begin_resend_cycle() {
+    g_resend_active = true;
+    g_target_confirmed_awake = false;
+    g_resend_started_ms = now_ms();
+    g_resend_last_sent_ms = g_resend_started_ms;
+    ensure_arp_snoop_installed();
+    send_magic_packet_now(false);
+}
+
+// Drives the resend-until-confirmed cycle; called every wolwifi_task() tick.
+// No-op unless a cycle is active (started by begin_resend_cycle()).
+void drive_resend_cycle() {
+    if (!g_resend_active) {
+        return;
+    }
+    if (g_target_confirmed_awake) {
+        DS5_LOG(
+            "[WOL] Target confirmed awake via ARP after %lu ms; stopping resend\n",
+            static_cast<unsigned long>(now_ms() - g_resend_started_ms)
+        );
+        g_resend_active = false;
+        return;
+    }
+    const uint32_t elapsed = now_ms() - g_resend_started_ms;
+    if (elapsed > WOL_RESEND_TOTAL_BUDGET_MS) {
+        DS5_LOG(
+            "[WOL] Resend budget (%lu ms) exhausted without ARP confirmation; giving up\n",
+            static_cast<unsigned long>(WOL_RESEND_TOTAL_BUDGET_MS)
+        );
+        g_resend_active = false;
+        return;
+    }
+    if (now_ms() - g_resend_last_sent_ms >= WOL_RESEND_INTERVAL_MS) {
+        g_resend_last_sent_ms = now_ms();
+        // Broadcast an ARP request too, same as the debug Ping, to prompt a
+        // reply from an already-awake target sooner rather than waiting
+        // only on ambient ARP chatter.
+        if (netif_default != nullptr) {
+            etharp_request(netif_default, netif_ip4_addr(netif_default));
+        }
+        send_magic_packet_now(false);
+    }
+}
+
 void wolwifi_on_controller_connect(void) {
     if (!g_enabled || !g_have_ssid || !g_have_target_mac) {
         return;
@@ -345,8 +417,8 @@ void wolwifi_on_controller_connect(void) {
     DS5_LOG("[WOL] Controller connected\n");
     if (g_wifi_state == WifiState::Connected && have_ip_lease()) {
         // Wi-Fi is already up from a prior session -- no new radio activity
-        // about to start, so no reason to delay; send right away.
-        send_magic_packet_now(false);
+        // about to start, so no reason to delay; begin resending right away.
+        begin_resend_cycle();
     } else {
         // Not connected yet: queue the send for once wolwifi_task() gets us
         // online. Delay the *start* of the Wi-Fi connect sequence itself
@@ -459,6 +531,13 @@ void wolwifi_task(void) {
         return;
     }
 
+    // Drive any in-progress resend-until-confirmed cycle every tick,
+    // independent of g_wifi_state below -- a resend can span a Wi-Fi link
+    // drop/reconnect (e.g. the reconnect flap seen in testing), and the
+    // cycle's own budget/ARP-confirmation logic is what decides when to
+    // stop, not the connect state machine.
+    drive_resend_cycle();
+
     // Log every DHCP client state transition (see lwip/prot/dhcp.h
     // DHCP_STATE_*) regardless of our own WifiState -- useful alongside
     // raw_link_status to confirm DHCP is actually running.
@@ -530,7 +609,7 @@ void wolwifi_task(void) {
                 ensure_arp_snoop_installed();
                 if (g_send_pending) {
                     g_send_pending = false;
-                    send_magic_packet_now(false);
+                    begin_resend_cycle();
                 }
             } else if (now_ms() - g_state_entered_ms > WIFI_CONNECT_TIMEOUT_MS) {
                 g_dhcp_timeout_count++;
