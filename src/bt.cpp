@@ -427,6 +427,12 @@ static uint8_t hid_channel_recovery_attempts = 0;
 static BtConnectionPhase connection_phase = BtConnectionPhase::Listening;
 static uint32_t connection_generation = 0;
 static uint32_t connection_phase_started_us = 0;
+// Set once, at the Ready transition, and left alone afterward (unlike
+// connection_phase_started_us, which is reset to 0 right at that same
+// transition and reused per-phase) -- gives ConnControllerTypeIdentified's
+// trace event a stable "when did this session become Ready" reference to
+// measure elapsed time from. See WolTraceStage::ConnControllerTypeIdentified.
+static uint32_t connection_ready_at_us = 0;
 
 // See bt_append_wol_trace_event()/bt_read_wol_trace() in bt.h for why this
 // exists: a ring buffer of connection-phase and WOL events that survives
@@ -4073,6 +4079,7 @@ static void finish_hid_session_if_ready() {
     connection_phase = BtConnectionPhase::Ready;
     bt_append_wol_trace_event(WolTraceStage::ConnPhaseReady);
     connection_phase_started_us = 0;
+    connection_ready_at_us = time_us_32();
     cancel_hid_channel_recovery_if_ready();
     // Wake-on-LAN: this function only reaches here once per connection (see
     // the `connection_phase == BtConnectionPhase::Ready` early-return above),
@@ -4247,11 +4254,19 @@ static __attribute__((noinline)) void l2cap_packet_handler_cold(
                         edge_type_response ? "DualSense Edge" : "DualSense"
                     );
                     usb_handle_controller_transport_ready();
+                    bt_append_wol_trace_event(
+                        WolTraceStage::ConnControllerTypeIdentified,
+                        static_cast<uint8_t>(std::min<uint32_t>((time_us_32() - connection_ready_at_us) / 1000, 255))
+                    );
                 } else if (size > 0 && packet[0] == 0x02) {
                     controller_type = ControllerTypeDualSense;
                     controller_type_check_pending = false;
                     DS5_LOG("[L2CAP] Connected controller detected as DualSense\n");
                     usb_handle_controller_transport_ready();
+                    bt_append_wol_trace_event(
+                        WolTraceStage::ConnControllerTypeIdentified,
+                        static_cast<uint8_t>(std::min<uint32_t>((time_us_32() - connection_ready_at_us) / 1000, 255))
+                    );
                 }
             } else if (
                 edge_type_response

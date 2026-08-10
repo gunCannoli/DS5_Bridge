@@ -253,6 +253,24 @@ enum class WolTraceStage : uint8_t {
     // reboot itself. detail = disconnect_retry_attempts after this send
     // (1..DISCONNECT_RETRY_MAX_ATTEMPTS).
     ConnDisconnectRetrySent = 27,
+    // Measurement-only: a real test showed the host-alive gate
+    // (WolTriggerSkippedHostActive) checking usb_host_active() at the
+    // exact instant of the controller-connect edge, when this firmware's
+    // own USB persona for that session hasn't mounted yet -- usb_mounted
+    // only becomes true after usb_handle_controller_transport_ready()
+    // (usb.cpp), itself gated on this controller-type-identification
+    // handshake, which only starts once wolwifi_on_controller_connect()
+    // has already run (same Ready-transition block, bt.cpp). So the gate
+    // was checking a signal that structurally cannot be true yet,
+    // independent of whether the target PC is actually on. Appended at
+    // both controller-type-identification success sites, right after
+    // usb_handle_controller_transport_ready() is called, with detail =
+    // elapsed ms since connection_phase entered Ready (capped to 255) --
+    // real timing data needed to design a bounded observation window
+    // (matching awalol/DS5Dongle#207's and DevFreezing/DS5Dongle-WoL's
+    // Observe state) as the actual fix, instead of guessing a value. No
+    // behavior change from this stage alone.
+    ConnControllerTypeIdentified = 28,
 };
 // detail's meaning depends on stage: HCI disconnect reason for
 // ConnDisconnected, 1/0 for whether WOL was queued-pending vs. sent

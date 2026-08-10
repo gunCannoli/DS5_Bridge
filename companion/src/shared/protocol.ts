@@ -88,7 +88,8 @@ export const WOL_TRACE_STAGE = {
   WOL_WIFI_BACKOFF_ELAPSED: 24,
   WOL_TRIGGER_SKIPPED_HOST_ACTIVE: 25,
   BOARD_TRANSPORT_RECOVERY_REBOOT: 26,
-  CONN_DISCONNECT_RETRY_SENT: 27
+  CONN_DISCONNECT_RETRY_SENT: 27,
+  CONN_CONTROLLER_TYPE_IDENTIFIED: 28
 } as const;
 
 export const COMMAND_ID = {
@@ -1049,7 +1050,8 @@ const WOL_TRACE_STAGE_LABELS: Record<number, string> = {
   [WOL_TRACE_STAGE.WOL_WIFI_BACKOFF_ELAPSED]: 'wol-wifi-backoff-elapsed',
   [WOL_TRACE_STAGE.WOL_TRIGGER_SKIPPED_HOST_ACTIVE]: 'wol-trigger-skipped-host-active',
   [WOL_TRACE_STAGE.BOARD_TRANSPORT_RECOVERY_REBOOT]: 'board-transport-recovery-reboot',
-  [WOL_TRACE_STAGE.CONN_DISCONNECT_RETRY_SENT]: 'conn-disconnect-retry-sent'
+  [WOL_TRACE_STAGE.CONN_DISCONNECT_RETRY_SENT]: 'conn-disconnect-retry-sent',
+  [WOL_TRACE_STAGE.CONN_CONTROLLER_TYPE_IDENTIFIED]: 'conn-controller-type-identified'
 };
 
 // detail's meaning depends on stage -- see bt_append_wol_trace_event() call
