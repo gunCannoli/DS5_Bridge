@@ -26,6 +26,18 @@ void usb_set_suspend_disconnect_enabled(bool enabled);
 bool usb_suspend_disconnect_enabled();
 bool usb_host_suspended_active();
 bool usb_host_active();
+// Raw bitmask snapshot of every flag usb_host_active() depends on, plus
+// the controller-transport session-scoping state -- see wolwifi.cpp's
+// ObserveHost diagnostics (WolTraceStage::ObserveHostSample) for why: a
+// real test showed the host-alive gate not skipping WOL even with the
+// companion app open and the target PC on, and usb_host_active() alone
+// can't tell you *why* it read false (never mounted this session vs.
+// mounted-but-suspended vs. controller-transport not yet attached).
+// bit0=usb_mounted, bit1=tud_inited(), bit2=tud_suspended(),
+// bit3=usb_host_suspended (the suspend-debounce-armed flag, distinct from
+// the live tud_suspended() bus state), bit4=usb_controller_transport_ready,
+// bit5=usb_controller_transport_attached.
+uint8_t usb_host_active_debug_bits();
 bool usb_speaker_streaming_active();
 bool usb_mic_streaming_active();
 bool usb_line_streaming_active();

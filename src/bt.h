@@ -271,6 +271,30 @@ enum class WolTraceStage : uint8_t {
     // Observe state) as the actual fix, instead of guessing a value. No
     // behavior change from this stage alone.
     ConnControllerTypeIdentified = 28,
+    // A real test with the companion app open and the target PC confirmed
+    // on still showed WOL firing (wol-trigger-fired) instead of the
+    // observation window correctly aborting it -- the window elapsed
+    // without ever reading a sustained-active host, even though the host
+    // genuinely was active. Added to see exactly what the window observed
+    // instead of continuing to guess. Appended once when
+    // begin_observe_host() arms the window (wolwifi.cpp), detail =
+    // usb_host_active_debug_bits() (usb.h) at that instant -- the state
+    // right as the window starts.
+    ObserveHostBegin = 29,
+    // Appended on every rising/falling edge of usb_host_active() sampled
+    // during an active observation window (not every tick, to avoid
+    // flooding) -- detail = usb_host_active_debug_bits() at the edge, so
+    // the full sequence of what the window actually saw is reconstructable
+    // from the trace (e.g. "never once read usb_mounted" vs. "mounted but
+    // stayed suspended" vs. "flickered active/inactive faster than the
+    // sustain threshold").
+    ObserveHostSampleEdge = 30,
+    // Appended when the window elapses without a sustained-active read
+    // (the branch that calls proceed_with_wol_trigger()) -- detail =
+    // usb_host_active_debug_bits() at the moment the window gave up, so
+    // the very last observed state is on record even if no earlier edge
+    // was informative.
+    ObserveHostWindowElapsed = 31,
 };
 // detail's meaning depends on stage: HCI disconnect reason for
 // ConnDisconnected, 1/0 for whether WOL was queued-pending vs. sent
