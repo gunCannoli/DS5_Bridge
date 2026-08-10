@@ -369,6 +369,14 @@ WolDebugStatus wolwifi_debug_status(void) {
     status.now_ms = now_ms();
     status.link_state_entered_ms = g_state_entered_ms;
     status.raw_link_status = static_cast<int8_t>(cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA));
+    if (netif_default != nullptr) {
+        const struct dhcp *dhcp = netif_dhcp_data(netif_default);
+        status.dhcp_state = dhcp != nullptr ? dhcp->state : 0;
+        status.dhcp_tries = dhcp != nullptr ? dhcp->tries : 0;
+    } else {
+        status.dhcp_state = 0;
+        status.dhcp_tries = 0;
+    }
     return status;
 }
 
@@ -396,6 +404,24 @@ void wolwifi_task(void) {
     }
     if (blocked) {
         return;
+    }
+
+    // Log every DHCP client state transition (see lwip/prot/dhcp.h
+    // DHCP_STATE_*) regardless of our own WifiState -- catches the case
+    // where cyw43_wifi_link_status() reports CYW43_LINK_JOIN (associated)
+    // indefinitely without ever showing whether DHCP is actually running,
+    // stuck retrying, or never started at all.
+    if (netif_default != nullptr) {
+        static uint8_t last_logged_dhcp_state = 0xFF; // sentinel outside DHCP_STATE_* range
+        const struct dhcp *dhcp = netif_dhcp_data(netif_default);
+        const uint8_t dhcp_state = dhcp != nullptr ? dhcp->state : 0;
+        if (dhcp_state != last_logged_dhcp_state) {
+            DS5_LOG(
+                "[WOL] DHCP client state: %u (tries=%u, has_struct=%d)\n",
+                dhcp_state, dhcp != nullptr ? dhcp->tries : 0, dhcp != nullptr ? 1 : 0
+            );
+            last_logged_dhcp_state = dhcp_state;
+        }
     }
 
     switch (g_wifi_state) {

@@ -68,6 +68,14 @@ struct WolDebugStatus {
     // CYW43 states into "Connecting", which isn't enough to tell a flapping
     // auth failure from a slow DHCP lease from a weak signal.
     int8_t raw_link_status;
+    // lwIP's own DHCP client state machine (struct dhcp.state, see
+    // lwip/prot/dhcp.h DHCP_STATE_*: 0=off, 1=requesting, 2=init,
+    // 6=selecting, 10=bound, etc.) and retry count (struct dhcp.tries).
+    // Added because raw_link_status alone can show CYW43_LINK_JOIN
+    // (associated to the AP) indefinitely without saying whether DHCP is
+    // actually attempting to get a lease, stuck retrying, or never started.
+    uint8_t dhcp_state;
+    uint8_t dhcp_tries;
 };
 
 #ifdef ENABLE_WOLWIFI
@@ -146,6 +154,8 @@ static inline WolDebugStatus wolwifi_debug_status(void) {
         false,
         false,
         false,
+        0,
+        0,
         0,
         0,
         0
