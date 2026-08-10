@@ -159,6 +159,20 @@ npm run installer:win   # NSIS installer -> companion/artifacts/installer/
 npm run package:win     # -> companion/artifacts/DS5 Bridge-win32-x64-<timestamp>/
 ```
 
+The desktop shortcut points at `companion/artifacts/installer/win-unpacked/DS5 Bridge.exe`
+directly (not a separate installed copy), so `npm run installer:win` is what
+actually needs to run to make the shortcut launch fresh code -- rebuilding
+only `companion/artifacts/DS5 Bridge-win32-x64-<timestamp>/` via
+`package:win` does NOT update what the shortcut launches.
+
+If the app is currently running, close it first (it locks `DS5 Bridge.exe`
+and the rebuild will fail) -- always OK to close and rebuild without asking
+first, per explicit standing permission:
+
+```powershell
+Get-Process | Where-Object { $_.Path -like '*win-unpacked*' } | Stop-Process -Force -Confirm:$false
+```
+
 ### Changes touching both (e.g. a new companion protocol command, like WOL's
 ### SET_WOL_* commands and their `src/companion.cpp` handlers)
 

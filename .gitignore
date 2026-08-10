@@ -16,3 +16,4 @@ companion/native/**/bin
 companion/native/**/obj
 tools/**/bin
 tools/**/obj
+*DS5 Bridge.lnk
