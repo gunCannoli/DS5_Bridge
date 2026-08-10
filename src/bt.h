@@ -172,6 +172,17 @@ enum class WolTraceStage : uint8_t {
     // directly explain a resend cycle that started and then never
     // continued, no wol-resend-confirmed/gave-up, no error, nothing.
     BoardWatchdogReboot = 17,
+    // Appended exactly once, unconditionally, on EVERY boot (the very
+    // first trace event, before BoardWatchdogReboot if that also fires) --
+    // unlike BoardWatchdogReboot, this doesn't require
+    // watchdog_enable_caused_reboot() to be true, so it also catches a
+    // brownout, a manual power cycle, a picotool/BOOTSEL reset, or any
+    // other reset path the watchdog-specific check wouldn't attribute to
+    // itself. detail is the raw watchdog_hw->reason bits (bit0=TIMER,
+    // bit1=FORCE, 0=power-on/pin/other non-watchdog reset) -- gives an
+    // unambiguous "why did the trace sequence restart at 1" answer instead
+    // of inferring it from board_time_ms looking small.
+    BoardBoot = 18,
 };
 // detail's meaning depends on stage: HCI disconnect reason for
 // ConnDisconnected, 1/0 for whether WOL was queued-pending vs. sent
