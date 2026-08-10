@@ -100,6 +100,17 @@ bool g_send_pending = false;
 // WIFI_CONNECT_START_DELAY_MS. Not used for debug Ping/WOL Test triggers,
 // which are user-initiated on demand, not tied to a fresh BT connect event.
 uint32_t g_connect_start_not_before_ms = 0;
+// Set by disconnect_wifi_after_wol() after a resend cycle ends; stops
+// wolwifi_task()'s Idle case from immediately reconnecting Wi-Fi on its
+// very next tick (the Idle state is otherwise "connect whenever possible"
+// by design, which -- without this guard -- turned the intentional
+// post-WOL disconnect into a self-inflicted immediate leave/rejoin loop,
+// defeating the whole point of leaving: the ongoing DHCP/association
+// activity from the rejoin was still observed contending with BT and
+// dropping the controller mid-boot even with the leave call in place.
+// Cleared only by wolwifi_on_controller_connect(), the one legitimate
+// reason to reconnect.
+bool g_wifi_intentionally_idle = false;
 
 WolDebugAction g_debug_action = WolDebugAction::None;
 WolDebugResult g_debug_result = WolDebugResult::Pending;
@@ -429,7 +440,10 @@ bool wolwifi_set_wifi_ssid(const char *ssid, uint8_t ssid_len) {
 
     DS5_LOG("[WOL] Wi-Fi SSID updated (len=%u)\n", ssid_len);
 
-    // Re-apply on next task poll rather than blocking here.
+    // Re-apply on next task poll rather than blocking here. New credentials
+    // are a legitimate reason to reconnect even if a prior WOL cycle left
+    // Wi-Fi intentionally idle.
+    g_wifi_intentionally_idle = false;
     enter_state(WifiState::Idle);
     return true;
 }
@@ -452,6 +466,7 @@ bool wolwifi_set_wifi_password(const char *password, uint8_t password_len) {
 
     DS5_LOG("[WOL] Wi-Fi password updated (len=%u)\n", password_len);
 
+    g_wifi_intentionally_idle = false;
     enter_state(WifiState::Idle);
     return true;
 }
@@ -490,6 +505,7 @@ void disconnect_wifi_after_wol() {
     }
     const int err = cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
     DS5_LOG("[WOL] Wi-Fi leave after resend cycle end: err=%d\n", err);
+    g_wifi_intentionally_idle = true;
     enter_state(WifiState::Idle);
 }
 
@@ -565,6 +581,11 @@ void wolwifi_on_controller_connect(void) {
         return;
     }
     DS5_LOG("[WOL] Controller connected\n");
+    // A fresh controller-connect edge is the one legitimate reason to
+    // reconnect Wi-Fi after a prior WOL cycle intentionally left it idle
+    // (see disconnect_wifi_after_wol()) -- clear the guard so the Idle
+    // case in wolwifi_task() is willing to start a new connect again.
+    g_wifi_intentionally_idle = false;
     if (g_wifi_state == WifiState::Connected && have_ip_lease()) {
         // Wi-Fi is already up from a prior session -- no new radio activity
         // about to start, so no reason to delay; begin resending right away.
@@ -723,6 +744,9 @@ void wolwifi_task(void) {
             return;
 
         case WifiState::Idle:
+            if (g_wifi_intentionally_idle) {
+                return;
+            }
             if (g_connect_start_not_before_ms != 0) {
                 if (now_ms() < g_connect_start_not_before_ms) {
                     return;
