@@ -231,6 +231,28 @@ enum class WolTraceStage : uint8_t {
     // CMakeLists.txt for the build-time escape hatch on boards where this
     // heuristic can't work (USB stays active in S5, or Modern Standby).
     WolTriggerSkippedHostActive = 25,
+    // A host-alive-gated test showed wol-trigger-fired firing right after
+    // board-boot detail=1 (raw watchdog_hw->reason bit0=TIMER set), but
+    // BoardWatchdogReboot never appeared -- watchdog_enable_caused_reboot()
+    // only returns true when THIS firmware's own watchdog_enable() call
+    // (the periodic 1000ms one in main.cpp) caused the reboot; it returns
+    // false for a reboot via a direct watchdog_reboot() call elsewhere
+    // (there are four such call sites in bt.cpp's disconnect/ACL-pending
+    // recovery paths -- "bounded transport recovery" reboots, deliberate,
+    // not a stall), even though the raw reason bits are set. That made a
+    // real, distinct class of self-triggered reboot invisible in the
+    // trace. Appended at all four watchdog_reboot() call sites, before the
+    // call, so it's the last event before the ring buffer resets on the
+    // new boot. detail: 0=disconnect-retry-exhausted (bt.cpp
+    // service_disconnect_recovery), 1=incoming-ACL-pending-timeout,
+    // 2=ACL-cancel-did-not-complete.
+    BoardTransportRecoveryReboot = 26,
+    // Appended each time service_disconnect_recovery() actually sends a
+    // disconnect retry (bt.cpp), so the escalation leading up to a
+    // BoardTransportRecoveryReboot(detail=0) is visible, not just the
+    // reboot itself. detail = disconnect_retry_attempts after this send
+    // (1..DISCONNECT_RETRY_MAX_ATTEMPTS).
+    ConnDisconnectRetrySent = 27,
 };
 // detail's meaning depends on stage: HCI disconnect reason for
 // ConnDisconnected, 1/0 for whether WOL was queued-pending vs. sent

@@ -2786,6 +2786,7 @@ static void service_disconnect_recovery(uint32_t now) {
     if (disconnect_retry_attempts >= DISCONNECT_RETRY_MAX_ATTEMPTS) {
         disconnect_retry_requested = false;
         DS5_LOG("[HCI] Disconnect retry exhausted; reboot for bounded transport recovery\n");
+        bt_append_wol_trace_event(WolTraceStage::BoardTransportRecoveryReboot, 0);
         watchdog_reboot(0, 0, CONTROLLER_DISCONNECT_REBOOT_DELAY_MS);
         return;
     }
@@ -2800,6 +2801,7 @@ static void service_disconnect_recovery(uint32_t now) {
         disconnect_retry_waiting = true;
         disconnect_retry_at_us = now + DISCONNECT_RETRY_EVENT_TIMEOUT_US;
         DS5_LOG("[HCI] Disconnect retry sent attempt=%u\n", disconnect_retry_attempts);
+        bt_append_wol_trace_event(WolTraceStage::ConnDisconnectRetrySent, disconnect_retry_attempts);
     } else {
         disconnect_retry_at_us = now + DISCONNECT_RETRY_DELAY_US;
     }
@@ -3009,9 +3011,11 @@ void bt_inquiry_loop() {
             acl_connection_pending_at_us = now;
         } else if (!acl_connection_outbound) {
             DS5_LOG("[HCI] Incoming ACL pending timed out; reset bounded transport recovery\n");
+            bt_append_wol_trace_event(WolTraceStage::BoardTransportRecoveryReboot, 1);
             watchdog_reboot(0, 0, CONTROLLER_DISCONNECT_REBOOT_DELAY_MS);
         } else if (acl_connection_cancel_sent) {
             DS5_LOG("[HCI] ACL cancellation did not complete; reset bounded transport recovery\n");
+            bt_append_wol_trace_event(WolTraceStage::BoardTransportRecoveryReboot, 2);
             watchdog_reboot(0, 0, CONTROLLER_DISCONNECT_REBOOT_DELAY_MS);
         } else {
             // The cancel command is waiting for HCI command credit. Keep the
