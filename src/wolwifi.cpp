@@ -18,6 +18,7 @@
 
 #ifdef ENABLE_WOLWIFI
 
+#include <algorithm>
 #include <cstring>
 
 #include "pico/cyw43_arch.h"
@@ -372,6 +373,7 @@ void begin_resend_cycle() {
     g_target_confirmed_awake = false;
     g_resend_started_ms = now_ms();
     g_resend_last_sent_ms = g_resend_started_ms;
+    bt_append_wol_trace_event(WolTraceStage::WolResendBegin);
     ensure_arp_snoop_installed();
     bt_wol_indicator_begin();
     send_magic_packet_now(false);
@@ -384,9 +386,14 @@ void drive_resend_cycle() {
         return;
     }
     if (g_target_confirmed_awake) {
+        const uint32_t took_ms = now_ms() - g_resend_started_ms;
         DS5_LOG(
             "[WOL] Target confirmed awake via ARP after %lu ms; stopping resend\n",
-            static_cast<unsigned long>(now_ms() - g_resend_started_ms)
+            static_cast<unsigned long>(took_ms)
+        );
+        bt_append_wol_trace_event(
+            WolTraceStage::WolResendConfirmed,
+            static_cast<uint8_t>(std::min<uint32_t>(took_ms / 1000, 255))
         );
         g_resend_active = false;
         bt_wol_indicator_confirm();
@@ -398,6 +405,7 @@ void drive_resend_cycle() {
             "[WOL] Resend budget (%lu ms) exhausted without ARP confirmation; giving up\n",
             static_cast<unsigned long>(WOL_RESEND_TOTAL_BUDGET_MS)
         );
+        bt_append_wol_trace_event(WolTraceStage::WolResendGaveUp);
         g_resend_active = false;
         bt_wol_indicator_cancel();
         return;
@@ -416,12 +424,20 @@ void drive_resend_cycle() {
 
 void wolwifi_on_controller_connect(void) {
     if (!g_enabled || !g_have_ssid || !g_have_target_mac) {
+        // detail bitmask: bit0=enabled, bit1=have_ssid, bit2=have_target_mac
+        // -- lets the trace show *why* a connect-trigger edge did nothing,
+        // distinguishing "WOL genuinely off/unconfigured" from "trigger
+        // never fired at all" (the latter wouldn't appear in the trace at
+        // all, which is itself diagnostic).
+        const uint8_t detail = (g_enabled ? 1 : 0) | (g_have_ssid ? 2 : 0) | (g_have_target_mac ? 4 : 0);
+        bt_append_wol_trace_event(WolTraceStage::WolTriggerSkipped, detail);
         return;
     }
     DS5_LOG("[WOL] Controller connected\n");
     if (g_wifi_state == WifiState::Connected && have_ip_lease()) {
         // Wi-Fi is already up from a prior session -- no new radio activity
         // about to start, so no reason to delay; begin resending right away.
+        bt_append_wol_trace_event(WolTraceStage::WolTriggerFired, 0);
         begin_resend_cycle();
     } else {
         // Not connected yet: queue the send for once wolwifi_task() gets us
@@ -431,6 +447,11 @@ void wolwifi_on_controller_connect(void) {
         // CYW43 radio -- see WIFI_CONNECT_START_DELAY_MS.
         g_send_pending = true;
         g_connect_start_not_before_ms = now_ms() + WIFI_CONNECT_START_DELAY_MS;
+        bt_append_wol_trace_event(WolTraceStage::WolTriggerFired, 1);
+        bt_append_wol_trace_event(
+            WolTraceStage::WolConnectDelayStart,
+            static_cast<uint8_t>(WIFI_CONNECT_START_DELAY_MS / 1000)
+        );
         DS5_LOG(
             "[WOL] Wi-Fi not ready; queuing magic packet, delaying connect start %lu ms\n",
             static_cast<unsigned long>(WIFI_CONNECT_START_DELAY_MS)

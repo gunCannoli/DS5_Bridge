@@ -18,7 +18,8 @@ export const REPORT_ID = {
   FEEDBACK_TRACE: 0x0a,
   WOL_DEBUG_STATUS: 0x0c,
   DEVICE_IDENTITY: 0x0d,
-  FIRMWARE_LOG: 0x0e
+  FIRMWARE_LOG: 0x0e,
+  WOL_TRACE: 0x0b
 } as const;
 
 export const SHORTCUT_EVENT = {
@@ -56,6 +57,26 @@ export const AUDIO_DEBUG_EVENT = {
 export const AUDIO_DEBUG_RECORD_SIZE = 14;
 export const TRIGGER_TRACE_RECORD_SIZE = 38;
 export const FEEDBACK_TRACE_RECORD_SIZE = 24;
+export const WOL_TRACE_RECORD_SIZE = 8;
+
+// Mirrors WolTraceStage in bt.h. Kept in sync manually (small, stable enum).
+export const WOL_TRACE_STAGE = {
+  CONN_PHASE_CONNECTING: 0,
+  CONN_PHASE_SECURING: 1,
+  CONN_PHASE_HID_OPENING: 2,
+  CONN_PHASE_READY: 3,
+  CONN_PHASE_DISCONNECTING: 4,
+  CONN_SECURITY_TIMEOUT: 5,
+  CONN_HID_OPENING_TIMEOUT: 6,
+  CONN_HID_INTERRUPT_FOLLOWUP_TIMEOUT: 7,
+  CONN_DISCONNECTED: 8,
+  WOL_TRIGGER_FIRED: 9,
+  WOL_TRIGGER_SKIPPED: 10,
+  WOL_CONNECT_DELAY_START: 11,
+  WOL_RESEND_BEGIN: 12,
+  WOL_RESEND_CONFIRMED: 13,
+  WOL_RESEND_GAVE_UP: 14
+} as const;
 
 export const COMMAND_ID = {
   SET_HAPTICS_GAIN: 0x01,
@@ -561,6 +582,19 @@ export interface TriggerTracePayload {
   events: TriggerTraceEventPayload[];
 }
 
+export interface WolTraceEventPayload {
+  sequence: number;
+  timeMs: number;
+  stage: number;
+  detail: number;
+}
+
+export interface WolTracePayload {
+  latestSequence: number;
+  droppedCount: number;
+  events: WolTraceEventPayload[];
+}
+
 export interface FeedbackTraceEventPayload {
   sequence: number;
   timeMs: number;
@@ -972,6 +1006,64 @@ export function parseAudioStatsReport(report: ArrayLike<number>): AudioDebugStat
     audio0x36SentCount: readU32(report, 56),
     criticalStarvingAudioCount: readU32(report, 60)
   };
+}
+
+const WOL_TRACE_STAGE_LABELS: Record<number, string> = {
+  [WOL_TRACE_STAGE.CONN_PHASE_CONNECTING]: 'conn-connecting',
+  [WOL_TRACE_STAGE.CONN_PHASE_SECURING]: 'conn-securing',
+  [WOL_TRACE_STAGE.CONN_PHASE_HID_OPENING]: 'conn-hid-opening',
+  [WOL_TRACE_STAGE.CONN_PHASE_READY]: 'conn-ready',
+  [WOL_TRACE_STAGE.CONN_PHASE_DISCONNECTING]: 'conn-disconnecting',
+  [WOL_TRACE_STAGE.CONN_SECURITY_TIMEOUT]: 'conn-security-timeout',
+  [WOL_TRACE_STAGE.CONN_HID_OPENING_TIMEOUT]: 'conn-hid-opening-timeout',
+  [WOL_TRACE_STAGE.CONN_HID_INTERRUPT_FOLLOWUP_TIMEOUT]: 'conn-hid-interrupt-followup-timeout',
+  [WOL_TRACE_STAGE.CONN_DISCONNECTED]: 'conn-disconnected',
+  [WOL_TRACE_STAGE.WOL_TRIGGER_FIRED]: 'wol-trigger-fired',
+  [WOL_TRACE_STAGE.WOL_TRIGGER_SKIPPED]: 'wol-trigger-skipped',
+  [WOL_TRACE_STAGE.WOL_CONNECT_DELAY_START]: 'wol-connect-delay-start',
+  [WOL_TRACE_STAGE.WOL_RESEND_BEGIN]: 'wol-resend-begin',
+  [WOL_TRACE_STAGE.WOL_RESEND_CONFIRMED]: 'wol-resend-confirmed',
+  [WOL_TRACE_STAGE.WOL_RESEND_GAVE_UP]: 'wol-resend-gave-up'
+};
+
+// detail's meaning depends on stage -- see bt_append_wol_trace_event() call
+// sites in bt.cpp/wolwifi.cpp for the exact meaning at each site (e.g. HCI
+// disconnect reason for conn-disconnected, a bitmask of
+// enabled/have-ssid/have-target-mac for wol-trigger-skipped).
+export function wolTraceStageLabel(stage: number): string {
+  return WOL_TRACE_STAGE_LABELS[stage] ?? `stage-${stage}`;
+}
+
+export function parseWolTraceReport(report: ArrayLike<number>): WolTracePayload {
+  assertReport(report, REPORT_ID.WOL_TRACE);
+  assertVersion(report);
+
+  const recordCount = report[7];
+  const recordSize = report[8];
+  const latestSequence = readU32(report, 9);
+  const droppedCount = readU16(report, 13);
+  if (recordCount === 0) {
+    return { latestSequence, droppedCount, events: [] };
+  }
+  if (recordSize < WOL_TRACE_RECORD_SIZE) {
+    throw new ProtocolError(`WOL trace record size ${recordSize} is too small.`, 'bad-wol-trace-record');
+  }
+
+  const events: WolTraceEventPayload[] = [];
+  for (let index = 0; index < recordCount; index += 1) {
+    const offset = 15 + index * recordSize;
+    if (offset + WOL_TRACE_RECORD_SIZE > REPORT_LENGTH) {
+      break;
+    }
+    events.push({
+      sequence: readU16(report, offset),
+      timeMs: readU32(report, offset + 2),
+      stage: report[offset + 6],
+      detail: report[offset + 7]
+    });
+  }
+
+  return { latestSequence, droppedCount, events };
 }
 
 export function parseTriggerTraceReport(report: ArrayLike<number>): TriggerTracePayload {

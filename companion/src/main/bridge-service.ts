@@ -32,6 +32,8 @@ import {
   parseFirmwareLogReport,
   parseStatusReport,
   parseWolDebugStatusReport,
+  parseWolTraceReport,
+  wolTraceStageLabel,
   readReportProtocolVersion,
   SHORTCUT_EVENT,
   WOL_DEBUG_ACTION,
@@ -64,6 +66,7 @@ import type {
   HostPersonaMode,
   AudioStatusPayload,
   WolDebugStatusPayload,
+  WolTraceEventPayload,
   TriggerTraceEventPayload,
   FeedbackTraceEventPayload,
   BridgeStatusPayload,
@@ -114,6 +117,8 @@ const AUDIO_STATUS_READ_INTERVAL_MS = 500;
 const AUDIO_DEBUG_READ_INTERVAL_MS = 500;
 const TRIGGER_TRACE_READ_INTERVAL_MS = 250;
 const FEEDBACK_TRACE_READ_INTERVAL_MS = 250;
+const WOL_TRACE_READ_INTERVAL_MS = 250;
+const WOL_TRACE_MAX_READS_PER_POLL = 32;
 const BRIDGE_CENSUS_INTERVAL_MS = 10000;
 const AUDIO_DEBUG_DIAGNOSTICS_ENABLED = CompanionDebugConfig.audioDebugDiagnosticsEnabled;
 const TRIGGER_TRACE_DIAGNOSTICS_ENABLED = CompanionDebugConfig.triggerTraceDiagnosticsEnabled;
@@ -1294,6 +1299,8 @@ export class BridgeService extends EventEmitter {
   private lastAudioDebugReadAt = 0;
   private lastTriggerTraceReadAt = 0;
   private lastFeedbackTraceReadAt = 0;
+  private lastWolTraceReadAt = 0;
+  private wolTraceSupported: boolean | null = null;
   private hostPersonaTransition: HostPersonaTransitionState | null = null;
   private completedHostPersonaMode: HostPersonaMode | null = null;
   private hostPersonaDefaultRenderRestore: HostPersonaDefaultRenderRestore | null = null;
@@ -2142,6 +2149,66 @@ export class BridgeService extends EventEmitter {
       this.wolDebugStatus = null;
     }
     this.publishAudioDiagnosticsSnapshot();
+  }
+
+  // Drains the board-level WOL/connection trace ring buffer (bt.cpp
+  // wol_trace_ring) into the same always-on WOL debug log file. Unlike
+  // readWolDebugStatus() above -- which only sees a live snapshot at the
+  // moment it happens to poll -- this ring buffer survives on the board
+  // across the gap between an event happening and the companion app next
+  // connecting, so a WOL attempt that occurred while the target PC (and
+  // this app) was off is still recoverable once the PC/app comes back. See
+  // decisions.md: added after neither the WOL debug log nor the firmware
+  // UART log could show what happened during an actual PC-off attempt,
+  // since both require a live companion connection at the moment the event
+  // happens, which by definition isn't available in that scenario.
+  private async readWolTraceThrottled(force = false): Promise<void> {
+    if (!this.device) {
+      return;
+    }
+    if (this.wolTraceSupported === false) {
+      return;
+    }
+    const now = Date.now();
+    if (!force && now - this.lastWolTraceReadAt < WOL_TRACE_READ_INTERVAL_MS) {
+      return;
+    }
+    this.lastWolTraceReadAt = now;
+
+    try {
+      const events: WolTraceEventPayload[] = [];
+      for (let readIndex = 0; readIndex < WOL_TRACE_MAX_READS_PER_POLL; readIndex += 1) {
+        const trace = parseWolTraceReport(await this.device.getFeatureReport(REPORT_ID.WOL_TRACE, REPORT_LENGTH));
+        this.wolTraceSupported = true;
+        if (trace.events.length === 0) {
+          break;
+        }
+        events.push(...trace.events);
+      }
+      if (events.length > 0) {
+        await this.appendWolTraceLog(events);
+      }
+    } catch {
+      this.wolTraceSupported = false;
+    }
+  }
+
+  private async appendWolTraceLog(events: WolTraceEventPayload[]): Promise<void> {
+    if (!this.wolDebugLogDirectory) {
+      return;
+    }
+    try {
+      const logPath = path.join(this.wolDebugLogDirectory, 'ds5bridge-wol-debug.log');
+      const lines = events.map((event) => (
+        `${new Date().toISOString()} event=board-trace seq=${event.sequence} `
+        + `board_time_ms=${event.timeMs} stage=${wolTraceStageLabel(event.stage)} detail=${event.detail}\n`
+      )).join('');
+      await fsPromises.appendFile(logPath, lines);
+      this.wolDebugLogPath = logPath;
+      this.wolDebugLogLastError = null;
+    } catch (error) {
+      this.wolDebugLogLastError = error instanceof Error ? error.message : String(error);
+    }
   }
 
   private async appendWolDebugLog(
@@ -3749,6 +3816,7 @@ export class BridgeService extends EventEmitter {
     await this.readAudioDebugThrottled(true);
     await this.readAudioStatus();
     await this.readWolDebugStatus();
+    await this.readWolTraceThrottled();
     const deviceIdentity = await this.readDeviceIdentity();
     this.updateConnectedDeviceIdentity(deviceIdentity, status.controllerConnected);
     this.maybeEmitStatusToasts(status);
