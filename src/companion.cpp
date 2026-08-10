@@ -1881,6 +1881,8 @@ uint16_t build_wol_debug_status(uint8_t *buffer, uint16_t reqlen) {
     write_u32(buffer + 15, status.last_action_started_ms);
     write_u32(buffer + 19, status.now_ms);
     write_u32(buffer + 23, status.link_state_entered_ms);
+    buffer[27] = status.dhcp_state;
+    buffer[28] = status.dhcp_tries;
     return COMPANION_PAYLOAD_SIZE;
 }
 

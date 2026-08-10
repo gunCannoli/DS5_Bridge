@@ -640,6 +640,14 @@ export interface WolDebugStatusPayload {
   // enough to tell a flapping auth failure from a slow DHCP lease from a
   // weak signal. -3=badauth, -2=nonet, -1=fail, 0=down, 1=join, 2=noip, 3=up.
   rawLinkStatus: number;
+  // lwIP's own DHCP client state (struct dhcp.state, see lwip/prot/dhcp.h
+  // DHCP_STATE_*) and retry count (struct dhcp.tries). Added because
+  // rawLinkStatus alone can show "join" (associated to the AP) forever
+  // without saying whether DHCP is actually trying to get a lease, stuck
+  // retrying, or never started -- 0=off, 1=requesting, 2=init,
+  // 6=selecting, 10=bound are the common ones seen in practice.
+  dhcpState: number;
+  dhcpTries: number;
 }
 
 export interface AudioStatusPayload {
@@ -1098,7 +1106,9 @@ export function parseWolDebugStatusReport(report: ArrayLike<number>): WolDebugSt
     lastActionStartedMs: readU32(report, 16),
     nowMs: readU32(report, 20),
     linkStateEnteredMs: readU32(report, 24),
-    rawLinkStatus: report[15] > 127 ? report[15] - 256 : report[15]
+    rawLinkStatus: report[15] > 127 ? report[15] - 256 : report[15],
+    dhcpState: report[28],
+    dhcpTries: report[29]
   };
 }
 

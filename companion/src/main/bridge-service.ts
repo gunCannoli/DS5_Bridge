@@ -2153,8 +2153,17 @@ export class BridgeService extends EventEmitter {
         [-3]: 'badauth', [-2]: 'nonet', [-1]: 'fail', 0: 'down', 1: 'join', 2: 'noip', 3: 'up'
       };
       const rawLinkStatusName = rawLinkStatusNames[status.rawLinkStatus] ?? String(status.rawLinkStatus);
+      // See lwip/prot/dhcp.h DHCP_STATE_*: 0=off, 1=requesting, 2=init,
+      // 3=rebooting, 4=rebinding, 5=renewing, 6=selecting, 7=informing,
+      // 8=checking, 10=bound, 12=backing-off.
+      const dhcpStateNames: Record<number, string> = {
+        0: 'off', 1: 'requesting', 2: 'init', 3: 'rebooting', 4: 'rebinding',
+        5: 'renewing', 6: 'selecting', 7: 'informing', 8: 'checking', 10: 'bound', 12: 'backing-off'
+      };
+      const dhcpStateName = dhcpStateNames[status.dhcpState] ?? String(status.dhcpState);
       const line = `${new Date().toISOString()} action=${actionName} result=${resultName.toLowerCase()} `
         + `link=${linkStateName} link_age_ms=${linkStateAgeMs} raw_link_status=${rawLinkStatusName} ip=${ip} `
+        + `dhcp_state=${dhcpStateName} dhcp_tries=${status.dhcpTries} `
         + `wol_enabled=${status.wolEnabled} have_ssid=${status.haveSsid} have_target_mac=${status.haveTargetMac}\n`;
       await fsPromises.appendFile(logPath, line);
       this.wolDebugLogPath = logPath;
