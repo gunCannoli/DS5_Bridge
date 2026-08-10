@@ -31,7 +31,7 @@ namespace {
 
 constexpr uint8_t kMagic[] = {'D', 'S', '5', 'B'};
 constexpr uint8_t kProtocolMajor = 1;
-constexpr uint8_t kProtocolMinor = 20;
+constexpr uint8_t kProtocolMinor = 21;
 constexpr uint8_t kProtocolMinSupportedMinor = 7;
 static_assert(DS5_FIRMWARE_VERSION_MAJOR <= 255);
 static_assert(DS5_FIRMWARE_VERSION_MINOR <= 255);
@@ -162,8 +162,6 @@ enum CommandId : uint8_t {
     CommandSetWolWifiSsid = 0x38,
     CommandSetWolWifiPassword = 0x39,
     CommandSetWolTargetMac = 0x3A,
-    CommandTriggerWolDebugPing = 0x3B,
-    CommandTriggerWolDebugSend = 0x3C,
 };
 
 enum AckResult : uint8_t {
@@ -1858,59 +1856,6 @@ uint16_t build_audio_status(uint8_t *buffer, uint16_t reqlen) {
     return COMPANION_PAYLOAD_SIZE;
 }
 
-uint16_t build_wol_debug_status(uint8_t *buffer, uint16_t reqlen) {
-    if (reqlen < COMPANION_PAYLOAD_SIZE) {
-        return 0;
-    }
-
-    memset(buffer, 0, COMPANION_PAYLOAD_SIZE);
-    write_magic_and_version(buffer);
-
-    const WolDebugStatus status = wolwifi_debug_status();
-    buffer[6] = static_cast<uint8_t>(status.link_state);
-    buffer[7] = static_cast<uint8_t>(status.last_action);
-    buffer[8] = static_cast<uint8_t>(status.last_result);
-    buffer[9] = (status.wol_enabled ? 0x01 : 0x00)
-        | (status.have_ssid ? 0x02 : 0x00)
-        | (status.have_target_mac ? 0x04 : 0x00);
-    buffer[10] = status.ip_octets[0];
-    buffer[11] = status.ip_octets[1];
-    buffer[12] = status.ip_octets[2];
-    buffer[13] = status.ip_octets[3];
-    buffer[14] = static_cast<uint8_t>(status.raw_link_status);
-    write_u32(buffer + 15, status.last_action_started_ms);
-    write_u32(buffer + 19, status.now_ms);
-    write_u32(buffer + 23, status.link_state_entered_ms);
-    buffer[27] = status.dhcp_state;
-    buffer[28] = status.dhcp_tries;
-    write_u16(buffer + 29, status.wifi_join_state);
-    write_u32(buffer + 31, status.connect_attempt_count);
-    write_u32(buffer + 35, status.wifi_connect_timeout_count);
-    write_u32(buffer + 39, status.dhcp_timeout_count);
-    write_u32(buffer + 43, status.link_lost_count);
-    return COMPANION_PAYLOAD_SIZE;
-}
-
-uint16_t build_wol_trace(uint8_t *buffer, uint16_t reqlen) {
-    if (reqlen < COMPANION_PAYLOAD_SIZE) {
-        return 0;
-    }
-
-    memset(buffer, 0, COMPANION_PAYLOAD_SIZE);
-    write_magic_and_version(buffer);
-
-    constexpr std::size_t kDataOffset = 14;
-    const WolTraceReadResult result = bt_read_wol_trace(
-        buffer + kDataOffset,
-        COMPANION_PAYLOAD_SIZE - kDataOffset
-    );
-    buffer[6] = result.record_count;
-    buffer[7] = result.record_size;
-    write_u32(buffer + 8, result.latest_sequence);
-    write_u16(buffer + 12, result.dropped_count);
-    return COMPANION_PAYLOAD_SIZE;
-}
-
 uint16_t build_firmware_log(uint8_t *buffer, uint16_t reqlen) {
     if (reqlen < COMPANION_PAYLOAD_SIZE) {
         return 0;
@@ -2427,24 +2372,6 @@ void handle_command(uint8_t const *buffer, uint16_t bufsize) {
             set_ack(command_id, sequence, AckOk);
             return;
         }
-
-        case CommandTriggerWolDebugPing:
-            if (value != 0) {
-                set_ack(command_id, sequence, AckInvalidValue);
-                return;
-            }
-            wolwifi_debug_ping();
-            set_ack(command_id, sequence, AckOk);
-            return;
-
-        case CommandTriggerWolDebugSend:
-            if (value != 0) {
-                set_ack(command_id, sequence, AckInvalidValue);
-                return;
-            }
-            wolwifi_debug_send_wol();
-            set_ack(command_id, sequence, AckOk);
-            return;
 
         case CommandSetIdleDisconnectEnabled:
             if (value > 1) {
@@ -3465,10 +3392,6 @@ uint16_t companion_get_report(uint8_t report_id, hid_report_type_t report_type, 
 #endif
         case COMPANION_REPORT_AUDIO_STATUS:
             return build_audio_status(buffer, reqlen);
-        case COMPANION_REPORT_WOL_DEBUG_STATUS:
-            return build_wol_debug_status(buffer, reqlen);
-        case COMPANION_REPORT_WOL_TRACE:
-            return build_wol_trace(buffer, reqlen);
         case COMPANION_REPORT_DEVICE_IDENTITY:
             return build_device_identity(buffer, reqlen);
         case COMPANION_REPORT_FIRMWARE_LOG:

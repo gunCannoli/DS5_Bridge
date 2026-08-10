@@ -152,13 +152,4 @@ describe('IPC contract', () => {
     expect(bridgeServiceSource).toContain('async setWolWifiPassword(password: string): Promise<BridgeSnapshot>');
     expect(bridgeServiceSource).toContain('async setWolTargetMac(mac: string): Promise<BridgeSnapshot>');
   });
-
-  it('exposes the Wake-on-LAN debug ping/send test actions', () => {
-    expect(preloadSource).toContain("ipcRenderer.invoke('bridge:triggerWolDebugPing')");
-    expect(preloadSource).toContain("ipcRenderer.invoke('bridge:triggerWolDebugSend')");
-    expect(mainSource).toContain("ipcMain.handle('bridge:triggerWolDebugPing'");
-    expect(mainSource).toContain("ipcMain.handle('bridge:triggerWolDebugSend'");
-    expect(bridgeServiceSource).toContain('async triggerWolDebugPing(): Promise<BridgeSnapshot>');
-    expect(bridgeServiceSource).toContain('async triggerWolDebugSend(): Promise<BridgeSnapshot>');
-  });
 });

@@ -704,16 +704,6 @@ int main() {
     }
     cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, false);
 
-    // Unconditional, every boot -- unlike the watchdog_enable_caused_reboot()
-    // check below, this doesn't require the reboot to be specifically
-    // watchdog-attributed, so it also catches a brownout, manual power
-    // cycle, picotool/BOOTSEL reset, etc. detail = raw watchdog_hw->reason
-    // bits (bit0=TIMER, bit1=FORCE, 0=non-watchdog reset). This is always
-    // the first event in a fresh boot's WOL trace ring, so a jump back to
-    // seq=1 with a low board_time_ms in the WOL debug log is unambiguously
-    // explained here instead of inferred.
-    bt_append_wol_trace_event(WolTraceStage::BoardBoot, static_cast<uint8_t>(watchdog_hw->reason));
-
     if (watchdog_enable_caused_reboot()) {
         DS5_LOG("Rebooted by Watchdog!\n");
         WatchdogTelemetrySnapshot watchdog_snapshot{};
@@ -728,18 +718,6 @@ int main() {
             static_cast<unsigned long>(
                 watchdog_snapshot.prior_phase_entered_at_ms
             )
-        );
-        // Also record to the WOL trace ring (survives a companion-app-off
-        // gap, unlike this DS5_LOG line) so a watchdog reboot mid-WOL-attempt
-        // is visible after the fact instead of just looking like the trace
-        // silently stopped. detail = the WatchdogMainLoopPhase index the
-        // board was stuck in (see watchdog_telemetry.h) when it rebooted --
-        // note this is the *new* boot's ring buffer (the reboot wiped the
-        // old one along with everything else), so this is the very first
-        // event in it, timestamped near board_time_ms=0.
-        bt_append_wol_trace_event(
-            WolTraceStage::BoardWatchdogReboot,
-            watchdog_snapshot.prior_snapshot_valid ? watchdog_snapshot.prior_phase : 0xFF
         );
     } else {
         DS5_LOG("Clean boot\n");

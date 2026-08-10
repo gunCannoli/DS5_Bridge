@@ -4,7 +4,7 @@ export const REPORT_LENGTH = 64;
 export const PAYLOAD_LENGTH = 63;
 export const MAGIC = 'DS5B';
 export const PROTOCOL_MAJOR = 1;
-export const PROTOCOL_MINOR = 20;
+export const PROTOCOL_MINOR = 21;
 
 export const REPORT_ID = {
   STATUS: 0x01,
@@ -16,10 +16,8 @@ export const REPORT_ID = {
   AUDIO_STATUS: 0x08,
   TRIGGER_TRACE: 0x09,
   FEEDBACK_TRACE: 0x0a,
-  WOL_DEBUG_STATUS: 0x0c,
   DEVICE_IDENTITY: 0x0d,
-  FIRMWARE_LOG: 0x0e,
-  WOL_TRACE: 0x0b
+  FIRMWARE_LOG: 0x0e
 } as const;
 
 export const SHORTCUT_EVENT = {
@@ -57,43 +55,6 @@ export const AUDIO_DEBUG_EVENT = {
 export const AUDIO_DEBUG_RECORD_SIZE = 14;
 export const TRIGGER_TRACE_RECORD_SIZE = 38;
 export const FEEDBACK_TRACE_RECORD_SIZE = 24;
-export const WOL_TRACE_RECORD_SIZE = 8;
-
-// Mirrors WolTraceStage in bt.h. Kept in sync manually (small, stable enum).
-export const WOL_TRACE_STAGE = {
-  CONN_PHASE_CONNECTING: 0,
-  CONN_PHASE_SECURING: 1,
-  CONN_PHASE_HID_OPENING: 2,
-  CONN_PHASE_READY: 3,
-  CONN_PHASE_DISCONNECTING: 4,
-  CONN_SECURITY_TIMEOUT: 5,
-  CONN_HID_OPENING_TIMEOUT: 6,
-  CONN_HID_INTERRUPT_FOLLOWUP_TIMEOUT: 7,
-  CONN_DISCONNECTED: 8,
-  WOL_TRIGGER_FIRED: 9,
-  WOL_TRIGGER_SKIPPED: 10,
-  WOL_CONNECT_DELAY_START: 11,
-  WOL_RESEND_BEGIN: 12,
-  WOL_RESEND_CONFIRMED: 13,
-  WOL_RESEND_GAVE_UP: 14,
-  WOL_WIFI_ASSOC_TIMEOUT: 15,
-  WOL_DHCP_WAIT_TIMEOUT: 16,
-  BOARD_WATCHDOG_REBOOT: 17,
-  BOARD_BOOT: 18,
-  WOL_TRIGGER_DEBOUNCED: 19,
-  WOL_CONNECT_RETRIES_EXHAUSTED: 20,
-  WOL_CONNECT_STARTED: 21,
-  WOL_WIFI_LINK_LOST_AFTER_CONNECT: 22,
-  WOL_WIFI_CONNECTED: 23,
-  WOL_WIFI_BACKOFF_ELAPSED: 24,
-  WOL_TRIGGER_SKIPPED_HOST_ACTIVE: 25,
-  BOARD_TRANSPORT_RECOVERY_REBOOT: 26,
-  CONN_DISCONNECT_RETRY_SENT: 27,
-  CONN_CONTROLLER_TYPE_IDENTIFIED: 28,
-  OBSERVE_HOST_BEGIN: 29,
-  OBSERVE_HOST_SAMPLE_EDGE: 30,
-  OBSERVE_HOST_WINDOW_ELAPSED: 31
-} as const;
 
 export const COMMAND_ID = {
   SET_HAPTICS_GAIN: 0x01,
@@ -139,9 +100,7 @@ export const COMMAND_ID = {
   SET_WOL_ENABLED: 0x37,
   SET_WOL_WIFI_SSID: 0x38,
   SET_WOL_WIFI_PASSWORD: 0x39,
-  SET_WOL_TARGET_MAC: 0x3A,
-  TRIGGER_WOL_DEBUG_PING: 0x3B,
-  TRIGGER_WOL_DEBUG_SEND: 0x3C
+  SET_WOL_TARGET_MAC: 0x3A
 } as const;
 
 export const ACK_RESULT = {
@@ -599,19 +558,6 @@ export interface TriggerTracePayload {
   events: TriggerTraceEventPayload[];
 }
 
-export interface WolTraceEventPayload {
-  sequence: number;
-  timeMs: number;
-  stage: number;
-  detail: number;
-}
-
-export interface WolTracePayload {
-  latestSequence: number;
-  droppedCount: number;
-  events: WolTraceEventPayload[];
-}
-
 export interface FeedbackTraceEventPayload {
   sequence: number;
   timeMs: number;
@@ -638,78 +584,6 @@ export interface FeedbackTracePayload {
   latestSequence: number;
   droppedCount: number;
   events: FeedbackTraceEventPayload[];
-}
-
-// Mirrors WolWifiLinkState in src/wolwifi.h.
-export const WOL_WIFI_LINK_STATE = {
-  UNCONFIGURED: 0,
-  IDLE: 1,
-  CONNECTING: 2,
-  WAITING_FOR_IP: 3,
-  CONNECTED: 4,
-  FAILED: 5
-} as const;
-export type WolWifiLinkState = typeof WOL_WIFI_LINK_STATE[keyof typeof WOL_WIFI_LINK_STATE];
-
-// Mirrors WolDebugAction in src/wolwifi.h.
-export const WOL_DEBUG_ACTION = {
-  NONE: 0,
-  PING: 1,
-  SEND_WOL: 2
-} as const;
-export type WolDebugAction = typeof WOL_DEBUG_ACTION[keyof typeof WOL_DEBUG_ACTION];
-
-// Mirrors WolDebugResult in src/wolwifi.h.
-export const WOL_DEBUG_RESULT = {
-  PENDING: 0,
-  SUCCESS: 1,
-  TIMEOUT: 2,
-  NO_WIFI: 3,
-  SEND_FAILED: 4,
-  NOT_CONFIGURED: 5
-} as const;
-export type WolDebugResult = typeof WOL_DEBUG_RESULT[keyof typeof WOL_DEBUG_RESULT];
-
-export interface WolDebugStatusPayload {
-  linkState: WolWifiLinkState;
-  lastAction: WolDebugAction;
-  lastResult: WolDebugResult;
-  lastActionStartedMs: number;
-  ipAddress: string | null;
-  // Raw config-reached-firmware flags -- lets a stuck linkState (e.g.
-  // permanently IDLE) be diagnosed without needing the separate Firmware
-  // UART Log capture running. See wolwifi_task()'s early-return in
-  // wolwifi.cpp: IDLE + wolEnabled=false means the state machine is
-  // intentionally not progressing, not a connect failure.
-  wolEnabled: boolean;
-  haveSsid: boolean;
-  haveTargetMac: boolean;
-  nowMs: number;
-  linkStateEnteredMs: number;
-  // Raw cyw43_tcpip_link_status() value (see wolwifi.h) -- our own linkState
-  // collapses several distinct CYW43 states into CONNECTING, which isn't
-  // enough to tell a flapping auth failure from a slow DHCP lease from a
-  // weak signal. -3=badauth, -2=nonet, -1=fail, 0=down, 1=join, 2=noip, 3=up.
-  rawLinkStatus: number;
-  // lwIP's own DHCP client state (struct dhcp.state, see lwip/prot/dhcp.h
-  // DHCP_STATE_*) and retry count (struct dhcp.tries). Added because
-  // rawLinkStatus alone can show "join" (associated to the AP) forever
-  // without saying whether DHCP is actually trying to get a lease, stuck
-  // retrying, or never started -- 0=off, 1=requesting, 2=init,
-  // 6=selecting, 10=bound are the common ones seen in practice.
-  dhcpState: number;
-  dhcpTries: number;
-  // Raw CYW43 driver internal join-state bitmask (cyw43_state.wifi_join_state
-  // -- WIFI_JOIN_STATE_* bits for ACTIVE/FAIL/NONET/BADAUTH/AUTH/LINK/KEYED
-  // in cyw43_ctrl.c). Shows exactly which sub-step of association completed
-  // when rawLinkStatus alone isn't enough.
-  wifiJoinState: number;
-  // Lifetime counters (not reset between connect attempts), so a single
-  // status/log line shows the full history, not just the latest event.
-  connectAttemptCount: number;
-  wifiConnectTimeoutCount: number;
-  dhcpTimeoutCount: number;
-  linkLostCount: number;
 }
 
 export interface AudioStatusPayload {
@@ -1025,81 +899,6 @@ export function parseAudioStatsReport(report: ArrayLike<number>): AudioDebugStat
   };
 }
 
-const WOL_TRACE_STAGE_LABELS: Record<number, string> = {
-  [WOL_TRACE_STAGE.CONN_PHASE_CONNECTING]: 'conn-connecting',
-  [WOL_TRACE_STAGE.CONN_PHASE_SECURING]: 'conn-securing',
-  [WOL_TRACE_STAGE.CONN_PHASE_HID_OPENING]: 'conn-hid-opening',
-  [WOL_TRACE_STAGE.CONN_PHASE_READY]: 'conn-ready',
-  [WOL_TRACE_STAGE.CONN_PHASE_DISCONNECTING]: 'conn-disconnecting',
-  [WOL_TRACE_STAGE.CONN_SECURITY_TIMEOUT]: 'conn-security-timeout',
-  [WOL_TRACE_STAGE.CONN_HID_OPENING_TIMEOUT]: 'conn-hid-opening-timeout',
-  [WOL_TRACE_STAGE.CONN_HID_INTERRUPT_FOLLOWUP_TIMEOUT]: 'conn-hid-interrupt-followup-timeout',
-  [WOL_TRACE_STAGE.CONN_DISCONNECTED]: 'conn-disconnected',
-  [WOL_TRACE_STAGE.WOL_TRIGGER_FIRED]: 'wol-trigger-fired',
-  [WOL_TRACE_STAGE.WOL_TRIGGER_SKIPPED]: 'wol-trigger-skipped',
-  [WOL_TRACE_STAGE.WOL_CONNECT_DELAY_START]: 'wol-connect-delay-start',
-  [WOL_TRACE_STAGE.WOL_RESEND_BEGIN]: 'wol-resend-begin',
-  [WOL_TRACE_STAGE.WOL_RESEND_CONFIRMED]: 'wol-resend-confirmed',
-  [WOL_TRACE_STAGE.WOL_RESEND_GAVE_UP]: 'wol-resend-gave-up',
-  [WOL_TRACE_STAGE.WOL_WIFI_ASSOC_TIMEOUT]: 'wol-wifi-assoc-timeout',
-  [WOL_TRACE_STAGE.WOL_DHCP_WAIT_TIMEOUT]: 'wol-dhcp-wait-timeout',
-  [WOL_TRACE_STAGE.BOARD_WATCHDOG_REBOOT]: 'board-watchdog-reboot',
-  [WOL_TRACE_STAGE.BOARD_BOOT]: 'board-boot',
-  [WOL_TRACE_STAGE.WOL_TRIGGER_DEBOUNCED]: 'wol-trigger-debounced',
-  [WOL_TRACE_STAGE.WOL_CONNECT_RETRIES_EXHAUSTED]: 'wol-connect-retries-exhausted',
-  [WOL_TRACE_STAGE.WOL_CONNECT_STARTED]: 'wol-connect-started',
-  [WOL_TRACE_STAGE.WOL_WIFI_LINK_LOST_AFTER_CONNECT]: 'wol-wifi-link-lost-after-connect',
-  [WOL_TRACE_STAGE.WOL_WIFI_CONNECTED]: 'wol-wifi-connected',
-  [WOL_TRACE_STAGE.WOL_WIFI_BACKOFF_ELAPSED]: 'wol-wifi-backoff-elapsed',
-  [WOL_TRACE_STAGE.WOL_TRIGGER_SKIPPED_HOST_ACTIVE]: 'wol-trigger-skipped-host-active',
-  [WOL_TRACE_STAGE.BOARD_TRANSPORT_RECOVERY_REBOOT]: 'board-transport-recovery-reboot',
-  [WOL_TRACE_STAGE.CONN_DISCONNECT_RETRY_SENT]: 'conn-disconnect-retry-sent',
-  [WOL_TRACE_STAGE.CONN_CONTROLLER_TYPE_IDENTIFIED]: 'conn-controller-type-identified',
-  [WOL_TRACE_STAGE.OBSERVE_HOST_BEGIN]: 'observe-host-begin',
-  [WOL_TRACE_STAGE.OBSERVE_HOST_SAMPLE_EDGE]: 'observe-host-sample-edge',
-  [WOL_TRACE_STAGE.OBSERVE_HOST_WINDOW_ELAPSED]: 'observe-host-window-elapsed'
-};
-
-// detail's meaning depends on stage -- see bt_append_wol_trace_event() call
-// sites in bt.cpp/wolwifi.cpp for the exact meaning at each site (e.g. HCI
-// disconnect reason for conn-disconnected, a bitmask of
-// enabled/have-ssid/have-target-mac for wol-trigger-skipped).
-export function wolTraceStageLabel(stage: number): string {
-  return WOL_TRACE_STAGE_LABELS[stage] ?? `stage-${stage}`;
-}
-
-export function parseWolTraceReport(report: ArrayLike<number>): WolTracePayload {
-  assertReport(report, REPORT_ID.WOL_TRACE);
-  assertVersion(report);
-
-  const recordCount = report[7];
-  const recordSize = report[8];
-  const latestSequence = readU32(report, 9);
-  const droppedCount = readU16(report, 13);
-  if (recordCount === 0) {
-    return { latestSequence, droppedCount, events: [] };
-  }
-  if (recordSize < WOL_TRACE_RECORD_SIZE) {
-    throw new ProtocolError(`WOL trace record size ${recordSize} is too small.`, 'bad-wol-trace-record');
-  }
-
-  const events: WolTraceEventPayload[] = [];
-  for (let index = 0; index < recordCount; index += 1) {
-    const offset = 15 + index * recordSize;
-    if (offset + WOL_TRACE_RECORD_SIZE > REPORT_LENGTH) {
-      break;
-    }
-    events.push({
-      sequence: readU16(report, offset),
-      timeMs: readU32(report, offset + 2),
-      stage: report[offset + 6],
-      detail: report[offset + 7]
-    });
-  }
-
-  return { latestSequence, droppedCount, events };
-}
-
 export function parseTriggerTraceReport(report: ArrayLike<number>): TriggerTracePayload {
   assertReport(report, REPORT_ID.TRIGGER_TRACE);
   assertVersion(report);
@@ -1221,36 +1020,6 @@ export function parseAudioStatusReport(report: ArrayLike<number>): AudioStatusPa
     micPeakPermille: readU16(report, 61),
     micUsbStreaming: (primaryFlags & 0x80) !== 0,
     protocolVersion: `${protocolMajor}.${protocolMinor}`
-  };
-}
-
-export function parseWolDebugStatusReport(report: ArrayLike<number>): WolDebugStatusPayload {
-  assertReport(report, REPORT_ID.WOL_DEBUG_STATUS);
-
-  // ip_octets[0..3] are in display order (see WolDebugStatus in wolwifi.h) --
-  // raw bytes, not a packed uint32_t, to avoid a network-byte-order vs.
-  // write_u32's little-endian convention mismatch.
-  const octets = [report[11], report[12], report[13], report[14]];
-  const flags = report[10];
-  return {
-    linkState: report[7] as WolWifiLinkState,
-    lastAction: report[8] as WolDebugAction,
-    lastResult: report[9] as WolDebugResult,
-    ipAddress: octets.every((octet) => octet === 0) ? null : octets.join('.'),
-    wolEnabled: (flags & 0x01) !== 0,
-    haveSsid: (flags & 0x02) !== 0,
-    haveTargetMac: (flags & 0x04) !== 0,
-    lastActionStartedMs: readU32(report, 16),
-    nowMs: readU32(report, 20),
-    linkStateEnteredMs: readU32(report, 24),
-    rawLinkStatus: report[15] > 127 ? report[15] - 256 : report[15],
-    dhcpState: report[28],
-    dhcpTries: report[29],
-    wifiJoinState: readU16(report, 30),
-    connectAttemptCount: readU32(report, 32),
-    wifiConnectTimeoutCount: readU32(report, 36),
-    dhcpTimeoutCount: readU32(report, 40),
-    linkLostCount: readU32(report, 44)
   };
 }
 

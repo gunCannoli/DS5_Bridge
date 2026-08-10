@@ -104,9 +104,6 @@ import {
   REMAP_BUTTON_IDS,
   WOL_WIFI_PASSWORD_MAX_LENGTH,
   WOL_WIFI_SSID_MAX_LENGTH,
-  WOL_DEBUG_ACTION,
-  WOL_DEBUG_RESULT,
-  WOL_WIFI_LINK_STATE,
   ProtocolError,
   ackResultName,
   normalizeChordControllerSettingStepPercent,
@@ -135,8 +132,7 @@ import type {
   BridgeStatusPayload,
   RemapButtonId,
   TriggerTestMode,
-  TriggerTestTarget,
-  WolDebugStatusPayload
+  TriggerTestTarget
 } from '../shared/protocol';
 import type { AudioHapticsSession, BridgeSnapshot, UiScalePercent, UiThemePreset } from '../shared/types';
 import {
@@ -2691,67 +2687,6 @@ function chordControllerSettingSummary(action: ChordControllerSettingAction, ste
       return 'Set Persona: Xbox';
   }
   return 'Controller Setting';
-}
-
-function wolRawLinkStatusHint(rawLinkStatus: number): string {
-  switch (rawLinkStatus) {
-    case -3:
-      return 'wrong Wi-Fi password';
-    case -2:
-      return 'network not found -- check SSID and that the board is in range';
-    case -1:
-      return 'connect failed';
-    case 0:
-      return 'radio idle';
-    case 1:
-      return 'associated, waiting for network details';
-    case 2:
-      return 'associated, waiting for an IP address';
-    case 3:
-      return 'connected';
-    default:
-      return `status ${rawLinkStatus}`;
-  }
-}
-
-function wolDebugStatusText(status: WolDebugStatusPayload | null): string {
-  if (!status || status.lastAction === WOL_DEBUG_ACTION.NONE) {
-    return 'Ping checks the target MAC answers ARP. WOL Test re-sends the magic packet now.';
-  }
-  const actionLabel = status.lastAction === WOL_DEBUG_ACTION.PING ? 'Ping' : 'WOL Test';
-  if (status.lastResult === WOL_DEBUG_RESULT.PENDING) {
-    return `${actionLabel}: waiting...`;
-  }
-  const resultLabel = (() => {
-    switch (status.lastResult) {
-      case WOL_DEBUG_RESULT.SUCCESS:
-        return status.lastAction === WOL_DEBUG_ACTION.PING ? 'target responded' : 'packet sent';
-      case WOL_DEBUG_RESULT.TIMEOUT:
-        return 'no response (timeout)';
-      case WOL_DEBUG_RESULT.NO_WIFI:
-        if (!status.wolEnabled) {
-          return 'Wi-Fi not connected -- WOL is toggled off in firmware, re-enable it';
-        }
-        if (!status.haveSsid) {
-          return 'Wi-Fi not connected -- no SSID reached firmware, re-enter it';
-        }
-        if (status.linkState === WOL_WIFI_LINK_STATE.FAILED) {
-          return `Wi-Fi not connected -- connect attempt failed (${wolRawLinkStatusHint(status.rawLinkStatus)})`;
-        }
-        if (status.linkState === WOL_WIFI_LINK_STATE.CONNECTING || status.linkState === WOL_WIFI_LINK_STATE.WAITING_FOR_IP) {
-          return `Wi-Fi not connected yet -- ${wolRawLinkStatusHint(status.rawLinkStatus)}, try again shortly`;
-        }
-        return 'Wi-Fi not connected';
-      case WOL_DEBUG_RESULT.SEND_FAILED:
-        return 'send failed';
-      case WOL_DEBUG_RESULT.NOT_CONFIGURED:
-        return status.haveTargetMac ? 'target MAC not set' : 'target MAC not set (or not reaching firmware)';
-      default:
-        return 'unknown result';
-    }
-  })();
-  const ip = status.ipAddress ? ` (Wi-Fi IP ${status.ipAddress})` : '';
-  return `${actionLabel}: ${resultLabel}${ip}`;
 }
 
 function chordControllerSettingAdjustmentText(action: ChordControllerSettingAction): string {
@@ -10247,37 +10182,6 @@ export function App() {
                     <span className="wol-settings-error">{wolFieldError.message}</span>
                   )}
                 </div>
-                <div className="settings-menu-row wol-debug-row">
-                  <div className="settings-menu-copy">
-                    <strong>Debug Target</strong>
-                  </div>
-                  <div className="wol-debug-actions">
-                    <button
-                      type="button"
-                      className="secondary-action"
-                      disabled={!connected || !wolSupported || pendingAction !== null}
-                      onClick={() => void runAction('wol-debug-ping', () => window.bridge.triggerWolDebugPing())}
-                    >
-                      {pendingAction === 'wol-debug-ping' ? 'Pinging...' : 'Ping'}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-action"
-                      disabled={!connected || !wolSupported || pendingAction !== null}
-                      onClick={() => void runAction('wol-debug-send', () => window.bridge.triggerWolDebugSend())}
-                    >
-                      {pendingAction === 'wol-debug-send' ? 'Sending...' : 'WOL Test'}
-                    </button>
-                  </div>
-                </div>
-                {snapshot.diagnostics.wolDebugLogPath && (
-                  <div className="settings-menu-row wol-settings-row">
-                    <div className="settings-menu-copy">
-                      <strong>Debug Log</strong>
-                      <span title={snapshot.diagnostics.wolDebugLogPath}>{snapshot.diagnostics.wolDebugLogPath}</span>
-                    </div>
-                  </div>
-                )}
               </div>
               <div className="bridge-settings-column">
                 <div className="settings-menu-section-label">Power & Controller</div>

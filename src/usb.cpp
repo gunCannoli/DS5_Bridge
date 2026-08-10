@@ -231,17 +231,6 @@ bool usb_host_active() {
     return usb_mounted && !usb_bus_suspended();
 }
 
-uint8_t usb_host_active_debug_bits() {
-    return static_cast<uint8_t>(
-        (usb_mounted ? 0x01 : 0)
-        | (tud_inited() ? 0x02 : 0)
-        | (tud_inited() && tud_suspended() ? 0x04 : 0)
-        | (usb_host_suspended ? 0x08 : 0)
-        | (usb_controller_transport_ready ? 0x10 : 0)
-        | (usb_controller_transport_attached ? 0x20 : 0)
-    );
-}
-
 bool __not_in_flash_func(usb_speaker_streaming_active)() {
     return usb_speaker_streaming;
 }
