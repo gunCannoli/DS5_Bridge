@@ -368,7 +368,7 @@ WolDebugStatus wolwifi_debug_status(void) {
     status.have_target_mac = g_have_target_mac;
     status.now_ms = now_ms();
     status.link_state_entered_ms = g_state_entered_ms;
-    status.raw_link_status = static_cast<int8_t>(cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA));
+    status.raw_link_status = static_cast<int8_t>(cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA));
     if (netif_default != nullptr) {
         const struct dhcp *dhcp = netif_dhcp_data(netif_default);
         status.dhcp_state = dhcp != nullptr ? dhcp->state : 0;
@@ -407,10 +407,8 @@ void wolwifi_task(void) {
     }
 
     // Log every DHCP client state transition (see lwip/prot/dhcp.h
-    // DHCP_STATE_*) regardless of our own WifiState -- catches the case
-    // where cyw43_wifi_link_status() reports CYW43_LINK_JOIN (associated)
-    // indefinitely without ever showing whether DHCP is actually running,
-    // stuck retrying, or never started at all.
+    // DHCP_STATE_*) regardless of our own WifiState -- useful alongside
+    // raw_link_status to confirm DHCP is actually running.
     if (netif_default != nullptr) {
         static uint8_t last_logged_dhcp_state = 0xFF; // sentinel outside DHCP_STATE_* range
         const struct dhcp *dhcp = netif_dhcp_data(netif_default);
@@ -433,7 +431,7 @@ void wolwifi_task(void) {
             return;
 
         case WifiState::Connecting: {
-            const int status = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
+            const int status = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
             // Log every status transition seen while connecting (not just
             // the terminal ones) -- CYW43_LINK_JOIN/NOIP/UP/FAIL/NONET/
             // BADAUTH are all distinct and a flapping link (associate,
@@ -475,7 +473,7 @@ void wolwifi_task(void) {
         }
 
         case WifiState::Connected: {
-            const int status = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
+            const int status = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
             if (status != CYW43_LINK_UP || !have_ip_lease()) {
                 DS5_LOG(
                     "[WOL] Wi-Fi link lost; will retry (status=%d, have_ip=%d)\n",
