@@ -5,6 +5,78 @@ Each entry: decision, rationale, alternatives considered, date.
 
 ---
 
+## 2026-08-10 — Unconditional boot marker: closing the last "was it a reboot" ambiguity
+
+**Context:** retesting the twelfth-bug fix (no connect-start delay)
+surfaced a genuinely strange observation: across roughly 40 minutes and 4
+controller-connect cycles, the WOL debug log showed **zero**
+`event=board-trace` lines at all -- despite `link-state-change` lines
+proving Wi-Fi was actively connecting and going idle each cycle, meaning
+`wolwifi_task()` (and therefore the whole state machine, including the
+trigger) was demonstrably running. The moment the user opened the
+companion app, a trace appeared -- but it started at `seq=1` with a low
+`board_time_ms`, i.e. a **fresh** ring buffer, not a drain of accumulated
+history.
+
+**Investigation:** two hypotheses were tested and both failed:
+1. *"Opening the companion app is what makes the trigger fire"* -- ruled
+   out by code inspection. `wolwifi_on_controller_connect()` is called
+   unconditionally from `finish_hid_session_if_ready()` in `bt.cpp`, which
+   is purely BT-state-driven (`hid_control_ready && hid_interrupt_ready`,
+   pairing-key persistence, connection phase) -- nothing in that path
+   touches USB enumeration, the companion HID interface, or
+   `companion_loop()` (confirmed separately scheduled in `main.cpp`'s main
+   loop, no dependency either way).
+2. *"The board rebooted right when the app was opened, coincidentally"* --
+   directly asked the user; they confirmed no power-cycle happened.
+
+Since `wol_trace_next_sequence`/`wol_trace_head` etc. are plain static
+globals only ever incremented (no reset code path exists anywhere in the
+source), a genuine jump back to `seq=1` **can only mean a real reboot
+occurred** -- so despite the user's confidence, something reset the board
+at some point in that window. The existing `BoardWatchdogReboot` trace
+marker (added two entries ago) didn't fire for it, but that marker
+requires `watchdog_enable_caused_reboot()` specifically, which checks both
+the watchdog's raw reason bits *and* a scratch-register magic value this
+firmware's own `watchdog_enable()` call sets -- it would miss a brownout,
+a plain power cycle, a picotool/BOOTSEL reset, or in principle any reset
+path not specifically attributable to this firmware's own watchdog
+config.
+
+**User's instruction, verbatim:** *"lets add as much signals to the log as
+we can to pinpoint the issue no guessing."*
+
+**Fix:** added `WolTraceStage::BoardBoot`, appended **unconditionally on
+every single boot** (in `main.cpp`, right before the existing
+watchdog-specific check, so it's always the very first event in a fresh
+boot's trace) with `detail` set to the raw `watchdog_hw->reason` register
+value directly (`bit0=TIMER` i.e. watchdog-timeout-caused, `bit1=FORCE`
+i.e. software-forced via `watchdog_reboot()`, `0` = some other reset path
+entirely -- power-on, brownout, BOOTSEL, debug-probe reset). This removes
+all ambiguity: any future "did it reboot" question is answered directly
+by the first line of the relevant trace block, no inference from
+`board_time_ms` or reliance on the user's memory of what they did.
+
+**Also (process, not code):** documented in `AGENTS.md` that the desktop
+shortcut points at `companion/artifacts/installer/win-unpacked/DS5 Bridge.exe`
+directly, so `npm run package:win`'s separate timestamped output folder
+does *not* update what the shortcut actually launches -- only
+`npm run installer:win` does. This had already caused one earlier stale-
+build confusion this session (Phase "board-level WOL trace" entry, further
+up); recorded so it isn't rediscovered a third time. Also recorded
+standing permission (explicitly granted) to close and rebuild the running
+companion app without asking each time, rather than pausing to confirm on
+every iteration.
+
+**Status:** implemented and committed, debug firmware rebuilt at
+`build/waveshare/ds5-bridge.uf2`, companion app installer rebuilt at
+`companion/artifacts/installer/DS5-Bridge-Companion-Setup-1.7.0.exe`. Not
+yet verified against a real test -- the next trace's `board-boot` line(s)
+should finally give a definitive answer to whether unexplained reboots are
+actually happening during these tests.
+
+---
+
 ## 2026-08-10 — Twelfth bug: the connect-start delay itself was the real design gap
 
 **Context:** the eleventh-bug fix (ARP EtherType check) was retested and

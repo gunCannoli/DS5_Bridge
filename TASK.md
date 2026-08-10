@@ -302,18 +302,55 @@ entirely -- `wolwifi_on_controller_connect()` now queues the send and lets
 tick, matching #207. Debug firmware rebuilt at
 `build/waveshare/ds5-bridge.uf2`. Full writeup in decisions.md.
 
+**2026-08-10: no-delay fix retested -- discovered `wol-trigger-fired` only
+appeared once the companion app was opened, and a genuinely unexplained
+trace-sequence reset.** Real testing showed the trigger correctly
+happening at the instant of connect once, but across ~40 minutes and 4
+connect cycles beforehand, **zero** `board-trace` lines appeared in the
+log at all, despite Wi-Fi visibly connecting/idling each cycle (proving
+`wolwifi_task()` was running). The moment the user opened the companion
+app, a **fresh** trace sequence starting at `seq=1` with a low
+`board_time_ms` appeared, with the trigger firing correctly. Ruled out
+"opening the app causes it to fire" (the trigger code has zero dependency
+on the companion app) and "the board rebooted right when the app opened"
+(user confirmed no power-cycle). Since the trace's sequence counters are
+plain memory only reset by an actual reboot, this really does mean an
+unexplained reboot happened at some point in that 40-minute window --
+but the existing `BoardWatchdogReboot` marker requires
+`watchdog_enable_caused_reboot()` specifically, which would miss a
+brownout, plain power cycle, or BOOTSEL/picotool reset. Per the user's
+explicit instruction ("lets add as much signals to the log as we can to
+pinpoint the issue no guessing"), added (committed): `WolTraceStage::BoardBoot`,
+appended **unconditionally on every single boot** (always the first trace
+event) with `detail` = the raw `watchdog_hw->reason` bits, so any future
+reboot -- watchdog or not -- has a direct, unambiguous marker instead of
+requiring inference. Also documented in AGENTS.md that the desktop
+shortcut launches `win-unpacked/DS5 Bridge.exe` directly (so
+`package:win`'s separate timestamped folder doesn't update what it runs)
+and recorded standing permission to close/rebuild the running companion
+app without asking each time. Debug firmware rebuilt at
+`build/waveshare/ds5-bridge.uf2`; companion app installer rebuilt at
+`companion/artifacts/installer/DS5-Bridge-Companion-Setup-1.7.0.exe`. Full
+writeup in decisions.md.
+
 ## Current task
 
-- [ ] **Flash the rebuilt debug firmware and re-attempt the real PC-off
-      wake test.** WOL config is already persisted in flash, no re-save
-      needed. This is the most direct test yet of the actual requirement:
-      does the magic packet go out immediately (check
-      `ds5bridge-wol-debug.log` for `wol-trigger-fired` immediately
-      followed by Wi-Fi connect activity, not a multi-second gap), does the
-      controller survive the BT/Wi-Fi contention this reintroduces (no
-      pre-delay protection anymore -- relying entirely on bug 6's
-      USB-suspend suppression), and does the PC actually wake from the
-      automatic send alone.
+- [ ] **Flash the rebuilt debug firmware, install the rebuilt companion
+      app (`DS5-Bridge-Companion-Setup-1.7.0.exe`), and re-attempt the
+      real PC-off wake test.** WOL config is already persisted in flash,
+      no re-save needed. Check `ds5bridge-wol-debug.log` afterward for:
+      (a) `stage=board-boot detail=N` at the very start of every trace
+      block -- if `detail` has bit0 or bit1 set, a real reboot happened and
+      we finally know it wasn't imagined; if it's always `0`, the board
+      never actually rebooted and the earlier "trace went silent" gap has
+      a different explanation (most likely: the companion app simply
+      wasn't running/polling during that window -- worth confirming this
+      round by leaving the app open continuously through the whole test),
+      (b) does `wol-trigger-fired` appear immediately at every
+      `conn-ready` regardless of whether the app was already open before
+      the controller connected, (c) does the controller survive the
+      BT/Wi-Fi contention now that there's no pre-delay protection, and
+      (d) does the PC actually wake from the automatic send alone.
 
 ## Next task
 
