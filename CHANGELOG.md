@@ -8,6 +8,31 @@ Architecture/known-issue knowledge that should inform future work lives in
 
 ---
 
+## 2026-08-10 — Host-alive gate rebuilt as an event-driven observation window
+
+Got a real measurement from the prior change's `ConnControllerTypeIdentified`
+trace event: the controller-type handshake (the thing that makes
+`usb_mounted` become true for a session) completed in **23ms** with no
+radio contention. Used that to design and implement the actual fix, per
+the user's explicit design correction ("proper signals... events not
+timers... proper investigation before coding a solution") and deep re-read
+of both `awalol/DS5Dongle#207` and `DevFreezing/DS5Dongle-WoL`'s `Observe`
+state pattern. Replaced the buggy instant `usb_host_active()` check with a
+new `ObserveHost` mini-state-machine (`begin_observe_host()`/
+`drive_observe_host()` in `wolwifi.cpp`, driven every `wolwifi_task()`
+tick): defaults to firing WOL, only aborts if the host is observed active
+continuously for `WOL_OBSERVE_HOST_SUSTAIN_MS` (100ms) within
+`WOL_OBSERVE_HOST_WINDOW_MS` (2000ms, ~85x margin over the measured 23ms).
+`proceed_with_wol_trigger()` extracted from the old
+`wolwifi_on_controller_connect()` so both the `WOL_ALWAYS` immediate path
+and the window-elapsed path share it. `wolwifi_wake_in_progress()` extended
+to cover the new window. See `DECISIONS.md` for the full corrected design
+writeup (supersedes the entry from the previous, buggy version). Firmware
+compiles/links cleanly for both `WOL_ALWAYS` on and off; companion
+typecheck + full test suite (280/280) pass (no companion changes needed,
+firmware-only). Debug firmware rebuilt at
+`build/waveshare-debug/ds5-bridge.uf2`. Not yet verified on real hardware.
+
 ## 2026-08-10 — Host-alive gate found to be checking the wrong (session-scoped) signal; measurement trace added, real fix pending
 
 A real test (fresh boot, no reboot involved this time, USB confirmed
