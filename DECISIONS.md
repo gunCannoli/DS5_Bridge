@@ -159,7 +159,18 @@ surface for something that isn't a normal setting.
 `bt.h`/`bt.cpp` — the measurement event, elapsed ms since `Ready`) and the
 existing `WolTriggerSkippedHostActive` (25) now fires from
 `drive_observe_host()`'s sustained-active branch instead of the old
-instant check.
+instant check. Diagnostic-only additions for verifying this design:
+`usb_host_active_debug_bits()` (`usb.h`/`usb.cpp`, a bitmask of every flag
+`usb_host_active()` depends on) plus `ObserveHostBegin`/
+`ObserveHostSampleEdge`/`ObserveHostWindowElapsed` (29-31) tracing the
+window's live samples.
+
+**Confirmed working on real hardware** (PC on, companion app open): window
+armed at `Ready`, `usb_host_active()` flipped true ~217ms later (session
+mount + a brief settle), sustained-active correctly detected 100ms after
+that (matching `WOL_OBSERVE_HOST_SUSTAIN_MS`) — `wol-trigger-skipped-host-active`
+fired, no Wi-Fi connect, no lightbar WOL pulse. Full detect-and-skip cycle
+~340ms, well inside the 2s window.
 
 ---
 
