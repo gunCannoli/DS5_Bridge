@@ -6,24 +6,33 @@ knowledge and known issues belong in `DECISIONS.md`, not here.
 
 ## Current task
 
-Just added a host-alive gate (skip WOL entirely if `usb_host_active()`
-shows the target PC already on) per user request, after noticing the
-lightbar pulse firing unnecessarily. See `DECISIONS.md` for the design.
-Firmware builds cleanly (default gate-on, `WOL_ALWAYS` escape hatch, and
-the non-WOL default board target); no companion-app changes needed.
+Bench-testing the host-alive gate surfaced a real, separate issue: the
+board is self-rebooting via a deliberate `watchdog_reboot()` call in
+`bt.cpp`'s BT disconnect/ACL-pending recovery paths during otherwise-normal
+operation, and this was previously invisible in the trace (see
+`DECISIONS.md`'s `watchdog_enable_caused_reboot()` entry). Added
+`BoardTransportRecoveryReboot`/`ConnDisconnectRetrySent` trace stages to
+make it visible instead of guessing further. Firmware/companion build
+clean, debug firmware rebuilt at `build/waveshare-debug/ds5-bridge.uf2`.
 
-- [ ] **Bench-test the host-alive gate**: with the target PC on (companion
-      app running against it), connect the controller and confirm
-      `wol-trigger-skipped-host-active` appears in the board trace instead
-      of `wol-trigger-fired`/`wol-resend-begin` — and confirm the lightbar
-      does **not** pulse (the actual symptom being fixed).
+- [ ] **Real test with the new instrumentation.** Read
+      `ds5bridge-wol-debug.log` for: (a) does `board-transport-recovery-reboot`
+      appear, and with which detail (0=disconnect-retry-exhausted,
+      1=incoming-ACL-pending-timeout, 2=ACL-cancel-incomplete)? (b) does
+      `conn-disconnect-retry-sent` show an escalation building up to it
+      (1, 2, 3 attempts) or does the reboot happen without any preceding
+      retries? (c) once the actual reboot cause is known, diagnose *why*
+      that recovery path is firing during normal operation — not yet
+      understood.
+- [ ] **Re-verify the host-alive gate itself** once reboots aren't
+      confusing the picture: with the target PC genuinely on and the board
+      NOT freshly rebooted, confirm `wol-trigger-skipped-host-active`
+      appears instead of `wol-trigger-fired`, and the lightbar stays dark.
 - [ ] **Real PC-off retest**: confirm WOL still fires normally when the PC
-      is genuinely off — the fifteenth-bug-fixed path (and the
-      end-to-end success already confirmed on 2026-08-10) must be
-      unaffected by this new gate.
-- [ ] Flash and confirm `-DWOL_ALWAYS=ON` actually bypasses the gate if a
-      board/BIOS combination needs it (not urgent — only matters if a real
-      board hits the known limitation described in `DECISIONS.md`).
+      is genuinely off — the fifteenth-bug-fixed end-to-end path must stay
+      unaffected by both the gate and this investigation.
+- [ ] `-DWOL_ALWAYS=ON` escape hatch: not urgent, only matters if a real
+      board hits the known USB-stays-active-in-S5 limitation.
 
 ## Next task
 

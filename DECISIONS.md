@@ -7,6 +7,55 @@ test run; see `CHANGELOG.md` for that history. Newest first.
 
 ---
 
+## Known issue: `watchdog_enable_caused_reboot()` misses deliberate `watchdog_reboot()` calls
+
+**Symptom that exposed this:** the host-alive gate (see the entry below)
+appeared to misfire — `wol-trigger-fired` fired even though the user
+confirmed the target PC was genuinely on. The trace showed `board-boot
+detail=1` (raw `watchdog_hw->reason` bit0=TIMER set) just ~7 seconds
+before the controller reconnected, but **no `board-watchdog-reboot`
+trace event appeared**, despite the reason bits clearly showing the RP2's
+hardware watchdog fired. Root cause of *that* absence, not the gate: the
+board had rebooted moments earlier for a real reason (see below), but
+`watchdog_enable_caused_reboot()` — the check gating whether
+`BoardWatchdogReboot` gets logged — only returns true when **this
+firmware's own periodic `watchdog_enable(1000, true)` call** (`main.cpp`)
+caused the reboot; it checks a scratch-register magic value that call
+sets, not just the raw hardware reason bits (confirmed via the SDK source,
+`hardware_watchdog/watchdog.c`). A reboot via a **direct**
+`watchdog_reboot()` call elsewhere in the firmware sets the same raw
+reason bits but *not* that magic value, so it's a real watchdog-hardware
+reset that nonetheless reads as "not a watchdog-attributed reboot" to that
+specific check.
+
+**Where this firmware calls `watchdog_reboot()` directly (four sites, all
+in `bt.cpp`, all "bounded transport recovery" — deliberate, not a stall):**
+a disconnect retry exhausting `DISCONNECT_RETRY_MAX_ATTEMPTS` attempts
+(`service_disconnect_recovery()`), an incoming ACL connection staying
+pending past its timeout, and an ACL cancel not completing in time. These
+exist to bound how long the firmware will wait stuck in a bad BT transport
+state before giving up and resetting for a clean slate — a legitimate
+recovery mechanism, but one that was **completely invisible** in the board
+trace before this was found: `BoardBoot`'s raw reason bits told you *a*
+watchdog reset happened, `BoardWatchdogReboot` told you nothing (false
+negative), and nothing else logged the actual cause.
+
+**Fix (diagnostic only so far):** added `WolTraceStage::
+BoardTransportRecoveryReboot` (26, detail distinguishes which of the three
+sites) at each `watchdog_reboot()` call site, and
+`WolTraceStage::ConnDisconnectRetrySent` (27) at the retry-send point so
+the escalation leading up to a detail=0 reboot is visible too, not just
+the reboot itself.
+
+**Still open:** *why* the disconnect/ACL-pending recovery paths are firing
+in the first place during otherwise-normal operation (this reboot happened
+during a routine test, PC on, nothing unusual reported) is not yet
+diagnosed — this entry only makes the reboot and its immediate cause
+visible in the trace; the next real trace with this instrumentation should
+show which of the three sites is firing and how often.
+
+---
+
 ## Architecture: host-alive gate skips WOL when the target PC is already on
 
 **Why:** the board's own USB persona is plugged into the *same* PC that WOL

@@ -8,6 +8,26 @@ Architecture/known-issue knowledge that should inform future work lives in
 
 ---
 
+## 2026-08-10 — Board-transport-recovery reboot: added trace coverage for a real, previously-invisible self-reboot
+
+Retesting the host-alive gate showed it appearing to misfire (WOL fired
+with the PC on) — investigation found the real cause was upstream of the
+gate: the board had genuinely rebooted itself moments earlier via a
+deliberate `watchdog_reboot()` call in `bt.cpp`'s disconnect/ACL-pending
+recovery paths, and the board's own USB hadn't finished re-enumerating
+with the PC yet by the time the (fast) BT reconnect fired the gate check —
+a real race, not a gate bug. The reboot itself was invisible in the trace:
+`watchdog_enable_caused_reboot()` (gating the existing `BoardWatchdogReboot`
+trace stage) only recognizes reboots caused by this firmware's own
+periodic `watchdog_enable()` call, not the four separate deliberate
+`watchdog_reboot()` calls elsewhere — a real gap, found by reading the SDK
+source rather than guessing. Added `BoardTransportRecoveryReboot` (at all
+four call sites) and `ConnDisconnectRetrySent` (to show the escalation
+leading up to one) trace stages. See `DECISIONS.md` for the full writeup.
+Diagnostic only — *why* the recovery paths are firing during normal
+operation is still open. Firmware/companion build clean. Debug firmware at
+`build/waveshare-debug/ds5-bridge.uf2`.
+
 ## 2026-08-10 — Host-alive gate: skip WOL when the target PC is already on
 
 User noticed the lightbar's WOL-in-progress pulse firing even when it
