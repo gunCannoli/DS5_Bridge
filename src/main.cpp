@@ -719,6 +719,18 @@ int main() {
                 watchdog_snapshot.prior_phase_entered_at_ms
             )
         );
+        // Also record to the WOL trace ring (survives a companion-app-off
+        // gap, unlike this DS5_LOG line) so a watchdog reboot mid-WOL-attempt
+        // is visible after the fact instead of just looking like the trace
+        // silently stopped. detail = the WatchdogMainLoopPhase index the
+        // board was stuck in (see watchdog_telemetry.h) when it rebooted --
+        // note this is the *new* boot's ring buffer (the reboot wiped the
+        // old one along with everything else), so this is the very first
+        // event in it, timestamped near board_time_ms=0.
+        bt_append_wol_trace_event(
+            WolTraceStage::BoardWatchdogReboot,
+            watchdog_snapshot.prior_snapshot_valid ? watchdog_snapshot.prior_phase : 0xFF
+        );
     } else {
         DS5_LOG("Clean boot\n");
     }

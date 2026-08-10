@@ -157,6 +157,17 @@ enum class WolTraceStage : uint8_t {
     // is the elapsed ms in that phase (capped to 255) for both.
     WolWifiAssocTimeout = 15,
     WolDhcpWaitTimeout = 16,
+    // Appended once at boot if the prior boot ended in a watchdog reboot
+    // (see watchdog_telemetry.h) -- a stall anywhere in the main loop for
+    // over the 1000ms watchdog timeout silently reboots the board with no
+    // warning otherwise, which would look identical to "nothing happened"
+    // in every other log (all live-only, and the reboot itself wipes the
+    // WOL trace ring along with all other RAM state). detail is the
+    // WatchdogMainLoopPhase the board was stuck in when it rebooted (see
+    // watchdog_telemetry.h) -- WolwifiPhase (16) in particular would
+    // directly explain a resend cycle that started and then never
+    // continued, no wol-resend-confirmed/gave-up, no error, nothing.
+    BoardWatchdogReboot = 17,
 };
 // detail's meaning depends on stage: HCI disconnect reason for
 // ConnDisconnected, 1/0 for whether WOL was queued-pending vs. sent
