@@ -5,6 +5,76 @@ Each entry: decision, rationale, alternatives considered, date.
 
 ---
 
+## 2026-08-10 — Tenth bug: DHCP itself stalling under contention, feeding back into repeated BT drops
+
+**Context:** with the ninth-bug fix confirmed (no more self-inflicted
+reconnect loop after WOL), a real full-session trace across an entire PC
+boot showed the controller still disconnecting (reason 0x22) multiple
+times -- but this time clearly *before* Wi-Fi ever reached `Connected`,
+during the initial connect-and-DHCP sequence itself. Cross-referencing the
+trace against the live WOL debug log's `raw_link_status`/`dhcp_state`
+fields at the moments closest to each disconnect: `raw_link_status=noip`
+(association succeeded, CYW43 joined the AP) paired with
+`dhcp_state=selecting` or `checking` and `connect_timeouts=1` -- DHCP was
+stuck, not the association. The board did send automatic magic packets on
+some cycles once Wi-Fi eventually connected, but only after ~30-40 seconds
+of Wi-Fi struggle from the controller-connect trigger, long enough that
+the user's own manual power-on button press reached the PC first --
+making automatic WOL look like it "did nothing" even though a real send
+did eventually go out.
+
+**User's own read, confirmed correct:** "if wifi do not connect in like
+1/2s retry connection maybe" -- correctly identified this as a timing/race
+issue on the board side (ruled out target-PC WOL config first, since the
+same PC wakes reliably via an unrelated Android TV WOL app). Adjusted the
+literal 1-2s suggestion upward: a real DHCP round-trip is normally a few
+hundred ms to ~2s even under load, so 1-2s risked aborting healthy
+attempts too; asked the user to choose between 3s and 5s, they chose 3s.
+
+**Root cause, most likely:** the same underlying CYW43 Wi-Fi/BT radio
+contention already diagnosed and partially fixed (bugs 4 and 8) creates a
+feedback loop specifically during DHCP: contention delays DHCP's
+broadcast/response exchange, which makes DHCP retry and keep the radio
+busy longer, which extends the contention window, which is what's
+actually causing the BT drop -- not a fixed-duration burst like the
+original connect-start contention, but an open-ended stall bounded only by
+the (previously 15s) timeout. `DHCP_DOES_ARP_CHECK=0`/
+`LWIP_DHCP_DOES_ACD_CHECK=0` (bug 4's lwIP options) already shortened a
+*successful* DHCP exchange; this doesn't help a *stalled* one that never
+gets a response to shorten.
+
+**Fix:** split `WaitingForIp`'s timeout into its own
+`DHCP_WAIT_TIMEOUT_MS = 3000`, separate from `WIFI_CONNECT_TIMEOUT_MS`
+(still 15000, used only for the `Connecting`/association phase). Caps how
+long a single stalled DHCP attempt can keep contending with BT to 3s
+before giving up and falling into the existing `WIFI_RETRY_BACKOFF_MS`
+(10s) before trying again -- accepts occasionally abandoning a DHCP
+attempt that might have succeeded a bit later, in exchange for a much
+smaller worst-case contention window per attempt.
+
+**Also (user-requested, separate from the fix itself):** "lets add more
+info the the log to help understand the issue now. we are getting closer
+to the actual expected outcome" -- added two new `WolTraceStage` values,
+`WolWifiAssocTimeout` and `WolDhcpWaitTimeout` (detail = elapsed seconds,
+capped to 255), at the two timeout sites in `wolwifi_task()`. Previously
+these timeouts were only visible in the live-only WOL debug log via
+`raw_link_status`/`dhcp_state`, which (like everything live-only) isn't
+available for a real host-off attempt -- now they show up directly in the
+board-level trace that survives the gap, alongside the existing
+`conn-*`/`wol-*` stages, so the next real test's trace should directly
+show whether DHCP is still stalling and for how long, without needing to
+cross-reference two different log streams by timestamp.
+
+**Status:** implemented and committed. Debug firmware rebuilt at
+`build/waveshare/ds5-bridge.uf2`; companion app installer rebuilt at
+`companion/artifacts/installer/DS5-Bridge-Companion-Setup-1.7.0.exe`
+(closed the running app first to avoid a locked-file rebuild failure, then
+reinstalled cleanly -- the win-unpacked build the desktop shortcut targets
+is current). Not yet verified against a real PC-off test with the shorter
+DHCP timeout in place.
+
+---
+
 ## 2026-08-10 — Ninth bug: the post-WOL Wi-Fi leave was undoing itself
 
 **Context:** retesting the eighth-bug fix (`disconnect_wifi_after_wol()`)

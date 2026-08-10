@@ -202,18 +202,42 @@ this fix is purely about making the post-WOL Wi-Fi teardown actually stick.
 Debug firmware rebuilt at `build/waveshare/ds5-bridge.uf2`. Full writeup in
 decisions.md.
 
+**2026-08-10: ninth-bug fix confirmed -- reconnect loop is gone, but a real
+boot exposed a tenth issue: DHCP itself stalling for up to 15s, feeding
+back into repeated BT drops.** Real full-session trace: the controller
+disconnected (reason 0x22) multiple times *before* Wi-Fi ever reached
+Connected, each time with Wi-Fi association fast but DHCP stuck in
+`selecting`/`checking` for the full 15s `WIFI_CONNECT_TIMEOUT_MS` before
+retrying. Automatic magic packets did get sent on some cycles, but only
+reached the PC after the user manually powered it on, since the ~30-40s of
+Wi-Fi struggle pushed the actual send later than the manual button press.
+Fixed (committed): split out a separate `DHCP_WAIT_TIMEOUT_MS = 3000`
+(user chose 3s) for the `WaitingForIp` phase specifically, down from
+sharing the 15s association timeout -- caps how long a single stalled DHCP
+attempt can contend with BT before retrying. Also added
+`WolWifiAssocTimeout`/`WolDhcpWaitTimeout` trace stages (user requested
+more log detail) so both timeout paths are now visible in the survives-a-
+host-off-gap board trace, not just the live-only WOL debug log. Debug
+firmware rebuilt at `build/waveshare/ds5-bridge.uf2`; companion app
+installer rebuilt at
+`companion/artifacts/installer/DS5-Bridge-Companion-Setup-1.7.0.exe` (also
+updates the win-unpacked build the desktop shortcut targets -- the app was
+closed and reinstalled cleanly this time, no stale-build risk). Full
+writeup in decisions.md.
+
 ## Current task
 
-- [ ] **Flash the rebuilt debug firmware and re-attempt the real PC-off
-      wake test.** WOL config is already persisted in flash, so no re-save
-      needed. The key thing to verify this round: does the controller now
-      survive the *entire* PC boot without disconnecting? Check
-      `ds5bridge-wol-debug.log` for `event=board-trace` lines afterward --
-      confirm `stage=wol-resend-confirmed` is NOT followed by a fresh
-      `dhcp_state` change / rising `connect_attempts` in the regular
-      `link-state-change` lines (would mean the reconnect-loop bug is back),
-      and that no `stage=conn-disconnected` appears until the user actually
-      intends to disconnect (PC fully booted, session ending normally).
+- [ ] **Flash the rebuilt debug firmware, launch the companion app (fresh
+      install, so the shortcut is definitely current), and re-attempt the
+      real PC-off wake test.** WOL config is already persisted in flash,
+      no re-save needed. Check `ds5bridge-wol-debug.log` for
+      `event=board-trace` lines afterward -- specifically: (a) does
+      `wol-wifi-assoc-timeout`/`wol-dhcp-wait-timeout` still appear at all
+      (if DHCP is still stalling even at 3s, the underlying slowness needs
+      a different approach), (b) does the controller survive the entire
+      boot with no `conn-disconnected` until intended, and (c) does the
+      automatic magic packet actually arrive before/without needing a
+      manual power-on this time.
 
 ## Next task
 
