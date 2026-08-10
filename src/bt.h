@@ -150,6 +150,13 @@ enum class WolTraceStage : uint8_t {
     WolResendBegin = 12,
     WolResendConfirmed = 13,
     WolResendGaveUp = 14,
+    // Added to correlate BT disconnects (reason 0x22 in particular) against
+    // what wolwifi.cpp's Wi-Fi connect sequence was doing at the same time --
+    // previously only visible in the live-only WOL debug log via
+    // raw_link_status/dhcp_state, unavailable for a host-off attempt. detail
+    // is the elapsed ms in that phase (capped to 255) for both.
+    WolWifiAssocTimeout = 15,
+    WolDhcpWaitTimeout = 16,
 };
 // detail's meaning depends on stage: HCI disconnect reason for
 // ConnDisconnected, 1/0 for whether WOL was queued-pending vs. sent
