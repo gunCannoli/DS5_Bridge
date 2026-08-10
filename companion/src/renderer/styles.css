@@ -2137,6 +2137,22 @@ button {
   line-height: 1.16;
 }
 
+/* Debug Target's status text is open-ended (mirrors whatever
+   cyw43_wifi_link_status() and the debug result actually say -- see
+   wolDebugStatusText/wolRawLinkStatusHint), so it doesn't fit the fixed
+   45%-input-column layout .wol-settings-row uses. Stacks full-width
+   instead, matching .pico-firmware-row's shape: copy on top, actions
+   below aligned to the row's end. */
+.wol-debug-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+
+.wol-debug-row .settings-menu-copy > span {
+  overflow-wrap: anywhere;
+}
+
 .wol-debug-actions {
   display: flex;
   justify-content: flex-end;

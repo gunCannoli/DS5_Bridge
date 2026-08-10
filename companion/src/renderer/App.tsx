@@ -10247,7 +10247,7 @@ export function App() {
                     <span className="wol-settings-error">{wolFieldError.message}</span>
                   )}
                 </div>
-                <div className="settings-menu-row wol-settings-row">
+                <div className="settings-menu-row wol-debug-row">
                   <div className="settings-menu-copy">
                     <strong>Debug Target</strong>
                     <span>{wolDebugStatusText(snapshot.diagnostics.wolDebugStatus)}</span>
