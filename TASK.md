@@ -6,40 +6,30 @@ knowledge and known issues belong in `DECISIONS.md`, not here.
 
 ## Current task
 
-**`ObserveHost` confirmed working on real hardware.** A real test (PC on,
-companion app open) traced cleanly: window armed at `Ready`
-(`observe-host-begin` detail=2, USB not yet mounted for this fresh
-session), controller-type handshake completed in 22ms
-(`conn-controller-type-identified`, matching the earlier 23ms
-measurement), `usb_host_active()` flipped true ~217ms after `Ready`
-(`observe-host-sample-edge` detail=51 — mounted, not suspended, transport
-ready+attached), and exactly 100ms later (matching
-`WOL_OBSERVE_HOST_SUSTAIN_MS`) the window correctly concluded sustained-
-active and fired `wol-trigger-skipped-host-active` — no Wi-Fi connect
-attempt, no lightbar WOL pulse. Whole detect-and-skip cycle took ~340ms
-end to end, well inside the 2s window. See `CHANGELOG.md` for the full
-writeup.
+**Release-prep strip-down done.** All debug/diagnostic scaffolding built
+up during hardware bring-up (the `WolTraceStage` trace ring, the
+`WOL_DEBUG_STATUS` report, the companion app's "Debug Target" Ping/WOL
+Test UI row and its log file) has been removed — see `CHANGELOG.md`'s
+2026-08-10 "Release prep" entry and `DECISIONS.md` for the full writeup.
+Both firmware targets rebuild clean with zero leftover debug symbols;
+companion typecheck + full test suite (279/279) pass. What remains is
+exactly the shippable "Wake-on-LAN" feature (UI section + automatic-
+trigger/host-alive-gate/resend logic).
 
-Still open: the board-transport-recovery-reboot instrumentation
-(`BoardTransportRecoveryReboot`/`ConnDisconnectRetrySent`) hasn't fired in
-any test yet (neither confirming nor ruling out that it still happens) —
-not urgent, doesn't block the WOL feature itself.
-
-- [ ] **Real PC-off retest**: confirm WOL still fires within the bounded
-      window (not suppressed) when the PC is genuinely off — the
-      fifteenth-bug-fixed end-to-end path, combined with the now-working
-      host-alive gate, should show the full correct behavior: skip when on,
-      fire promptly when off.
-- [ ] `-DWOL_ALWAYS=ON` escape hatch: not urgent, only matters if a real
-      board hits the known USB-stays-active-in-S5 limitation.
+- [ ] Real hardware smoke test after the strip-down: controller connect
+      while PC is on → no WOL (still skips); controller connect while PC
+      is off → WOL fires and wakes the PC. Confirms nothing load-bearing
+      was accidentally removed alongside the debug code (not yet run —
+      the prior end-to-end hardware confirmation predates this pass).
 
 ## Next task
 
-**Core WOL feature already confirmed working end-to-end on real hardware**
-(2026-08-10, before the host-alive gate was added): controller connects
-while the target PC is off, WOL fires and gets ARP-confirmed within ~10s,
-the PC wakes automatically, and the controller stays connected through the
-whole boot with no disconnect. Phase 7's smoke test is done.
+**Core WOL feature confirmed working end-to-end on real hardware**
+(2026-08-10): controller connects while the target PC is off, WOL fires
+and gets ARP-confirmed within ~10s, the PC wakes automatically, and the
+controller stays connected through the whole boot with no disconnect. The
+host-alive gate (skip WOL when the PC is already on) is also confirmed
+working on real hardware. Phase 7's smoke test is done.
 
 - Phase 9 — failure-behavior verification: confirm Wi-Fi/WOL failure never
   blocks or delays BT/controller init or normal operation (non-blocking by
@@ -51,11 +41,8 @@ whole boot with no disconnect. Phase 7's smoke test is done.
   the branch's full commit log for anything to squash/reorder before
   opening the PR. Write the PR description (why WOL, how it works,
   supported board, config requirements, test results — the real
-  end-to-end success is the headline result). Decide whether the debug
-  Ping/WOL Test tooling ships as part of the feature or stays
-  internal-only (see `DECISIONS.md`'s closing note — leaning toward
-  shipping it, given how many real bugs it caught). Review the whole diff
-  for anything unrelated to WOL before opening the PR.
+  end-to-end success is the headline result). Review the whole diff for
+  anything unrelated to WOL before opening the PR.
 - Once Phase 9/10 are done, open the PR against `upstream/port-dev`.
 - Longer-running/soak testing (WOL across many PC on/off cycles, different
   network conditions) is optional polish, not a blocker — the core

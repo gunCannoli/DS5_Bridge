@@ -8,6 +8,46 @@ Architecture/known-issue knowledge that should inform future work lives in
 
 ---
 
+## 2026-08-10 — Release prep: stripped all debug/diagnostic scaffolding, kept only the shippable WOL feature
+
+With WOL confirmed working end-to-end on real hardware (previous entry),
+removed everything that existed only to debug it: the `WolTraceStage`
+board-level trace ring buffer (`bt.h`/`bt.cpp`, all
+`bt_append_wol_trace_event()` call sites in `bt.cpp`/`main.cpp`/
+`wolwifi.cpp`), `usb_host_active_debug_bits()` (`usb.h`/`usb.cpp`, keeping
+`usb_host_active()` itself since `ObserveHost` depends on it in
+production), the `WOL_DEBUG_STATUS` report and
+`wolwifi_debug_ping()`/`wolwifi_debug_send_wol()`/`wolwifi_debug_status()`
+(`wolwifi.h`/`wolwifi.cpp`), and the `TRIGGER_WOL_DEBUG_PING`/`_SEND`
+commands and handlers (`companion.cpp`). Two functions shared between
+debug and production paths were edited rather than deleted:
+`arp_snoop_input()` lost its debug-ping branch but kept the real
+resend-confirmation ARP watch; `send_magic_packet_now()` dropped its
+`is_debug_action` parameter down to a no-arg production-only send. On the
+companion side, removed the "Debug Target" UI row (Ping/WOL Test buttons,
+Debug Log path) and the already-dead `wolDebugStatusText()` helper from
+`App.tsx`, the WOL debug status/trace read-and-log machinery from
+`bridge-service.ts`, the two debug IPC channels from `main.ts`/
+`preload.ts`, and all matching constants/types/report IDs from
+`protocol.ts`/`types.ts`. `REPORT_ID.WOL_TRACE`/`WOL_DEBUG_STATUS`
+(`0x0B`/`0x0C`) were deleted outright rather than renumbering the
+still-used `DEVICE_IDENTITY`/`FIRMWARE_LOG` entries that follow them, per
+explicit instruction to touch the fewest possible unrelated things;
+`TRIGGER_WOL_DEBUG_PING`/`_SEND` were the trailing `COMMAND_ID` entries on
+both sides and removed cleanly. `PROTOCOL_MINOR` bumped 20→21
+(`protocol.ts` and `companion.cpp`'s `kProtocolMinor`). See `DECISIONS.md`
+for the full writeup including why removal (not keeping it as permanent
+tooling) was chosen.
+
+Verified: both firmware targets (Waveshare/`ENABLE_WOLWIFI` and the
+default non-WOL board) rebuilt clean with zero leftover debug/trace
+symbols in either `.elf` (confirmed via `arm-none-eabi-nm`); companion
+`npm run typecheck` and the full `vitest` suite (279/279) pass. What's left
+is exactly the shippable "Wake-on-LAN" feature: the UI section (enable
+toggle, Wi-Fi SSID/password, target MAC) and the underlying automatic-
+trigger → `ObserveHost` host-alive gate → Wi-Fi connect/DHCP →
+magic-packet send → resend-until-confirmed logic.
+
 ## 2026-08-10 — Host-alive gate (`ObserveHost`) confirmed working on real hardware
 
 The new diagnostics (previous entry) paid off immediately: a real test (PC
