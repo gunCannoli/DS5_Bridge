@@ -472,6 +472,27 @@ bool wolwifi_set_target_mac(const uint8_t mac[6]) {
     return true;
 }
 
+// Drops the Wi-Fi association once a resend cycle ends (confirmed or
+// timed out). WOL doesn't need Wi-Fi connected once the magic-packet
+// situation is resolved for this controller session, and staying
+// associated (DHCP renewal, beacon listening, general STA housekeeping)
+// is ongoing CYW43 radio activity that was observed causing a Bluetooth
+// LMP/LL response timeout (HCI disconnect reason 0x22) partway through a
+// real PC boot, well after the initial connect-time contention the 2s
+// connect-start delay already covers -- that fix only protects the start
+// of the Wi-Fi session, not its whole duration. The next controller-
+// connect trigger reconnects Wi-Fi fresh via the existing delayed-start +
+// leave-before-rejoin path, so this doesn't cost anything beyond the
+// normal reconnect latency next time WOL is needed.
+void disconnect_wifi_after_wol() {
+    if (g_wifi_state != WifiState::Connected) {
+        return;
+    }
+    const int err = cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
+    DS5_LOG("[WOL] Wi-Fi leave after resend cycle end: err=%d\n", err);
+    enter_state(WifiState::Idle);
+}
+
 // Starts (or restarts) the resend-until-confirmed cycle: sends immediately,
 // then wolwifi_task()'s drive_resend_cycle() takes over to resend every
 // WOL_RESEND_INTERVAL_MS until either the target confirms awake via ARP or
@@ -505,6 +526,7 @@ void drive_resend_cycle() {
         );
         g_resend_active = false;
         bt_wol_indicator_confirm();
+        disconnect_wifi_after_wol();
         return;
     }
     const uint32_t elapsed = now_ms() - g_resend_started_ms;
@@ -516,6 +538,7 @@ void drive_resend_cycle() {
         bt_append_wol_trace_event(WolTraceStage::WolResendGaveUp);
         g_resend_active = false;
         bt_wol_indicator_cancel();
+        disconnect_wifi_after_wol();
         return;
     }
     if (now_ms() - g_resend_last_sent_ms >= WOL_RESEND_INTERVAL_MS) {
