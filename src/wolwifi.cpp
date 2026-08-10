@@ -77,6 +77,7 @@ constexpr uint8_t MAX_PASSWORD_LEN = 53;
 constexpr uint16_t ETHTYPE_ARP = 0x0806;
 constexpr std::size_t ETH_HEADER_LEN = 14;
 constexpr std::size_t ETH_SRC_MAC_OFFSET = 6;
+constexpr std::size_t ETH_TYPE_OFFSET = 12;
 
 enum class WifiState : uint8_t {
     Unconfigured,
@@ -238,9 +239,24 @@ bool have_ip_lease() {
 }
 
 // Installed as netif_default->input once Wi-Fi first connects. Inspects
-// every inbound Ethernet frame's source MAC for an ARP ping in progress,
-// then always forwards to the netif's original input function (normally
+// every inbound ARP frame's source MAC for an ARP ping in progress, then
+// always forwards to the netif's original input function (normally
 // ethernet_input) so nothing about ordinary lwIP operation changes.
+//
+// EtherType is checked (ETHTYPE_ARP) before matching the source MAC --
+// originally this matched on *any* Ethernet frame's source address, ARP
+// or not. That's a real false-positive risk: any non-ARP broadcast/
+// multicast traffic that happens to carry the target's MAC as source
+// (switch/AP-level relaying, proxy behavior, etc.) would satisfy the
+// match and report "confirmed awake" even with the target genuinely
+// still off. Confirmed as a live bug: real-world traces showed
+// wol-resend-confirmed firing within 1-3s of wol-resend-begin on every
+// cycle, far too fast to be an actual PC finishing a cold boot and
+// answering ARP, immediately followed by the resend cycle ending and
+// Wi-Fi disconnecting (bug 9's disconnect_wifi_after_wol()) -- so the
+// real magic packet resend window was being cut short by a false
+// confirmation, before the target's NIC had actually had a chance to
+// wake the machine and come back on the network for real.
 err_t arp_snoop_input(pbuf *p, netif *inp) {
     const bool debug_ping_watching =
         g_debug_action == WolDebugAction::Ping && g_debug_result == WolDebugResult::Pending;
@@ -249,14 +265,20 @@ err_t arp_snoop_input(pbuf *p, netif *inp) {
         && g_have_target_mac
         && p->len >= ETH_HEADER_LEN
     ) {
-        uint8_t src_mac[6];
-        if (pbuf_copy_partial(p, src_mac, sizeof(src_mac), ETH_SRC_MAC_OFFSET) == sizeof(src_mac)) {
-            if (std::memcmp(src_mac, g_target_mac, sizeof(src_mac)) == 0) {
-                if (debug_ping_watching) {
-                    finish_debug_action(WolDebugResult::Success);
-                }
-                if (g_resend_active) {
-                    g_target_confirmed_awake = true;
+        uint8_t eth_type[2];
+        if (
+            pbuf_copy_partial(p, eth_type, sizeof(eth_type), ETH_TYPE_OFFSET) == sizeof(eth_type)
+            && (static_cast<uint16_t>(eth_type[0]) << 8 | eth_type[1]) == ETHTYPE_ARP
+        ) {
+            uint8_t src_mac[6];
+            if (pbuf_copy_partial(p, src_mac, sizeof(src_mac), ETH_SRC_MAC_OFFSET) == sizeof(src_mac)) {
+                if (std::memcmp(src_mac, g_target_mac, sizeof(src_mac)) == 0) {
+                    if (debug_ping_watching) {
+                        finish_debug_action(WolDebugResult::Success);
+                    }
+                    if (g_resend_active) {
+                        g_target_confirmed_awake = true;
+                    }
                 }
             }
         }
