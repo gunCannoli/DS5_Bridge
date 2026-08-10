@@ -81,7 +81,11 @@ export const WOL_TRACE_STAGE = {
   BOARD_WATCHDOG_REBOOT: 17,
   BOARD_BOOT: 18,
   WOL_TRIGGER_DEBOUNCED: 19,
-  WOL_CONNECT_RETRIES_EXHAUSTED: 20
+  WOL_CONNECT_RETRIES_EXHAUSTED: 20,
+  WOL_CONNECT_STARTED: 21,
+  WOL_WIFI_LINK_LOST_AFTER_CONNECT: 22,
+  WOL_WIFI_CONNECTED: 23,
+  WOL_WIFI_BACKOFF_ELAPSED: 24
 } as const;
 
 export const COMMAND_ID = {
@@ -1035,7 +1039,11 @@ const WOL_TRACE_STAGE_LABELS: Record<number, string> = {
   [WOL_TRACE_STAGE.BOARD_WATCHDOG_REBOOT]: 'board-watchdog-reboot',
   [WOL_TRACE_STAGE.BOARD_BOOT]: 'board-boot',
   [WOL_TRACE_STAGE.WOL_TRIGGER_DEBOUNCED]: 'wol-trigger-debounced',
-  [WOL_TRACE_STAGE.WOL_CONNECT_RETRIES_EXHAUSTED]: 'wol-connect-retries-exhausted'
+  [WOL_TRACE_STAGE.WOL_CONNECT_RETRIES_EXHAUSTED]: 'wol-connect-retries-exhausted',
+  [WOL_TRACE_STAGE.WOL_CONNECT_STARTED]: 'wol-connect-started',
+  [WOL_TRACE_STAGE.WOL_WIFI_LINK_LOST_AFTER_CONNECT]: 'wol-wifi-link-lost-after-connect',
+  [WOL_TRACE_STAGE.WOL_WIFI_CONNECTED]: 'wol-wifi-connected',
+  [WOL_TRACE_STAGE.WOL_WIFI_BACKOFF_ELAPSED]: 'wol-wifi-backoff-elapsed'
 };
 
 // detail's meaning depends on stage -- see bt_append_wol_trace_event() call

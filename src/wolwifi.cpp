@@ -397,6 +397,10 @@ void start_wifi_connect() {
         "[WOL] Wi-Fi connecting to \"%s\" (attempt #%u)\n",
         g_ssid, g_connect_attempt_count
     );
+    bt_append_wol_trace_event(
+        WolTraceStage::WolConnectStarted,
+        static_cast<uint8_t>(std::min<uint32_t>(g_connect_attempt_count, 255))
+    );
     cyw43_arch_enable_sta_mode();
     const int err = cyw43_arch_wifi_connect_async(
         g_ssid, g_password, CYW43_AUTH_WPA2_AES_PSK
@@ -968,6 +972,10 @@ void wolwifi_task(void) {
                     "[WOL] Wi-Fi connected: %s (attempt #%lu)\n",
                     ip4addr_ntoa(addr), static_cast<unsigned long>(g_connect_attempt_count)
                 );
+                bt_append_wol_trace_event(
+                    WolTraceStage::WolWifiConnected,
+                    g_send_pending ? 1 : 0
+                );
                 enter_state(WifiState::Connected);
                 ensure_arp_snoop_installed();
                 if (g_send_pending) {
@@ -1017,6 +1025,10 @@ void wolwifi_task(void) {
                     static_cast<unsigned long>(now_ms() - g_state_entered_ms),
                     static_cast<unsigned long>(g_link_lost_count)
                 );
+                bt_append_wol_trace_event(
+                    WolTraceStage::WolWifiLinkLostAfterConnect,
+                    static_cast<uint8_t>(std::min<uint32_t>(g_link_lost_count, 255))
+                );
                 enter_state(WifiState::Failed);
             }
             return;
@@ -1024,6 +1036,7 @@ void wolwifi_task(void) {
 
         case WifiState::Failed:
             if (now_ms() - g_state_entered_ms > WIFI_RETRY_BACKOFF_MS) {
+                bt_append_wol_trace_event(WolTraceStage::WolWifiBackoffElapsed);
                 enter_state(WifiState::Idle);
             }
             return;
