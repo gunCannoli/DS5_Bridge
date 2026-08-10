@@ -124,6 +124,50 @@ void bt_replay_adaptive_trigger_effect(
     bool motor_power_valid
 );
 void bt_reset_adaptive_triggers();
+
+// Board-level WOL/connection trace: a small ring buffer recording BT
+// connection-phase transitions, disconnect reasons/timeouts, and wolwifi.cpp
+// events, so a WOL attempt that happens while the target PC (and therefore
+// the companion app) is off can still be diagnosed once the app reconnects
+// -- unlike the live-only WOL debug log and firmware UART log, which both
+// require a companion connection at the moment the event happens. See
+// decisions.md: added after "controller connects then drops ~15s later,
+// WOL never starts" couldn't be diagnosed from either of those because the
+// target PC was off the whole time.
+enum class WolTraceStage : uint8_t {
+    ConnPhaseConnecting = 0,
+    ConnPhaseSecuring = 1,
+    ConnPhaseHidOpening = 2,
+    ConnPhaseReady = 3,
+    ConnPhaseDisconnecting = 4,
+    ConnSecurityTimeout = 5,
+    ConnHidOpeningTimeout = 6,
+    ConnHidInterruptFollowupTimeout = 7,
+    ConnDisconnected = 8,
+    WolTriggerFired = 9,
+    WolTriggerSkipped = 10,
+    WolConnectDelayStart = 11,
+    WolResendBegin = 12,
+    WolResendConfirmed = 13,
+    WolResendGaveUp = 14,
+};
+// detail's meaning depends on stage: HCI disconnect reason for
+// ConnDisconnected, 1/0 for whether WOL was queued-pending vs. sent
+// immediately for WolTriggerFired, etc. -- see append_wol_trace_event() call
+// sites for the exact meaning at each site.
+void bt_append_wol_trace_event(WolTraceStage stage, uint8_t detail = 0);
+struct WolTraceReadResult {
+    uint8_t record_count;
+    uint8_t record_size;
+    uint32_t latest_sequence;
+    uint16_t dropped_count;
+};
+// Packs up to as many ring records as fit in [buffer, buffer+capacity) back
+// to back, starting from the oldest not-yet-read record, advancing the
+// internal read cursor. Call repeatedly (e.g. once per companion poll) to
+// drain the ring without re-sending already-read records.
+WolTraceReadResult bt_read_wol_trace(uint8_t *buffer, uint16_t capacity);
+
 void bt_set_lightbar_restore_enabled(bool enabled);
 void bt_schedule_lightbar_restore(uint32_t delay_ms);
 void bt_lightbar_loop();

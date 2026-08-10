@@ -1891,6 +1891,26 @@ uint16_t build_wol_debug_status(uint8_t *buffer, uint16_t reqlen) {
     return COMPANION_PAYLOAD_SIZE;
 }
 
+uint16_t build_wol_trace(uint8_t *buffer, uint16_t reqlen) {
+    if (reqlen < COMPANION_PAYLOAD_SIZE) {
+        return 0;
+    }
+
+    memset(buffer, 0, COMPANION_PAYLOAD_SIZE);
+    write_magic_and_version(buffer);
+
+    constexpr std::size_t kDataOffset = 14;
+    const WolTraceReadResult result = bt_read_wol_trace(
+        buffer + kDataOffset,
+        COMPANION_PAYLOAD_SIZE - kDataOffset
+    );
+    buffer[6] = result.record_count;
+    buffer[7] = result.record_size;
+    write_u32(buffer + 8, result.latest_sequence);
+    write_u16(buffer + 12, result.dropped_count);
+    return COMPANION_PAYLOAD_SIZE;
+}
+
 uint16_t build_firmware_log(uint8_t *buffer, uint16_t reqlen) {
     if (reqlen < COMPANION_PAYLOAD_SIZE) {
         return 0;
@@ -3447,6 +3467,8 @@ uint16_t companion_get_report(uint8_t report_id, hid_report_type_t report_type, 
             return build_audio_status(buffer, reqlen);
         case COMPANION_REPORT_WOL_DEBUG_STATUS:
             return build_wol_debug_status(buffer, reqlen);
+        case COMPANION_REPORT_WOL_TRACE:
+            return build_wol_trace(buffer, reqlen);
         case COMPANION_REPORT_DEVICE_IDENTITY:
             return build_device_identity(buffer, reqlen);
         case COMPANION_REPORT_FIRMWARE_LOG:
