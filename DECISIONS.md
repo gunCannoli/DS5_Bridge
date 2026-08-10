@@ -56,57 +56,110 @@ show which of the three sites is firing and how often.
 
 ---
 
-## Architecture: host-alive gate skips WOL when the target PC is already on
+## Architecture: host-alive gate is a bounded observation window, not an instant check
 
 **Why:** the board's own USB persona is plugged into the *same* PC that WOL
 wakes (the deployment model — dongle plugged into the PC you want to
-remotely wake). Before this, a controller-connect edge always ran the full
-WOL pipeline (Wi-Fi connect, resend cycle, lightbar pulse) even when the PC
-was already running and didn't need waking — visibly pointless (the
-lightbar pulsing for no reason was the symptom that prompted this) and
-unnecessary CYW43 radio activity (see the radio-contention entry below —
-any avoidable Wi-Fi activity is worth skipping).
+remotely wake), so `usb_host_active()` (`usb.cpp` — `usb_mounted &&
+!usb_host_suspended_active()`) is a meaningful signal for whether that PC
+needs waking. Skipping WOL (and the visible lightbar pulse) when it doesn't
+avoids both a pointless magic packet and unnecessary CYW43 radio activity
+(see the radio-contention entry below).
 
-**Signal used:** `usb_host_active()` (new, `usb.cpp`) = `usb_mounted &&
-!usb_host_suspended_active()` — true only while the host is both
-enumerated and awake, not merely suspended (S3) or torn down (S5). Checked
-at the very top of `wolwifi_on_controller_connect()` (`wolwifi.cpp`),
-before anything else WOL-related runs, so a positive check skips the Wi-Fi
-connect, the resend cycle, and the lightbar pulse entirely — not just the
-final magic-packet send. New `WolTraceStage::WolTriggerSkippedHostActive`
-(25) records the skip in the board trace, distinct from the existing
-`WolTriggerSkipped` (disabled/unconfigured).
+**First version was wrong — checked the signal at the wrong time.** An
+earlier iteration called `usb_host_active()` synchronously, once, at the
+exact instant `wolwifi_on_controller_connect()` runs. A real test (PC
+confirmed on and USB solidly connected the whole time) proved this never
+works: this firmware's own USB persona is **session-scoped** —
+`usb_mounted` only becomes true after `usb_handle_controller_transport_ready()`
+(`usb.cpp`), itself gated on a controller-type-identification L2CAP
+handshake that only *starts* after `wolwifi_on_controller_connect()` has
+already run (same `Ready`-transition block, `bt.cpp`). So the instant check
+was structurally checking a signal that could not yet be true, independent
+of the target PC's actual power state — not a timing edge case, a
+fundamental design error.
 
-**Semantics by host power state:**
-- PC on, USB active → skip (this is the case being fixed).
-- PC asleep (S3) → USB stays enumerated but suspended → check reads
-  "inactive" → WOL still fires. Harmless (a magic packet to a sleeping NIC
-  still wakes it) and doesn't conflict with the separate, faster BT-based
-  "Wake PC on Controller" S3 path.
-- PC fully off (S5), Pico still powered → USB bus fully torn down → check
-  reads "inactive" → WOL fires. This is the actual target scenario for the
-  whole feature.
+**Corrected design: an `ObserveHost` mini-state-machine
+(`begin_observe_host()`/`drive_observe_host()` in `wolwifi.cpp`), matching
+`awalol/DS5Dongle#207` and `DevFreezing/DS5Dongle-WoL`'s validated
+`Observe` state pattern** (re-read both in depth specifically on this
+question — `gh pr diff 207 --repo awalol/DS5Dongle`; local clone of
+`DevFreezing/DS5Dongle-WoL`'s `wake-on-lan` branch, removed after reading).
+Per the user's explicit correction — *"we need proper signals... events
+not timers"* — this is event-driven, not a lookback/recently-seen
+heuristic:
+- `wolwifi_on_controller_connect()` starts the window
+  (`begin_observe_host()`) instead of proceeding immediately.
+- `wolwifi_task()` drives it every tick (`drive_observe_host()`), sampling
+  `usb_host_active()` live each tick.
+- **Default action is to fire WOL.** The window only *aborts* an
+  already-armed trigger if the host is positively, continuously observed
+  active — it never requires proving the host is off first. If
+  `WOL_OBSERVE_HOST_WINDOW_MS` elapses with no sustained-active read, the
+  deferred trigger logic (`proceed_with_wol_trigger()`) runs exactly as the
+  old immediate path did.
+- A single-tick active read isn't enough to abort — it must hold for
+  `WOL_OBSERVE_HOST_SUSTAIN_MS` continuously (debounces a transient blip,
+  same role as the references' `HOST_ACTIVE_SUSTAIN_US`).
 
-**Known limitation, with an escape hatch (matches
-`awalol/DS5Dongle#207`'s `WOL_ALWAYS` exactly — same name, same
-mechanism, confirmed via `gh pr diff 207 --repo awalol/DS5Dongle`):** some
-motherboards/BIOS settings ("power on by USB keyboard/mouse", always-on
-charging ports) or Modern Standby (S0ix) keep the USB bus enumerated and
-active even with the PC nominally off — on those boards this gate would
-see "host active" permanently and block every wake. `WOL_ALWAYS` is a
-**compile-time** `option()` in root `CMakeLists.txt` (default OFF, only
-meaningful when `ENABLE_WOLWIFI` is on) that skips the gate entirely when
-set. Compile-time rather than a runtime companion-app setting deliberately
-— this is a board/BIOS hardware quirk workaround, decided once at flash
-time, not a everyday user preference; matches `ENABLE_WOLWIFI` itself as
+**Why the reference values (3s window / 300ms sustain) don't transfer
+directly, and what we used instead:** confirmed via source inspection that
+neither reference PR's diff touches `tud_connect()`/`tud_disconnect()` —
+their USB persona is *always* enumerated, so a live `tud_mounted()` sample
+is meaningful the instant a controller connects. Ours needs the window to
+also cover our own session-scoped mount delay, which their design was
+never sized for. Measured the real delay on this hardware instead of
+guessing or copying: a clean `ConnControllerTypeIdentified` trace event
+(added specifically for this) showed the handshake completing in **23ms**
+with no radio contention. `WOL_OBSERVE_HOST_WINDOW_MS = 2000` gives ~85x
+margin over that (this codebase's own BT-phase timeouts, e.g.
+`HID_OPENING_PHASE_TIMEOUT_US`, use 8s as their outer "something is wrong"
+bound — 2s is a small fraction of that). `WOL_OBSERVE_HOST_SUSTAIN_MS =
+100`.
+
+**Semantics by host power state (unchanged from the original design,
+just correctly timed now):**
+- PC on, USB active → sustained-active observed within the window → skip.
+- PC asleep (S3) → USB stays enumerated but suspended → never reads
+  active → window elapses → WOL fires. Harmless (a magic packet to a
+  sleeping NIC still wakes it) and doesn't conflict with the separate,
+  faster BT-based "Wake PC on Controller" S3 path.
+- PC fully off (S5), Pico still powered → USB bus fully torn down → never
+  reads active → window elapses → WOL fires. The actual target scenario.
+
+**Trade-off accepted:** this reintroduces a small, bounded delay
+(`WOL_OBSERVE_HOST_WINDOW_MS`, worst case) before Wi-Fi starts, but *only*
+in the case where the host turns out to be off — in tension with the
+explicit "fire the instant the controller connects" requirement from
+earlier in this session (the twelfth-bug fix, which removed a *different*,
+unconditional 2s pre-delay for BT/Wi-Fi radio-contention reasons). User
+explicitly confirmed this specific, narrower delay is acceptable, given
+both reference implementations independently converged on the same
+trade-off for the same reason. `g_observe_host_active` is included in
+`wolwifi_wake_in_progress()` so the USB-suspend controller-power-off
+suppression covers this window too, same reasoning as every other WOL
+in-progress window.
+
+**Known limitation, with an escape hatch (matches `awalol/DS5Dongle#207`'s
+`WOL_ALWAYS` exactly — same name, same mechanism):** some motherboards/BIOS
+settings ("power on by USB keyboard/mouse", always-on charging ports) or
+Modern Standby (S0ix) keep the USB bus enumerated and active even with the
+PC nominally off — on those boards the observation window would always see
+"host active" and block every wake. `WOL_ALWAYS` is a **compile-time**
+`option()` in root `CMakeLists.txt` (default OFF, only meaningful when
+`ENABLE_WOLWIFI` is on) that skips straight to
+`proceed_with_wol_trigger()`, bypassing the observation entirely.
+Compile-time rather than a runtime companion-app setting deliberately —
+this is a board/BIOS hardware quirk workaround, decided once at flash
+time, not an everyday user preference; matches `ENABLE_WOLWIFI` itself as
 precedent, and avoids a new `COMMAND_ID`/settings-store/UI-row/protocol
 surface for something that isn't a normal setting.
 
-**Not debounced:** unlike the Wi-Fi-connect trigger debounce
-(`WOL_TRIGGER_DEBOUNCE_MS`, which exists specifically to avoid radio
-contention from repeated Wi-Fi activity), `usb_host_active()` is a free
-read of already-tracked in-memory flags — no radio/CPU cost to re-checking
-on every controller-connect edge, so no debounce was added for this check.
+**New trace stages:** `WolTraceStage::ConnControllerTypeIdentified` (28,
+`bt.h`/`bt.cpp` — the measurement event, elapsed ms since `Ready`) and the
+existing `WolTriggerSkippedHostActive` (25) now fires from
+`drive_observe_host()`'s sustained-active branch instead of the old
+instant check.
 
 ---
 
