@@ -79,7 +79,9 @@ export const WOL_TRACE_STAGE = {
   WOL_WIFI_ASSOC_TIMEOUT: 15,
   WOL_DHCP_WAIT_TIMEOUT: 16,
   BOARD_WATCHDOG_REBOOT: 17,
-  BOARD_BOOT: 18
+  BOARD_BOOT: 18,
+  WOL_TRIGGER_DEBOUNCED: 19,
+  WOL_CONNECT_RETRIES_EXHAUSTED: 20
 } as const;
 
 export const COMMAND_ID = {
@@ -1031,7 +1033,9 @@ const WOL_TRACE_STAGE_LABELS: Record<number, string> = {
   [WOL_TRACE_STAGE.WOL_WIFI_ASSOC_TIMEOUT]: 'wol-wifi-assoc-timeout',
   [WOL_TRACE_STAGE.WOL_DHCP_WAIT_TIMEOUT]: 'wol-dhcp-wait-timeout',
   [WOL_TRACE_STAGE.BOARD_WATCHDOG_REBOOT]: 'board-watchdog-reboot',
-  [WOL_TRACE_STAGE.BOARD_BOOT]: 'board-boot'
+  [WOL_TRACE_STAGE.BOARD_BOOT]: 'board-boot',
+  [WOL_TRACE_STAGE.WOL_TRIGGER_DEBOUNCED]: 'wol-trigger-debounced',
+  [WOL_TRACE_STAGE.WOL_CONNECT_RETRIES_EXHAUSTED]: 'wol-connect-retries-exhausted'
 };
 
 // detail's meaning depends on stage -- see bt_append_wol_trace_event() call

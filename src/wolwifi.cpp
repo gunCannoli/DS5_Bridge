@@ -71,6 +71,26 @@ constexpr uint32_t DEBUG_PING_TIMEOUT_MS = 4000;
 // out, rather than firing once and hoping.
 constexpr uint32_t WOL_RESEND_INTERVAL_MS = 3000;
 constexpr uint32_t WOL_RESEND_TOTAL_BUDGET_MS = 15000;
+// A flapping BT link during a single PC boot can fire multiple
+// controller-connect edges in quick succession (several of the bugs in
+// decisions.md were this exact scenario), and without a guard every one of
+// those re-enters wolwifi_on_controller_connect() and restarts Wi-Fi/WOL
+// activity, re-contending with BT each time for no benefit -- one magic
+// packet getting through is enough. Debounced by when a packet was last
+// actually *sent* (not merely triggered), matching
+// DevFreezing/DS5Dongle-WoL's wol.cpp DEBOUNCE_US design: an aborted/failed
+// attempt shouldn't consume the window, so a fresh connect can still retry
+// soon if nothing went out last time.
+constexpr uint32_t WOL_TRIGGER_DEBOUNCE_MS = 90000;
+// CYW43_LINK_BADAUTH (wrong Wi-Fi password) can never succeed no matter how
+// many times it's retried -- without a cap it's otherwise indistinguishable
+// from a transient "AP briefly unreachable" failure and gets the same
+// infinite WIFI_RETRY_BACKOFF_MS retry loop, needless radio activity/BT
+// contention for a connect that will never work. Matches
+// DevFreezing/DS5Dongle-WoL's wol.cpp MAX_RETRIES (2), which also gives a
+// first BADAUTH one retry (covers a genuine transient PSK handshake
+// glitch) before giving up.
+constexpr uint8_t MAX_WIFI_CONNECT_RETRIES = 2;
 constexpr uint8_t MAX_SSID_LEN = 32;               // 802.11 SSID max
 // WPA2-PSK passphrases can be up to 63 chars, but the companion protocol's
 // fixed 63-byte HID report (11-byte command header) only has 53 bytes of
@@ -118,6 +138,27 @@ bool g_send_pending = false;
 // Cleared only by wolwifi_on_controller_connect(), the one legitimate
 // reason to reconnect.
 bool g_wifi_intentionally_idle = false;
+
+// See WOL_TRIGGER_DEBOUNCE_MS. 0 = never sent (debounce never blocks the
+// very first attempt). Set only when a send actually succeeds, in
+// send_magic_packet_now() -- not on trigger, not on a failed/aborted
+// attempt.
+uint32_t g_last_wol_sent_ms = 0;
+
+// See MAX_WIFI_CONNECT_RETRIES. Reset to 0 at the start of every fresh
+// triggered attempt (wolwifi_on_controller_connect(), post-debounce), so
+// the cap applies per attempt cycle, not cumulatively across the board's
+// whole uptime. g_badauth_seen tracks whether the *current* run of
+// consecutive failures included a BADAUTH, mirroring the reference
+// implementation's one-retry-then-stop BADAUTH handling distinct from the
+// generic retry-until-MAX_WIFI_CONNECT_RETRIES path.
+uint8_t g_connect_retry_count = 0;
+bool g_badauth_seen = false;
+// Set once retries are exhausted (BADAUTH twice, or the generic cap hit) so
+// WifiState::Idle stops auto-reconnecting for this attempt cycle -- same
+// guard shape as g_wifi_intentionally_idle, cleared by the same legitimate
+// reconnect triggers (fresh controller-connect edge, new SSID/password).
+bool g_wifi_retries_exhausted = false;
 
 WolDebugAction g_debug_action = WolDebugAction::None;
 WolDebugResult g_debug_result = WolDebugResult::Pending;
@@ -215,6 +256,16 @@ bool send_magic_packet_now(bool is_debug_action) {
             g_target_mac[0], g_target_mac[1], g_target_mac[2],
             g_target_mac[3], g_target_mac[4], g_target_mac[5]
         );
+        // Arms WOL_TRIGGER_DEBOUNCE_MS from the moment a packet actually
+        // went out -- not from when the trigger fired -- so a failed/
+        // aborted attempt doesn't consume the debounce window. Only the
+        // automatic trigger's sends should debounce future automatic
+        // triggers; the debug WOL Test button is on-demand tooling and
+        // must keep working every time it's pressed regardless of the
+        // automatic path's timing.
+        if (!is_debug_action) {
+            g_last_wol_sent_ms = now_ms();
+        }
         if (is_debug_action) {
             finish_debug_action(WolDebugResult::Success);
         }
@@ -608,12 +659,36 @@ void wolwifi_on_controller_connect(void) {
         bt_append_wol_trace_event(WolTraceStage::WolTriggerSkipped, detail);
         return;
     }
+    // See WOL_TRIGGER_DEBOUNCE_MS: a flapping BT link during a single PC
+    // boot can fire this multiple times in quick succession; one magic
+    // packet getting through is enough, and re-running Wi-Fi connect/resend
+    // on every edge only re-contends with BT for no benefit. Checked before
+    // the retry-count reset below so a debounced edge doesn't also reset a
+    // still-relevant in-progress attempt's retry budget.
+    if (g_last_wol_sent_ms != 0 && now_ms() - g_last_wol_sent_ms < WOL_TRIGGER_DEBOUNCE_MS) {
+        const uint32_t since_last_ms = now_ms() - g_last_wol_sent_ms;
+        DS5_LOG(
+            "[WOL] Controller connected but debounced (last send %lu ms ago, window %lu ms)\n",
+            static_cast<unsigned long>(since_last_ms),
+            static_cast<unsigned long>(WOL_TRIGGER_DEBOUNCE_MS)
+        );
+        bt_append_wol_trace_event(
+            WolTraceStage::WolTriggerDebounced,
+            static_cast<uint8_t>(std::min<uint32_t>(since_last_ms / 1000, 255))
+        );
+        return;
+    }
     DS5_LOG("[WOL] Controller connected\n");
     // A fresh controller-connect edge is the one legitimate reason to
     // reconnect Wi-Fi after a prior WOL cycle intentionally left it idle
-    // (see disconnect_wifi_after_wol()) -- clear the guard so the Idle
-    // case in wolwifi_task() is willing to start a new connect again.
+    // (see disconnect_wifi_after_wol()) or after a prior attempt exhausted
+    // its connect retries (see MAX_WIFI_CONNECT_RETRIES) -- clear both
+    // guards and reset the per-attempt retry counters so this fresh attempt
+    // gets its own full retry budget.
     g_wifi_intentionally_idle = false;
+    g_wifi_retries_exhausted = false;
+    g_connect_retry_count = 0;
+    g_badauth_seen = false;
     if (g_wifi_state == WifiState::Connected && have_ip_lease()) {
         // Wi-Fi is already up from a prior session -- no new radio activity
         // about to start, so no reason to delay; begin resending right away.
@@ -764,7 +839,7 @@ void wolwifi_task(void) {
             return;
 
         case WifiState::Idle:
-            if (g_wifi_intentionally_idle) {
+            if (g_wifi_intentionally_idle || g_wifi_retries_exhausted) {
                 return;
             }
             start_wifi_connect();
@@ -785,6 +860,23 @@ void wolwifi_task(void) {
             if (status == CYW43_LINK_UP) {
                 DS5_LOG("[WOL] Wi-Fi link up; waiting for IP lease\n");
                 enter_state(WifiState::WaitingForIp);
+            } else if (status == CYW43_LINK_BADAUTH) {
+                // Usually a wrong password (can never succeed no matter how
+                // many times it's retried), but the driver can also report a
+                // transient BADAUTH from a PSK handshake glitch on marginal
+                // signal, which a rejoin does fix -- give it exactly one
+                // retry before treating it as a real auth failure and
+                // stopping. See MAX_WIFI_CONNECT_RETRIES.
+                if (!g_badauth_seen) {
+                    g_badauth_seen = true;
+                    DS5_LOG("[WOL] Wi-Fi BADAUTH (may be transient); retrying once\n");
+                    enter_state(WifiState::Failed);
+                } else {
+                    DS5_LOG("[WOL] Wi-Fi BADAUTH again; wrong credentials, giving up\n");
+                    bt_append_wol_trace_event(WolTraceStage::WolConnectRetriesExhausted, status & 0xFF);
+                    g_wifi_retries_exhausted = true;
+                    enter_state(WifiState::Failed);
+                }
             } else if (status < 0 || now_ms() - g_state_entered_ms > WIFI_CONNECT_TIMEOUT_MS) {
                 g_wifi_connect_timeout_count++;
                 const uint32_t elapsed_ms = now_ms() - g_state_entered_ms;
@@ -799,6 +891,15 @@ void wolwifi_task(void) {
                     WolTraceStage::WolWifiAssocTimeout,
                     static_cast<uint8_t>(std::min<uint32_t>(elapsed_ms / 1000, 255))
                 );
+                g_connect_retry_count++;
+                if (g_connect_retry_count > MAX_WIFI_CONNECT_RETRIES) {
+                    DS5_LOG(
+                        "[WOL] Wi-Fi connect retries exhausted (%u > max %u); giving up until next trigger\n",
+                        g_connect_retry_count, MAX_WIFI_CONNECT_RETRIES
+                    );
+                    bt_append_wol_trace_event(WolTraceStage::WolConnectRetriesExhausted, g_connect_retry_count);
+                    g_wifi_retries_exhausted = true;
+                }
                 enter_state(WifiState::Failed);
             }
             return;
@@ -831,6 +932,19 @@ void wolwifi_task(void) {
                     WolTraceStage::WolDhcpWaitTimeout,
                     static_cast<uint8_t>(std::min<uint32_t>(elapsed_ms / 1000, 255))
                 );
+                // A stalled DHCP exchange counts against the same connect
+                // retry budget as an association failure (both are "this
+                // attempt cycle isn't working") -- see MAX_WIFI_CONNECT_RETRIES.
+                g_connect_retry_count++;
+                if (g_connect_retry_count > MAX_WIFI_CONNECT_RETRIES) {
+                    DS5_LOG(
+                        "[WOL] Wi-Fi connect retries exhausted (%u > max %u) after DHCP timeout; "
+                        "giving up until next trigger\n",
+                        g_connect_retry_count, MAX_WIFI_CONNECT_RETRIES
+                    );
+                    bt_append_wol_trace_event(WolTraceStage::WolConnectRetriesExhausted, g_connect_retry_count);
+                    g_wifi_retries_exhausted = true;
+                }
                 enter_state(WifiState::Failed);
             }
             return;

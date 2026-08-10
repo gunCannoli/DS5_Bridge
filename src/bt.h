@@ -183,6 +183,19 @@ enum class WolTraceStage : uint8_t {
     // unambiguous "why did the trace sequence restart at 1" answer instead
     // of inferring it from board_time_ms looking small.
     BoardBoot = 18,
+    // A controller-connect edge arrived within WOL_TRIGGER_DEBOUNCE_MS of
+    // the last magic packet actually sent -- skipped to avoid re-running
+    // Wi-Fi connect/resend (and re-contending with BT) on every edge of a
+    // flapping BT link during a single PC boot. detail = seconds since the
+    // last send (capped to 255).
+    WolTriggerDebounced = 19,
+    // Wi-Fi connect retries for the current triggered attempt hit
+    // MAX_WIFI_CONNECT_RETRIES (or two consecutive CYW43_LINK_BADAUTH
+    // results) -- wolwifi_task()'s Idle case stops auto-reconnecting until
+    // the next legitimate trigger (fresh controller-connect edge past the
+    // debounce window, or new SSID/password). detail = the retry count (or
+    // the raw BADAUTH status value) at the point it gave up.
+    WolConnectRetriesExhausted = 20,
 };
 // detail's meaning depends on stage: HCI disconnect reason for
 // ConnDisconnected, 1/0 for whether WOL was queued-pending vs. sent
