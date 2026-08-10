@@ -8,6 +8,39 @@ Architecture/known-issue knowledge that should inform future work lives in
 
 ---
 
+## 2026-08-10 — Host-alive gate found to be checking the wrong (session-scoped) signal; measurement trace added, real fix pending
+
+A real test (fresh boot, no reboot involved this time, USB confirmed
+solidly connected to the target PC the whole time) showed the host-alive
+gate still not skipping WOL despite the PC being on. Investigation (full
+read of `usb.cpp`'s controller-transport lifecycle) found the real bug:
+`usb_mounted` only becomes true after this firmware's own USB persona
+re-enumerates for *this* controller session, which only happens after a
+controller-type-identification handshake that itself only starts *after*
+`wolwifi_on_controller_connect()` (the gate check) has already run. So the
+gate was structurally checking a signal that cannot be true yet, regardless
+of PC power state — not an environment issue, a real logic bug in last
+session's design. User's correction: *"we need proper signals... events
+not timers... proper investigation before coding a solution."* Re-read
+`awalol/DS5Dongle#207` and `DevFreezing/DS5Dongle-WoL` in depth
+specifically on this question — both use a bounded, event-driven `Observe`
+state (watch live `tud_mounted() && !tud_suspended()` every tick for up to
+3s, confirm only after 300ms sustained-active) rather than a point-in-time
+check, and default to firing WOL unless the host is positively observed —
+but their design relies on a USB persona that's *always* enumerated
+(confirmed via diff inspection — neither PR touches `tud_connect`/
+`tud_disconnect` logic), which doesn't hold for our session-scoped
+architecture. User confirmed a bounded observation delay (only when the
+host turns out to be off) is acceptable, and asked to measure real timing
+before picking window/sustain values rather than guessing or copying
+theirs blind. Added (this change): `WolTraceStage::ConnControllerTypeIdentified`,
+appended at both controller-type-identification success sites in `bt.cpp`,
+detail = elapsed ms since the `Ready` transition — measurement-only, no
+behavior change. The actual `Observe`-equivalent state (new `WifiState`,
+event-driven, replacing the buggy instant check) is a follow-up once real
+elapsed-ms data comes back. Firmware/companion build clean, debug firmware
+at `build/waveshare-debug/ds5-bridge.uf2`, companion app rebuilt.
+
 ## 2026-08-10 — Board-transport-recovery reboot: added trace coverage for a real, previously-invisible self-reboot
 
 Retesting the host-alive gate showed it appearing to misfire (WOL fired

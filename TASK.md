@@ -6,31 +6,41 @@ knowledge and known issues belong in `DECISIONS.md`, not here.
 
 ## Current task
 
-Bench-testing the host-alive gate surfaced a real, separate issue: the
-board is self-rebooting via a deliberate `watchdog_reboot()` call in
-`bt.cpp`'s BT disconnect/ACL-pending recovery paths during otherwise-normal
-operation, and this was previously invisible in the trace (see
-`DECISIONS.md`'s `watchdog_enable_caused_reboot()` entry). Added
-`BoardTransportRecoveryReboot`/`ConnDisconnectRetrySent` trace stages to
-make it visible instead of guessing further. Firmware/companion build
-clean, debug firmware rebuilt at `build/waveshare-debug/ds5-bridge.uf2`.
+A real test (no reboot this time, USB confirmed solidly connected the
+whole time) proved the host-alive gate is checking the wrong signal: our
+USB persona is session-scoped (only mounts after a controller-type
+handshake that runs *after* the gate check), unlike the reference
+implementations' always-enumerated persona their design assumes. User
+corrected the approach: event-driven observation window (matching
+`awalol/DS5Dongle#207`/`DevFreezing/DS5Dongle-WoL`'s `Observe` state), not
+a timer heuristic, and default-fires-WOL unless the host is positively
+observed. Measure real timing before picking window/sustain values rather
+than guessing. Added (this change, measurement-only, no behavior change
+yet): `ConnControllerTypeIdentified` trace stage, elapsed ms from the
+`Ready` transition to the controller-type handshake completing. See
+`CHANGELOG.md` for the full writeup. Firmware/companion rebuilt.
 
-- [ ] **Real test with the new instrumentation.** Read
-      `ds5bridge-wol-debug.log` for: (a) does `board-transport-recovery-reboot`
-      appear, and with which detail (0=disconnect-retry-exhausted,
-      1=incoming-ACL-pending-timeout, 2=ACL-cancel-incomplete)? (b) does
-      `conn-disconnect-retry-sent` show an escalation building up to it
-      (1, 2, 3 attempts) or does the reboot happen without any preceding
-      retries? (c) once the actual reboot cause is known, diagnose *why*
-      that recovery path is firing during normal operation — not yet
-      understood.
-- [ ] **Re-verify the host-alive gate itself** once reboots aren't
-      confusing the picture: with the target PC genuinely on and the board
-      NOT freshly rebooted, confirm `wol-trigger-skipped-host-active`
-      appears instead of `wol-trigger-fired`, and the lightbar stays dark.
+Also still open from the prior round: the board-transport-recovery-reboot
+instrumentation (`BoardTransportRecoveryReboot`/`ConnDisconnectRetrySent`)
+hasn't been exercised by a real test yet either — both this and the new
+measurement trace need the *same* next real test to read.
+
+- [ ] **Real test with the PC on** (so the controller-type handshake
+      actually completes and `conn-controller-type-identified` fires).
+      Read `ds5bridge-wol-debug.log` for its `detail` value(s) — this is
+      the real elapsed-ms data needed to design the `Observe`-equivalent
+      state's window/sustain thresholds next.
+- [ ] Same test: check for `board-transport-recovery-reboot`/
+      `conn-disconnect-retry-sent` (still unexplained from the prior
+      round) and confirm/deny whether it recurs.
+- [ ] Once real timing data is in hand: design and implement the actual
+      `Observe`-equivalent `WifiState` (bounded window, sustained-active
+      confirm threshold, default-fires-unless-confirmed-active) to replace
+      the current buggy instant `usb_host_active()` check in
+      `wolwifi_on_controller_connect()`.
 - [ ] **Real PC-off retest**: confirm WOL still fires normally when the PC
       is genuinely off — the fifteenth-bug-fixed end-to-end path must stay
-      unaffected by both the gate and this investigation.
+      unaffected by all of this.
 - [ ] `-DWOL_ALWAYS=ON` escape hatch: not urgent, only matters if a real
       board hits the known USB-stays-active-in-S5 limitation.
 
