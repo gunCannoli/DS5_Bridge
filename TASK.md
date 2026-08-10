@@ -96,21 +96,41 @@ writeup; implemented in `bt.cpp`/`bt.h` (`bt_wol_indicator_*`), wired into
 `wolwifi.cpp`'s resend cycle. Debug firmware rebuilt at
 `build/waveshare/ds5-bridge.uf2`.
 
+**2026-08-10: color/resend confirmed working on real hardware, but the
+real bug found** -- user confirmed the resend + lightbar behavior worked
+in a follow-up test, but reported the controller still doesn't survive
+until the PC turns on. Root cause found: **not** BT/Wi-Fi radio contention
+(already fixed) -- `usb_pm_poll()` in `usb.cpp` has a pre-existing,
+separate battery-saving feature that powers the DualSense off via
+`bt_power_off_controller()` ~3s after USB suspend is detected
+(`USB_SUSPEND_POWEROFF_DEBOUNCE_US`), controlled by the existing
+"USB suspend disconnect" companion setting (default on, unrelated to WOL).
+The instant the target PC's USB goes away, the board deliberately powers
+the controller off a few seconds later, well before a 15s WOL resend cycle
+(or even the 2s connect-start delay) can finish. Fixed (committed): new
+`wolwifi_wake_in_progress()` (true while `g_resend_active` or
+`g_send_pending`) checked in `usb_pm_poll()` before the power-off call --
+suppressed only while a wake is actually in progress, normal behavior
+resumes immediately once the wake ends (confirmed or timed out). Debug
+firmware rebuilt at `build/waveshare/ds5-bridge.uf2`. Full writeup in
+decisions.md.
+
 ## Current task
 
 - [ ] **Flash the rebuilt debug firmware and re-attempt the real PC-off
       wake test** (original Phase 7 Test 2), this time checking (a) the PC
       actually wakes via the automatic WOL-on-controller-connect trigger
-      within the 15s resend budget, (b) the controller/BT connection
-      survives the 2s delay + Wi-Fi connect + DHCP + resend sequence
-      without dropping, (c) the debug log shows the automatic-trigger
-      resend cycle's own log lines (`[WOL] Target confirmed awake...` or
-      `[WOL] Resend budget ... exhausted...`) this time, not just a
-      manual-debug-button entry, and (d) the lightbar visibly pulses green
-      while resending and goes solid green briefly once the PC wakes.
-      Note: the target PC being off means no
-      companion app / log access during the test itself; check the
-      log/companion app only after, once the PC is back up.
+      within the 15s resend budget, (b) **the controller/BT connection now
+      survives all the way until the PC wakes** (the actual open bug --
+      everything else has already been individually confirmed working:
+      resend, ARP confirmation, lightbar), (c) the debug log shows the
+      automatic-trigger resend cycle's own log lines
+      (`[WOL] Target confirmed awake...` or
+      `[WOL] Resend budget ... exhausted...`), and (d) the lightbar
+      visibly pulses green while resending and goes solid green briefly
+      once the PC wakes. Note: the target PC being off means no companion
+      app / log access during the test itself; check the log/companion
+      app only after, once the PC is back up.
 
 ## Next task
 

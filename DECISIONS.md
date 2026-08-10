@@ -5,6 +5,65 @@ Each entry: decision, rationale, alternatives considered, date.
 
 ---
 
+## 2026-08-10 — Sixth bug (the real one): USB-suspend controller power-off fires before WOL can finish
+
+**Context:** after confirming (via a real test) that the resend cycle,
+ARP confirmation, and lightbar indicator all worked correctly, the user
+reported the original symptom was still unresolved: the controller
+doesn't stay connected to the board until the PC wakes. This meant the
+BT/Wi-Fi radio-contention fix (fourth bug, above) was not actually the
+cause of the original report -- it was a real, separate bug worth fixing
+in its own right (RF contention during a fresh Wi-Fi connect racing a
+fresh BT connection is real and was observed), but not *this* symptom.
+
+**Root cause:** `usb.cpp` has a pre-existing, WOL-unrelated feature:
+`usb_pm_poll()` calls `bt_power_off_controller()` (sends the DualSense's
+own BT feature-report 0x08 power-off, not just an HCI disconnect) roughly
+`USB_SUSPEND_POWEROFF_DEBOUNCE_US` (3s) after `tud_suspend_cb()` fires,
+gated by the `usb_suspend_disconnect_enabled` setting (default `true`,
+exposed in the companion app as "USB suspend disconnect" --
+`companion.cpp` `CommandSetUsbSuspendDisconnectEnabled` /
+`protocol.ts` `SET_USB_SUSPEND_DISCONNECT_ENABLED`). This exists to save
+the controller's battery when the host goes to sleep and nothing needs it
+connected -- a reasonable feature on its own. But it fires unconditionally
+on any USB suspend, including the exact moment WOL needs the controller to
+stay present: the target PC's USB disappearing *is* the trigger that
+starts the WOL attempt in the first place, so the 3s power-off debounce
+was racing (and always beating) the up-to-15s resend cycle, and even the
+2s connect-start delay in the worst case.
+
+**Fix:** asked the user whether to suppress this power-off only during an
+active WOL attempt, or for the entire time WOL is enabled; chose the
+narrower option. Added `wolwifi_wake_in_progress()` to `wolwifi.h`/`.cpp`
+(true while `g_resend_active`, or `g_send_pending` for the gap between a
+controller-connect trigger and the resend cycle actually starting once
+Wi-Fi comes up) and check it in `usb_pm_poll()` before calling
+`bt_power_off_controller()` -- skip the call while a wake is in progress,
+but leave `usb_suspend_at_us` set so the check re-runs every tick and the
+power-off still fires normally the moment the wake ends (confirmed awake
+or resend budget exhausted), rather than being permanently skipped.
+
+Scoped narrowly on purpose: the controller still gets its normal
+battery-saving auto-off whenever WOL isn't actively in the middle of an
+attempt (including whenever WOL is simply enabled but no controller-connect
+trigger has fired), consistent with the earlier "don't add complexity
+beyond what's needed" calls in this same session (the ARP-liveness-skip
+and no-distinct-failure-color decisions above).
+
+`wolwifi.h` is designed so callers never need an `#ifdef` around it
+(no-op stubs on boards without `ENABLE_WOLWIFI`); extended that existing
+pattern to `usb.cpp` (which didn't previously depend on `wolwifi.h`) the
+same way `bt.cpp`/`main.cpp`/`companion.cpp` already do.
+
+**Status:** implemented and committed, debug firmware rebuilt at
+`build/waveshare/ds5-bridge.uf2`. This is believed to be the actual fix
+for the original reported symptom (controller not staying connected until
+wake) -- the fourth-bug radio-contention fix and fifth-bug resend fix were
+both real improvements but didn't address this specific mechanism. Not yet
+verified against a real PC-off test.
+
+---
+
 ## 2026-08-10 — Pulsing lightbar indicator for an in-flight WOL send (Phase 11b, revised scope)
 
 **Context:** Phase 11b (see the plan entry further below) had originally
