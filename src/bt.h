@@ -196,6 +196,34 @@ enum class WolTraceStage : uint8_t {
     // debounce window, or new SSID/password). detail = the retry count (or
     // the raw BADAUTH status value) at the point it gave up.
     WolConnectRetriesExhausted = 20,
+    // Added after a real smoke test showed WOL firing ~61 real seconds after
+    // wol-trigger-fired with zero trace events in between (no timeout, no
+    // retries-exhausted, no ring-buffer drop) despite connect_attempts
+    // jumping by 2 in that window -- the existing trace coverage couldn't
+    // explain it. These four cover every remaining silent WifiState
+    // transition so a repeat has nothing left to infer.
+    //
+    // Appended on every start_wifi_connect() call, unconditionally (not just
+    // on failure/timeout like the existing Wol*Timeout stages) -- detail is
+    // g_connect_attempt_count at that call, capped to 255.
+    WolConnectStarted = 21,
+    // Appended when WifiState::Connected detects the link/IP lease is gone
+    // and falls back to Failed -- previously only DS5_LOG'd, no trace
+    // event, so a live/established connection dropping (as opposed to a
+    // Connecting-phase timeout, which does have WolWifiAssocTimeout) was
+    // invisible in a host-off gap. detail = g_link_lost_count, capped.
+    WolWifiLinkLostAfterConnect = 22,
+    // Appended when WifiState::WaitingForIp successfully reaches Connected
+    // -- previously only DS5_LOG'd. detail = 1 if g_send_pending was true at
+    // that instant (a resend cycle actually started), 0 if false (connected
+    // successfully but nothing was queued to send) -- directly answers
+    // whether a given successful connect did anything WOL-relevant.
+    WolWifiConnected = 23,
+    // Appended when WifiState::Failed's WIFI_RETRY_BACKOFF_MS elapses and it
+    // re-enters Idle to retry -- makes the Failed -> Idle -> reconnect cycle
+    // visible end-to-end (the timeout stages above only cover Failed's
+    // entry, not its exit back toward another connect attempt).
+    WolWifiBackoffElapsed = 24,
 };
 // detail's meaning depends on stage: HCI disconnect reason for
 // ConnDisconnected, 1/0 for whether WOL was queued-pending vs. sent
