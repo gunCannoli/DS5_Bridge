@@ -5,6 +5,63 @@ Each entry: decision, rationale, alternatives considered, date.
 
 ---
 
+## 2026-08-10 — Eighth bug: staying Wi-Fi-associated after WOL contends with BT for the rest of the boot
+
+**Context:** with the seventh-bug (boot-time settings race) fix confirmed
+working -- a board power-cycle after a completed companion-app reapply
+showed `wol-trigger-fired` immediately at `conn-ready` on every reconnect --
+a full real trace came through for the first time covering an entire WOL
+attempt during an actual PC boot:
+
+```
+conn-ready -> wol-trigger-fired -> wol-connect-delay-start
+  -> wol-resend-begin -> wol-resend-confirmed   (WOL worked!)
+  -> [several to ~17s later] conn-hid-opening(detail=1) -> conn-disconnecting -> conn-disconnected(reason=0x22)
+```
+
+This repeated on every reconnect cycle in the trace (three full cycles
+observed), with the gap between `wol-resend-confirmed` and the eventual
+disconnect varying (~1s, ~4.5s, and one case where the user manually ended
+the session) -- consistent with an intermittent contention window, not a
+fixed timer.
+
+**Root cause:** `0x22` is `ERROR_CODE_LMP_RESPONSE_TIMEOUT_LL_RESPONSE_TIMEOUT`
+(`bluetooth.h`) -- a genuine Bluetooth link-layer timeout, not an
+intentional disconnect from either side. The fourth-bug fix
+(`WIFI_CONNECT_START_DELAY_MS`) only protects the *start* of a Wi-Fi
+session -- the burst of association + DHCP activity right as a fresh BT
+connection is settling. It does nothing about the CYW43's ongoing radio
+use for as long as the board stays associated to the AP afterward: DHCP
+lease renewal, beacon listening, and general STA housekeeping are all
+continued radio-time demands that can still intermittently starve a
+concurrent BT link, and a real PC boot is tens of seconds long -- far
+longer than the initial connect burst the existing delay was sized for.
+
+**Fix:** once a resend cycle ends -- either branch, target confirmed awake
+or budget exhausted -- call `cyw43_wifi_leave()` to drop the Wi-Fi
+association entirely, via new `disconnect_wifi_after_wol()` wired into
+both end paths of `drive_resend_cycle()`. WOL doesn't need Wi-Fi connected
+once the magic-packet situation for that controller session is resolved;
+holding the association any longer only exists to serve a future WOL
+attempt that hasn't happened yet. The next controller-connect trigger
+reconnects Wi-Fi fresh via the existing delayed-start + leave-before-
+rejoin path (bug 3's fix), so this costs only the normal reconnect latency
+the next time WOL is actually needed -- not anything during the window
+that actually matters (the PC finishing its boot with the controller
+still attached and useable).
+
+`netif_default`/the ARP-snoop hook (`g_arp_snoop_installed`) are left
+alone across the leave -- `cyw43_wifi_leave()` drops the association, not
+the netif struct itself, matching how the existing reconnect path already
+treats it as stable.
+
+**Status:** implemented and committed, debug firmware rebuilt at
+`build/waveshare/ds5-bridge.uf2`. Not yet verified against a real PC-off
+test with this fix in place -- pending: confirm the controller now
+survives the full PC boot without a mid-boot HCI 0x22 disconnect.
+
+---
+
 ## 2026-08-10 — Seventh bug (root cause of "WOL never starts"): boot-time settings race
 
 **Context:** with the board-level trace working (after fixing a stale
