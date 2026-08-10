@@ -72,17 +72,33 @@ Wi-Fi is already connected from a prior session; added
 further shorten the DHCP handshake. Debug firmware rebuilt at
 `build/waveshare/ds5-bridge.uf2`. Full writeup in decisions.md.
 
+**Real PC-off retest with the delay fix (2026-08-10): PC still didn't
+wake**, despite the log showing a clean connect (`connect_attempts=2`,
+`link=connected`, `raw_link_status=up`) -- but that log entry was from the
+*manual* WOL Test debug button (`event=debug-action action=send-wol`), run
+after the PC was already confirmed on, not from the automatic trigger
+during the actual off-PC test; the automatic path's own log line from the
+real attempt wasn't captured. Regardless, the underlying reliability gap
+was real: `wolwifi_on_controller_connect()` only ever sent one UDP magic
+packet with no delivery guarantee and no confirmation. Fixed (committed):
+`begin_resend_cycle()`/`drive_resend_cycle()` now resend the magic packet
+every 3s for up to 15s on the automatic trigger, stopping early once an
+ARP reply confirms the target woke up (reusing/generalizing the debug
+Ping's `arp_snoop_input` mechanism). Debug WOL Test button unaffected --
+still a single send. Debug firmware rebuilt at
+`build/waveshare/ds5-bridge.uf2`. Full writeup in decisions.md.
+
 ## Current task
 
 - [ ] **Flash the rebuilt debug firmware and re-attempt the real PC-off
-      wake test** (original Phase 7 Test 2), this time checking whether
-      the controller stays connected through the wake: with the target PC
-      OFF (hibernate first, then full shutdown if the NIC supports it) and
-      the board on a powered USB hub as before, connect the DualSense and
-      confirm (a) the PC actually wakes via the automatic
-      WOL-on-controller-connect trigger, and (b) the controller/BT
-      connection survives the 2s delay + Wi-Fi connect + DHCP + send
-      sequence without dropping. Note: the target PC being off means no
+      wake test** (original Phase 7 Test 2), this time checking (a) the PC
+      actually wakes via the automatic WOL-on-controller-connect trigger
+      within the 15s resend budget, (b) the controller/BT connection
+      survives the 2s delay + Wi-Fi connect + DHCP + resend sequence
+      without dropping, and (c) the debug log shows the automatic-trigger
+      resend cycle's own log lines (`[WOL] Target confirmed awake...` or
+      `[WOL] Resend budget ... exhausted...`) this time, not just a
+      manual-debug-button entry. Note: the target PC being off means no
       companion app / log access during the test itself; check the
       log/companion app only after, once the PC is back up.
 
