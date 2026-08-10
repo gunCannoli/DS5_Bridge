@@ -5,6 +5,69 @@ Each entry: decision, rationale, alternatives considered, date.
 
 ---
 
+## 2026-08-10 — Watchdog-reboot visibility: closing the last blind spot in the trace
+
+**Context:** retesting the tenth-bug (DHCP timeout) fix produced the same
+overall symptom (no automatic wake, PC only woke on manual power-on), but
+a new, specific anomaly in the trace: a resend cycle started
+(`wol-connect-delay-start` logged) and then the trace simply went quiet --
+no `wol-resend-begin`, no `wol-resend-confirmed`/`wol-resend-gave-up`, no
+error of any kind. Several minutes later (same continuous board uptime per
+`board_time_ms`, no gap there), a fresh controller-connect cycle began,
+but this time `connect_attempts` had reset to `0` and `link_state` read
+`unconfigured` despite `wol_enabled=true have_ssid=true
+have_target_mac=true` all still being true -- a combination that should be
+impossible during normal operation (`WifiState::Unconfigured` is only
+entered via `start_wifi_connect()`'s `!g_have_ssid` guard).
+
+**Hypothesis:** the board's `main.cpp` already runs a 1000ms hardware
+watchdog (`watchdog_enable(1000, true)`), with per-main-loop-phase
+telemetry via `watchdog_telemetry.h`'s `WatchdogMainLoopPhase` enum
+(`Wolwifi` is phase 16). If anything in `wolwifi_task()` -- or any other
+phase -- stalled for over a second during a resend cycle, the watchdog
+would silently reboot the board: RAM resets (explaining `connect_attempts`
+back to `0`), `g_wifi_state` starts fresh at `WifiState::Unconfigured`
+until `wolwifi_init()`'s `wolwifi_load_persisted_config()` and the next
+controller-connect trigger get it going again, and the reboot itself wipes
+the RAM-only WOL trace ring along with everything else -- so the very
+thing that would explain the silent stop (the reboot) also erases the
+evidence of it from the trace that recorded up to that point. Confirmed
+with the user that the board's own power was never interrupted, ruling out
+a literal power loss and leaving the watchdog as the most concrete
+remaining explanation for "trace stops mid-cycle, state resets minutes
+later, no error logged anywhere."
+
+**Fix (diagnostic, not yet a behavior fix):** the existing
+`watchdog_enable_caused_reboot()` check in `main.cpp` already logs the
+prior phase via `DS5_LOG` -- but that's live-only, exactly the kind of
+information the WOL trace exists to make survive a host-off gap, and
+wasn't reaching it. Added `WolTraceStage::BoardWatchdogReboot`, appended
+once at boot in that same `main.cpp` block, with `detail` set to the
+`WatchdogMainLoopPhase` index from the *new* boot's fresh telemetry read
+of the *prior* boot's retained snapshot. This is the first event in the
+new boot's ring buffer (the old one is gone), so it'll be the earliest
+`event=board-trace` line after any reboot from now on.
+
+**Also (same session):** noticed `readWolTraceThrottled()` already parsed
+`droppedCount` from the ring buffer's paged report but never logged or
+acted on it -- a silent gap if events happened faster than the companion
+app could poll and drain them (fixed-size 48-record ring, oldest
+overwritten first). Added an explicit `event=board-trace-dropped
+dropped_count=N` log line whenever it's nonzero, mirroring the existing
+`AGENTS.md` guidance for the firmware UART log's "SRAM overwrite loss"
+field -- a documentation gap shouldn't look identical to "nothing
+happened."
+
+**Status:** implemented and committed, debug firmware rebuilt at
+`build/waveshare/ds5-bridge.uf2`, companion app installer rebuilt at
+`companion/artifacts/installer/DS5-Bridge-Companion-Setup-1.7.0.exe`. This
+is purely diagnostic -- if the watchdog-reboot theory is confirmed by the
+next test, the actual fix would need to find and address whatever's
+stalling `wolwifi_task()` (or another phase) for over a second, which
+isn't yet identified.
+
+---
+
 ## 2026-08-10 — Tenth bug: DHCP itself stalling under contention, feeding back into repeated BT drops
 
 **Context:** with the ninth-bug fix confirmed (no more self-inflicted

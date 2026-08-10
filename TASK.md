@@ -225,19 +225,47 @@ updates the win-unpacked build the desktop shortcut targets -- the app was
 closed and reinstalled cleanly this time, no stale-build risk). Full
 writeup in decisions.md.
 
+**2026-08-10: 3s DHCP timeout retested -- same outcome, and a new lead:
+possible silent watchdog reboot mid-resend-cycle.** Real trace: a resend
+cycle started (`wol-connect-delay-start`) and then simply stopped --
+no `wol-resend-begin`, no confirmed/gave-up, nothing -- followed minutes
+later by `connect_attempts` resetting to 0 and `link=unconfigured`, which
+normally only happens right after boot. User confirmed the board itself
+never lost power. `main.cpp` already has a 1000ms watchdog with per-phase
+telemetry (`WatchdogMainLoopPhase`, including a `Wolwifi` phase) that
+would explain exactly this if something stalled for over a second during
+the resend cycle -- but that telemetry only ever reached `DS5_LOG`, live-
+only, invisible for a real host-off gap, and a watchdog reboot would also
+wipe the RAM-only WOL trace ring along with everything else, so there was
+no way to confirm this from the log the user has. Added (committed): new
+`BoardWatchdogReboot` trace stage, appended once at boot with the prior
+`WatchdogMainLoopPhase` as detail, so the *next* boot's trace (the reboot
+wipes the current one, but the new boot's first trace event now records
+what happened) can confirm or rule this out directly. Also surfaced the
+trace ring buffer's `droppedCount` as an explicit
+`event=board-trace-dropped` log line (previously read but never
+logged/acted on) so a ring-buffer overflow gap is distinguishable from
+"nothing happened." Debug firmware rebuilt at
+`build/waveshare/ds5-bridge.uf2`; companion app installer rebuilt at
+`companion/artifacts/installer/DS5-Bridge-Companion-Setup-1.7.0.exe`. Full
+writeup in decisions.md.
+
 ## Current task
 
 - [ ] **Flash the rebuilt debug firmware, launch the companion app (fresh
-      install, so the shortcut is definitely current), and re-attempt the
-      real PC-off wake test.** WOL config is already persisted in flash,
-      no re-save needed. Check `ds5bridge-wol-debug.log` for
-      `event=board-trace` lines afterward -- specifically: (a) does
-      `wol-wifi-assoc-timeout`/`wol-dhcp-wait-timeout` still appear at all
-      (if DHCP is still stalling even at 3s, the underlying slowness needs
-      a different approach), (b) does the controller survive the entire
-      boot with no `conn-disconnected` until intended, and (c) does the
-      automatic magic packet actually arrive before/without needing a
-      manual power-on this time.
+      install), and re-attempt the real PC-off wake test.** WOL config is
+      already persisted in flash, no re-save needed. This round is
+      specifically about confirming or ruling out the watchdog-reboot
+      theory: check `ds5bridge-wol-debug.log` for
+      `event=board-trace stage=board-watchdog-reboot` appearing anywhere
+      -- if it does, `detail` is the `WatchdogMainLoopPhase` index the
+      board was stuck in (16 = `Wolwifi` would directly confirm the
+      resend-cycle-stall theory; see `watchdog_telemetry.h` for the full
+      list). Also still check: does `wol-wifi-assoc-timeout`/
+      `wol-dhcp-wait-timeout` still appear (DHCP still stalling even at
+      3s?), does the controller survive the entire boot without
+      disconnecting, and does the automatic magic packet arrive without
+      needing a manual power-on.
 
 ## Next task
 
