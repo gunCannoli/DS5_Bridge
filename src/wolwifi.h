@@ -62,18 +62,24 @@ struct WolDebugStatus {
     bool have_target_mac;
     uint32_t now_ms;              // firmware's current tick, for age math
     uint32_t link_state_entered_ms;
-    // Raw cyw43_wifi_link_status() return value (CYW43_LINK_DOWN/JOIN/NOIP/
+    // Raw cyw43_tcpip_link_status() return value (CYW43_LINK_DOWN/JOIN/NOIP/
     // UP/FAIL/NONET/BADAUTH -- see cyw43.h; range is -3..3, fits in int8_t).
-    // Exposed because our own WolWifiLinkState collapses several distinct
-    // CYW43 states into "Connecting", which isn't enough to tell a flapping
-    // auth failure from a slow DHCP lease from a weak signal.
+    // NOTE: this is cyw43_tcpip_link_status(), not cyw43_wifi_link_status()
+    // -- the latter never returns NOIP/UP at all (it only reflects the
+    // low-level wifi_join_state, with no DHCP/IP awareness), which was a
+    // real bug here: wolwifi_task() polled cyw43_wifi_link_status() and
+    // could never see CYW43_LINK_UP even once DHCP had a bound lease, so
+    // it always eventually timed out and restarted the connect from
+    // scratch. Exposed because our own WolWifiLinkState collapses several
+    // distinct CYW43 states into "Connecting", which isn't enough to tell
+    // a flapping auth failure from a slow DHCP lease from a weak signal.
     int8_t raw_link_status;
     // lwIP's own DHCP client state machine (struct dhcp.state, see
     // lwip/prot/dhcp.h DHCP_STATE_*: 0=off, 1=requesting, 2=init,
     // 6=selecting, 10=bound, etc.) and retry count (struct dhcp.tries).
-    // Added because raw_link_status alone can show CYW43_LINK_JOIN
-    // (associated to the AP) indefinitely without saying whether DHCP is
-    // actually attempting to get a lease, stuck retrying, or never started.
+    // This is what caught the cyw43_wifi_link_status() bug above: dhcp_state
+    // showed "bound" (a real IP lease) while raw_link_status stayed "join"
+    // and our WifiState kept cycling connecting -> failed -> connecting.
     uint8_t dhcp_state;
     uint8_t dhcp_tries;
 };
