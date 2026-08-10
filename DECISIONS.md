@@ -5,6 +5,86 @@ Each entry: decision, rationale, alternatives considered, date.
 
 ---
 
+## 2026-08-10 — Fourteenth bug (in progress): a 61-second delay before WOL actually sends, with no trace event explaining it -- added instrumentation, real fix pending
+
+**Context:** after the thirteenth-bug fix (deferred Wi-Fi leave) was flashed,
+a real smoke test showed real progress -- the controller never disconnected
+(no HCI 0x22 anywhere in the trace, confirming that fix worked) -- but WOL
+still sent too late to matter: the PC was already booted by the time the
+magic packet went out.
+
+**Trace evidence:**
+
+```
+seq=5 board_time_ms=158180  stage=conn-ready
+seq=6 board_time_ms=158180  stage=wol-trigger-fired detail=1   (queued)
+                             -- 61 real seconds, zero trace events --
+seq=7 board_time_ms=219284  stage=wol-resend-begin
+seq=8 board_time_ms=220597  stage=wol-resend-confirmed
+```
+
+Cross-referenced against the live `WOL_DEBUG_STATUS` polling data in the
+same log: `connect_attempts=2` right after the trigger, but `connect_attempts=4`
+at a second, unexplained Wi-Fi reconnect (`link=connecting` again) about a
+minute later -- two connect attempts happened in the gap with no
+corresponding trace event at all.
+
+**Ruled out** (checked directly against `wolwifi.cpp` source, not
+guessed): ring-buffer overflow (no `board-trace-dropped` line, and only 8
+events had fired total -- can't overflow a 48-record ring that fast);
+connect-retry-timeout storm (`WolWifiAssocTimeout`/`WolDhcpWaitTimeout`/
+`WolConnectRetriesExhausted` are appended at every failed-connect/DHCP-
+timeout site already, and none appear in the gap); a stale `g_send_pending`
+(exactly one setter, one clearer, no other path can touch it).
+
+**What's left unexplained, and why:** `start_wifi_connect()` (only called
+from `WifiState::Idle`) was the *only* place that increments
+`g_connect_attempt_count`, but had no trace event of its own -- a connect
+that starts and succeeds quickly (no timeout) was invisible. Two other
+transitions were also completely silent: `WifiState::Connected`'s
+link-lost-then-`Failed` branch (only `DS5_LOG`, never traced -- so an
+established connection dropping looked identical to "nothing happening" in
+a host-off gap), and `WifiState::Connected`'s success entry (only
+`DS5_LOG`, no record of whether `g_send_pending` was actually true at that
+moment -- so "connected but didn't send anything" vs. "sent" was
+indistinguishable from the trace alone). `WifiState::Failed`'s
+backoff-then-retry exit back to `Idle` was similarly untraced.
+
+**Decision:** rather than guess at which of several plausible causes (a
+silent `Failed`/retry loop that doesn't hit the existing timeout paths, a
+connection that reached `Connected` without triggering a resend, some other
+untraced transition) is actually happening, add trace coverage at all four
+currently-silent points first, and let the *next* real test's log answer
+the question directly -- the same approach that found bugs 1 through 13.
+
+**Implementation** (`wolwifi.cpp`, `bt.h`, `protocol.ts` -- four new
+`WolTraceStage` values, 21-24, appended after `WolConnectRetriesExhausted`
+per the file's existing append-only convention):
+- `WolConnectStarted` (21): appended on every `start_wifi_connect()` call,
+  unconditionally (not just failures) -- detail = `g_connect_attempt_count`.
+- `WolWifiLinkLostAfterConnect` (22): appended when `WifiState::Connected`
+  detects the link/lease is gone -- detail = `g_link_lost_count`.
+- `WolWifiConnected` (23): appended when `WaitingForIp` reaches `Connected`
+  -- detail = whether `g_send_pending` was true (1) or false (0) at that
+  instant, directly answering whether that connect did anything WOL-relevant.
+- `WolWifiBackoffElapsed` (24): appended when `Failed`'s
+  `WIFI_RETRY_BACKOFF_MS` elapses and it re-enters `Idle`.
+
+No behavior change -- this is purely additional visibility. The actual fix
+for the 61s delay is still pending, blocked on reading the next real test's
+trace with this instrumentation in place.
+
+**Status:** implemented and committed. Firmware compiles/links cleanly for
+both the Waveshare (`ENABLE_WOLWIFI`) and default board targets (verified
+via the manual objdump/objcopy/picotool workaround for this machine's known
+post-link crash, per `AGENTS.md`). Companion app typecheck + full test
+suite (280/280) pass unchanged. Debug firmware rebuilt at
+`build/waveshare-debug/ds5-bridge.uf2`. Not yet retested against a real
+PC-off boot with this instrumentation -- see `TASK.md` for the next test's
+checklist.
+
+---
+
 ## 2026-08-10 — Thirteenth bug diagnosed: post-WOL Wi-Fi leave + lightbar confirm both contend with BT right when the controller must survive the PC boot
 
 **Context:** user reported the controller still drops while the target PC is

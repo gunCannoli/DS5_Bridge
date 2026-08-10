@@ -375,43 +375,54 @@ so the USB-suspend power-off suppression doesn't have a gap during it.
 Firmware compiles/links cleanly. Debug firmware rebuilt at
 `build/waveshare-debug/ds5-bridge.uf2`. Full writeup in decisions.md.
 
+**2026-08-10: thirteenth-bug fix confirmed working -- controller no longer
+drops (no HCI 0x22 anywhere in the trace) -- but exposed a new, distinct
+problem: WOL sent ~61 real seconds late, after the PC had already booted.**
+Real smoke test trace showed zero trace events between `wol-trigger-fired`
+and `wol-resend-begin` despite 61 board-seconds elapsing and
+`connect_attempts` jumping from 2 to 4 (two connect attempts happening with
+no visible cause). Ruled out ring-buffer drops, connect-retry-timeout
+storms, and a stale `g_send_pending` by checking the source directly --
+none of those explain a silent 61s gap with zero trace lines. Root cause
+not yet found: `start_wifi_connect()`, `WifiState::Connected`'s link-lost
+branch, `WifiState::Connected`'s success entry, and `WifiState::Failed`'s
+backoff-elapsed exit were all previously untraced, so several plausible
+explanations (a silent retry loop, a connect that succeeded without
+triggering a resend, etc.) were all equally invisible. Added (committed):
+four new `WolTraceStage` values covering all four of those transitions
+unconditionally (not just on failure/timeout like the existing stages), so
+the *next* test's trace will show exactly what happened instead of leaving
+another black box. No behavior change. Firmware compiles/links cleanly for
+both board targets; companion typecheck + full test suite (280/280) pass.
+Debug firmware rebuilt at `build/waveshare-debug/ds5-bridge.uf2`. Full
+writeup in decisions.md.
+
 ## Current task
 
-- [ ] **Bench-test all pending changes via the existing debug Ping/WOL Test
-      tooling** (Wi-Fi already up, PC on) before the next real PC-off retest:
-      (a) trigger two controller-connect edges within 90s (e.g. toggle the
-      controller's Bluetooth off/on quickly) and confirm the second logs
-      `wol-trigger-debounced` in the board trace instead of re-sending; (b)
-      temporarily set a wrong Wi-Fi password via the companion app, trigger
-      a connect, and confirm it gives up after one retry
-      (`wol-connect-retries-exhausted` in the trace) instead of retrying
-      forever -- then restore the correct password afterward; (c) confirm a
-      debug WOL Test / automatic trigger still eventually leaves Wi-Fi
-      (`link` transitions to `idle` in the debug log) a few seconds after
-      `result=success`, not immediately -- the new deferred-leave delay
-      should be visible as a short gap, not a missing leave.
-- [ ] **Flash the rebuilt debug firmware, install a rebuilt companion app,
-      and re-attempt the real PC-off wake test.** WOL config is already
-      persisted in flash, no re-save needed. Check `ds5bridge-wol-debug.log`
-      afterward for: (a) `stage=board-boot detail=N` at the very start of
-      every trace block -- if `detail` has bit0 or bit1 set, a real reboot
-      happened and we finally know it wasn't imagined; if it's always `0`,
-      the board never actually rebooted and the earlier "trace went silent"
-      gap has a different explanation (most likely: the companion app simply
-      wasn't running/polling during that window -- worth confirming this
-      round by leaving the app open continuously through the whole test),
-      (b) does `wol-trigger-fired` appear immediately at every
-      `conn-ready` regardless of whether the app was already open before
-      the controller connected, (c) **does the controller now survive
-      through the confirmed/gave-up-to-leave window without an HCI 0x22
-      disconnect** -- the specific thing the deferred-leave fix targets;
-      redo the same gap analysis (confirmed/gave-up timestamp vs. next
-      `conn-disconnected`) against the fresh trace data to confirm no more
-      clustering within a few seconds, (d) does the PC actually wake from
-      the automatic send alone, and (e) no unexpected
-      `wol-trigger-debounced`/`wol-connect-retries-exhausted` entries show
-      up (would indicate the debounce/retry-cap guards are firing when they
-      shouldn't during a normal single-attempt wake).
+- [ ] **Real PC-off wake test with the new instrumentation, companion app
+      left open/polling continuously through the whole test.** WOL config
+      already persisted in flash. This is purely a data-gathering pass --
+      the fourteenth-bug root cause isn't found yet, only made traceable.
+      Read the resulting `ds5bridge-wol-debug.log` and specifically:
+      (a) find every `wol-connect-started` line between the boot's
+      `wol-trigger-fired` and the eventual `wol-resend-begin`/
+      `wol-resend-gave-up` -- how many connect attempts actually happened,
+      and at what board-time each one started; (b) for each, does it end in
+      `wol-wifi-connected` (detail tells whether a resend cycle started),
+      `wol-wifi-link-lost-after-connect`, `wol-wifi-assoc-timeout`,
+      `wol-dhcp-wait-timeout`, or nothing (still unexplained if so); (c) does
+      `wol-wifi-backoff-elapsed` appear between attempts, and does the
+      timing between events now account for the full elapsed delay; (d) if
+      `wol-wifi-connected detail=0` appears (connected successfully but
+      `g_send_pending` was already false), that's the specific "silently
+      connected, did nothing" case to confirm or rule out.
+- [ ] Also re-verify the thirteenth-bug fix stays solid on this same test
+      (no HCI 0x22 disconnect) and the debounce/retry-cap changes from the
+      prior session don't fire unexpectedly (no unwanted
+      `wol-trigger-debounced`/`wol-connect-retries-exhausted` entries).
+- [ ] Once the trace explains the 61s gap, design and implement the actual
+      fix (this task list will be updated with the specific mechanism once
+      known -- don't guess ahead of the data).
 
 ## Next task
 
