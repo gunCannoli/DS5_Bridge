@@ -5,6 +5,85 @@ Each entry: decision, rationale, alternatives considered, date.
 
 ---
 
+## 2026-08-10 — Twelfth bug: the connect-start delay itself was the real design gap
+
+**Context:** the eleventh-bug fix (ARP EtherType check) was retested and
+worked exactly as intended -- `wol-resend-gave-up` after a genuine, full
+15-second resend window with no early false-positive. But the PC still
+didn't wake automatically. The user then articulated the actual
+requirement precisely: *"what is expected is the board to trigger the wol
+once the controller connects to it. at that instant. like in this
+implementation https://github.com/awalol/DS5Dongle/pull/207."* This
+reframed the whole investigation -- the bug wasn't in the resend/
+confirmation logic (now provably correct), it was in *when* the send
+sequence was even allowed to start.
+
+**Bisection:** rather than keep reasoning about the current branch, built
+and flashed a debug firmware from a much older commit
+(`91f1cd8864ec3dd050890529f9687d46334ddf79c`, before any of bugs 6-11's
+fixes) via an isolated `git worktree` (kept the main working tree/branch
+untouched). Result: **WOL didn't work there either.** This was an
+important finding in itself -- it ruled out the entire recent
+disconnect-fix arc (bugs 6-11) as the source of the "WOL doesn't
+automatically wake the PC" symptom, and reframed it as a longstanding
+design gap present since WOL was first wired to the controller-connect
+trigger, not a regression introduced this session. Worktree removed after
+the test.
+
+**Root cause:** `WIFI_CONNECT_START_DELAY_MS` (2000ms, added in the
+fourth-bug fix) delays the *start* of the Wi-Fi connect sequence after a
+controller-connect trigger, specifically to avoid BT/Wi-Fi radio
+contention at connect time. Correct and effective at solving that specific
+contention problem in isolation -- but it directly conflicts with "fire
+the instant the controller connects," and compounds with however long the
+subsequent Wi-Fi connect + DHCP actually takes (traces across this session
+showed anywhere from ~3s to 30-40+ seconds under contention), pushing the
+real magic packet send far later than the controller-connect instant. By
+the time it went out, the user had typically already manually powered the
+PC, making automatic WOL look non-functional even on cycles where a real
+send did eventually happen.
+
+**Confirmed against the reference implementation:** re-read
+`awalol/DS5Dongle#207`'s actual source (saved research diff from earlier
+in this session). Its `start_connect()` is called immediately -- from
+`wol_request()` directly (after its `Observe` state, which exists to check
+if the PC is *already on* via USB, not to delay for BT-settling reasons)
+-- with no analogous pre-delay at all. It accepts the BT/Wi-Fi contention
+risk and instead protects the controller with
+`wake_suppress_poweroff(POWEROFF_SUPPRESS_US)` (180s), called the instant
+`wol_request()` runs -- directly analogous to this repo's own bug 6 fix
+(`wolwifi_wake_in_progress()` suppressing the USB-suspend controller
+power-off). The two designs converged independently on the same
+controller-protection mechanism; #207 just doesn't *also* try to avoid the
+contention window via a pre-delay the way this repo did.
+
+**Fix:** removed `WIFI_CONNECT_START_DELAY_MS` and
+`g_connect_start_not_before_ms` entirely.
+`wolwifi_on_controller_connect()` now queues the send
+(`g_send_pending = true`) and returns; `wolwifi_task()`'s `Idle` case
+(already unconditionally "connect whenever possible" for every other
+path) starts the Wi-Fi connect on its very next tick with no gate at all,
+matching #207's immediate-start behavior. `WolTraceStage::WolConnectDelayStart`
+(11) is no longer emitted; left unassigned in the enum (not renumbered)
+so old trace records from prior firmware still decode to the same stage
+names.
+
+**Accepted tradeoff:** this reintroduces the exact BT/Wi-Fi radio
+contention the fourth-bug fix was originally added to avoid. That's
+intentional now, matching the user's explicit priority (WOL must fire
+immediately, full stop) and #207's own accepted tradeoff -- contention
+protection now relies entirely on bug 6's USB-suspend-power-off
+suppression (which covers the controller for the whole in-progress wake
+attempt) rather than on avoiding the contention window in the first
+place.
+
+**Status:** implemented and committed, debug firmware rebuilt at
+`build/waveshare/ds5-bridge.uf2`. Not yet verified against a real PC-off
+test with this fix in place -- this is now the most direct test of the
+user's actual stated requirement across the whole session.
+
+---
+
 ## 2026-08-10 — Eleventh bug: false-positive ARP liveness confirmation cutting resends short
 
 **Context:** the `BoardWatchdogReboot` trace stage (previous entry) was
