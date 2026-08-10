@@ -2161,10 +2161,20 @@ export class BridgeService extends EventEmitter {
         5: 'renewing', 6: 'selecting', 7: 'informing', 8: 'checking', 10: 'bound', 12: 'backing-off'
       };
       const dhcpStateName = dhcpStateNames[status.dhcpState] ?? String(status.dhcpState);
+      // wifi_join_state bit meanings, see WIFI_JOIN_STATE_* in cyw43-driver's
+      // cyw43_ctrl.c: 0x0002=active, 0x0200=auth, 0x0400=link, 0x0800=keyed,
+      // (0x0002|0x0004)=fail, (0x0002|0x0008)=nonet, distinct badauth value.
+      // Shown as a raw hex bitmask here rather than decoded -- decoding
+      // needs the exact bit layout from that file, which isn't part of the
+      // public cyw43.h API and could change between driver versions.
+      const joinStateHex = `0x${status.wifiJoinState.toString(16).padStart(4, '0')}`;
       const line = `${new Date().toISOString()} action=${actionName} result=${resultName.toLowerCase()} `
-        + `link=${linkStateName} link_age_ms=${linkStateAgeMs} raw_link_status=${rawLinkStatusName} ip=${ip} `
+        + `link=${linkStateName} link_age_ms=${linkStateAgeMs} raw_link_status=${rawLinkStatusName} `
+        + `join_state=${joinStateHex} ip=${ip} `
         + `dhcp_state=${dhcpStateName} dhcp_tries=${status.dhcpTries} `
-        + `wol_enabled=${status.wolEnabled} have_ssid=${status.haveSsid} have_target_mac=${status.haveTargetMac}\n`;
+        + `wol_enabled=${status.wolEnabled} have_ssid=${status.haveSsid} have_target_mac=${status.haveTargetMac} `
+        + `connect_attempts=${status.connectAttemptCount} connect_timeouts=${status.wifiConnectTimeoutCount} `
+        + `dhcp_timeouts=${status.dhcpTimeoutCount} link_lost_count=${status.linkLostCount}\n`;
       await fsPromises.appendFile(logPath, line);
       this.wolDebugLogPath = logPath;
       this.wolDebugLogLastError = null;

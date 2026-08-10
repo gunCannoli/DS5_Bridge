@@ -82,6 +82,21 @@ struct WolDebugStatus {
     // and our WifiState kept cycling connecting -> failed -> connecting.
     uint8_t dhcp_state;
     uint8_t dhcp_tries;
+    // CYW43 driver's raw internal join-state bitmask (cyw43_state.wifi_join_state
+    // -- see WIFI_JOIN_STATE_* in cyw43_ctrl.c: bits for ACTIVE/FAIL/NONET/
+    // BADAUTH/AUTH/LINK/KEYED). raw_link_status collapses this to one of 7
+    // values; the raw bitmask shows exactly which sub-step of association
+    // completed, which mattered for diagnosing a reconnect that failed
+    // immediately after a working connection dropped (see decisions.md --
+    // cyw43_arch_wifi_connect_async() doesn't clean up a prior association
+    // itself; a stale join_state on retry was the suspected cause).
+    uint16_t wifi_join_state;
+    // Lifetime counters, not reset between connect attempts, so the log
+    // shows a running history instead of only the most recent event.
+    uint32_t connect_attempt_count;   // every time start_wifi_connect() runs
+    uint32_t wifi_connect_timeout_count; // Connecting state timed out without CYW43_LINK_UP
+    uint32_t dhcp_timeout_count;      // WaitingForIp state timed out without an IP lease
+    uint32_t link_lost_count;         // Connected state detected link/IP loss
 };
 
 #ifdef ENABLE_WOLWIFI
@@ -151,21 +166,11 @@ static inline bool wolwifi_set_target_mac(const uint8_t[6]) { return false; }
 static inline void wolwifi_debug_ping(void) {}
 static inline void wolwifi_debug_send_wol(void) {}
 static inline WolDebugStatus wolwifi_debug_status(void) {
-    return WolDebugStatus{
-        WolWifiLinkState::Unconfigured,
-        WolDebugAction::None,
-        WolDebugResult::NotConfigured,
-        0,
-        {0, 0, 0, 0},
-        false,
-        false,
-        false,
-        0,
-        0,
-        0,
-        0,
-        0
-    };
+    WolDebugStatus status{};
+    status.link_state = WolWifiLinkState::Unconfigured;
+    status.last_action = WolDebugAction::None;
+    status.last_result = WolDebugResult::NotConfigured;
+    return status;
 }
 
 #endif // ENABLE_WOLWIFI
