@@ -27,6 +27,17 @@
 #define LWIP_DNS                    0
 #define LWIP_IGMP                   0
 
+// Skip the DHCP client's post-lease ARP conflict check (ping the offered
+// address and wait out a timeout before binding). We're the only device
+// using this address on a network we don't control conflict-detection
+// policy for, and the CYW43 combo chip shares its radio with Bluetooth --
+// shortening the DHCP handshake shrinks the window where fresh Wi-Fi RF
+// activity can contend with a just-opened BT connection for the radio.
+// See awalol/DS5Dongle#207 for prior art on this option in the same
+// Wi-Fi/BT coexistence context.
+#define DHCP_DOES_ARP_CHECK         0
+#define LWIP_DHCP_DOES_ACD_CHECK    0
+
 #define MEM_ALIGNMENT               4
 // Small heap: one outbound UDP magic packet (~102 bytes) plus DHCP/ARP
 // control traffic at a time. Not shared with any other subsystem.
