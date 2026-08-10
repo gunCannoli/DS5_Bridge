@@ -29,6 +29,8 @@
 #include "lwip/etharp.h"
 #include "netif/ethernet.h"
 
+#include "btstack_tlv.h"
+
 #include "bt.h"
 #include "utils.h"
 
@@ -288,16 +290,119 @@ void start_wifi_connect() {
     enter_state(WifiState::Connecting);
 }
 
+// Persisted WOL config: saved to on-board flash (via BTstack's TLV store,
+// the same mechanism already used for pairing keys and the controller
+// blacklist -- see bt.cpp bt_blacklist_persist()/_load()) so the config
+// survives a reboot without depending on the companion app to re-send it.
+//
+// Why this exists: the companion app only re-applies settings after it
+// reconnects post-boot, as one of the last steps in a long sequential
+// commands list (applyCurrentSettings() in bridge-service.ts). A paired
+// controller's own BT reconnect can complete well before that finishes --
+// confirmed via the board-level WOL trace, which showed
+// wol-trigger-skipped with all of enabled/have-ssid/have-target-mac still
+// false at the moment connection_phase reached Ready, both times, on a
+// fresh boot. Loading from flash in wolwifi_init() (called right after
+// bt_init() starts, before BT can possibly finish a reconnect) closes that
+// race entirely -- WOL is armed from the moment the board powers on,
+// independent of whether a companion app ever talks to it that session.
+constexpr uint32_t WOL_CONFIG_TLV_TAG = 0x574f4c43u; // ASCII 'WOLC'
+
+#pragma pack(push, 1)
+struct WolPersistedConfig {
+    uint8_t version;
+    uint8_t enabled;
+    uint8_t ssid_len;
+    char ssid[MAX_SSID_LEN];
+    uint8_t password_len;
+    char password[MAX_PASSWORD_LEN];
+    uint8_t have_target_mac;
+    uint8_t target_mac[6];
+};
+#pragma pack(pop)
+constexpr uint8_t WOL_CONFIG_VERSION = 1;
+
+void wolwifi_persist_config() {
+    const btstack_tlv_t *tlv = nullptr;
+    void *tlv_context = nullptr;
+    btstack_tlv_get_instance(&tlv, &tlv_context);
+    if (tlv == nullptr) {
+        DS5_LOG("[WOL] No TLV instance available, not persisting config\n");
+        return;
+    }
+
+    WolPersistedConfig config{};
+    config.version = WOL_CONFIG_VERSION;
+    config.enabled = g_enabled ? 1 : 0;
+    config.ssid_len = g_have_ssid ? static_cast<uint8_t>(std::strlen(g_ssid)) : 0;
+    std::memcpy(config.ssid, g_ssid, sizeof(config.ssid));
+    config.password_len = static_cast<uint8_t>(std::strlen(g_password));
+    std::memcpy(config.password, g_password, sizeof(config.password));
+    config.have_target_mac = g_have_target_mac ? 1 : 0;
+    std::memcpy(config.target_mac, g_target_mac, sizeof(config.target_mac));
+
+    const int rc = tlv->store_tag(
+        tlv_context,
+        WOL_CONFIG_TLV_TAG,
+        reinterpret_cast<const uint8_t *>(&config),
+        sizeof(config)
+    );
+    DS5_LOG("[WOL] Persisted config to flash (rc=%d)\n", rc);
+}
+
+void wolwifi_load_persisted_config() {
+    const btstack_tlv_t *tlv = nullptr;
+    void *tlv_context = nullptr;
+    btstack_tlv_get_instance(&tlv, &tlv_context);
+    if (tlv == nullptr) {
+        DS5_LOG("[WOL] No TLV instance available, config stays unconfigured\n");
+        return;
+    }
+
+    WolPersistedConfig config{};
+    const int len = tlv->get_tag(
+        tlv_context,
+        WOL_CONFIG_TLV_TAG,
+        reinterpret_cast<uint8_t *>(&config),
+        sizeof(config)
+    );
+    if (len != static_cast<int>(sizeof(config)) || config.version != WOL_CONFIG_VERSION) {
+        DS5_LOG("[WOL] No persisted config found (len=%d)\n", len);
+        return;
+    }
+
+    g_enabled = config.enabled != 0;
+    if (config.ssid_len > 0 && config.ssid_len <= MAX_SSID_LEN) {
+        std::memcpy(g_ssid, config.ssid, config.ssid_len);
+        g_ssid[config.ssid_len] = '\0';
+        g_have_ssid = true;
+    }
+    if (config.password_len > 0 && config.password_len <= MAX_PASSWORD_LEN) {
+        std::memcpy(g_password, config.password, config.password_len);
+        g_password[config.password_len] = '\0';
+    }
+    if (config.have_target_mac) {
+        std::memcpy(g_target_mac, config.target_mac, sizeof(g_target_mac));
+        g_have_target_mac = true;
+    }
+    DS5_LOG(
+        "[WOL] Loaded persisted config: enabled=%d have_ssid=%d have_target_mac=%d\n",
+        g_enabled ? 1 : 0, g_have_ssid ? 1 : 0, g_have_target_mac ? 1 : 0
+    );
+}
+
 } // namespace
 
 void wolwifi_init(void) {
     g_udp_pcb = udp_new();
+    wolwifi_load_persisted_config();
     enter_state(WifiState::Unconfigured);
     DS5_LOG("[WOL] Initialized\n");
 }
 
 void wolwifi_set_enabled(bool enabled) {
     g_enabled = enabled;
+    wolwifi_persist_config();
     DS5_LOG("[WOL] %s\n", enabled ? "Enabled" : "Disabled");
 }
 
@@ -320,6 +425,7 @@ bool wolwifi_set_wifi_ssid(const char *ssid, uint8_t ssid_len) {
         std::memcpy(g_ssid, ssid, ssid_len);
     }
     g_have_ssid = ssid_len > 0;
+    wolwifi_persist_config();
 
     DS5_LOG("[WOL] Wi-Fi SSID updated (len=%u)\n", ssid_len);
 
@@ -342,6 +448,7 @@ bool wolwifi_set_wifi_password(const char *password, uint8_t password_len) {
     if (password_len > 0) {
         std::memcpy(g_password, password, password_len);
     }
+    wolwifi_persist_config();
 
     DS5_LOG("[WOL] Wi-Fi password updated (len=%u)\n", password_len);
 
@@ -356,6 +463,7 @@ bool wolwifi_set_target_mac(const uint8_t mac[6]) {
     }
     std::memcpy(g_target_mac, mac, 6);
     g_have_target_mac = true;
+    wolwifi_persist_config();
     DS5_LOG(
         "[WOL] Target MAC set to %02X:%02X:%02X:%02X:%02X:%02X\n",
         g_target_mac[0], g_target_mac[1], g_target_mac[2],
