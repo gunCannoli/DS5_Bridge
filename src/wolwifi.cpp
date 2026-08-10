@@ -71,6 +71,23 @@ constexpr uint32_t DEBUG_PING_TIMEOUT_MS = 4000;
 // out, rather than firing once and hoping.
 constexpr uint32_t WOL_RESEND_INTERVAL_MS = 3000;
 constexpr uint32_t WOL_RESEND_TOTAL_BUDGET_MS = 15000;
+// Real board-trace data (see decisions.md, "Thirteenth bug diagnosed")
+// showed HCI 0x22 (LMP/LL response timeout) disconnects landing within
+// ~0.3-5s of wol-resend-confirmed specifically (not wol-resend-gave-up) --
+// traced to disconnect_wifi_after_wol()'s cyw43_wifi_leave() call and the
+// lightbar's bt_wol_indicator_confirm() (two BT sends bracketing a 2s hold,
+// see WOL_INDICATOR_CONFIRMED_HOLD_MS in bt.cpp) both firing back to back
+// in the same tick, stacking two radio-contention bursts right when the
+// controller most needs to survive (the PC is still booting).
+// cyw43_wifi_leave() -> cyw43_ioctl(CYW43_IOCTL_SET_DISASSOC) is a
+// synchronous ioctl that kicks off an async over-the-air deauth/cleanup
+// exchange continuing to use the shared radio after the call returns (see
+// cyw43_ctrl.c in the Pico SDK). Deferring the actual leave past both the
+// lightbar's 2s hold and the resend cycle's own 3s send interval separates
+// the two bursts instead of stacking them, without touching the lightbar
+// code (bt_wol_indicator_confirm()/_cancel() still fire immediately -- only
+// the underlying disassociation is delayed).
+constexpr uint32_t WOL_DISCONNECT_DELAY_MS = 3000;
 // A flapping BT link during a single PC boot can fire multiple
 // controller-connect edges in quick succession (several of the bugs in
 // decisions.md were this exact scenario), and without a guard every one of
@@ -175,6 +192,18 @@ bool g_resend_active = false;
 uint32_t g_resend_started_ms = 0;
 uint32_t g_resend_last_sent_ms = 0;
 bool g_target_confirmed_awake = false;
+
+// See WOL_DISCONNECT_DELAY_MS. Armed by drive_resend_cycle()'s
+// confirmed/gave-up branches instead of calling disconnect_wifi_after_wol()
+// synchronously, so the actual cyw43_wifi_leave() radio activity doesn't
+// stack with the lightbar indicator's own BT sends in the same tick.
+// Checked every wolwifi_task() tick, independent of g_wifi_state (same
+// reasoning as drive_resend_cycle() itself). Cleared (without firing) by a
+// fresh wolwifi_on_controller_connect() trigger -- a new attempt has its
+// own reason to keep Wi-Fi up and doesn't want a stale leave firing
+// mid-attempt.
+bool g_wifi_leave_pending = false;
+uint32_t g_wifi_leave_not_before_ms = 0;
 
 uint32_t now_ms() {
     return to_ms_since_boot(get_absolute_time());
@@ -588,6 +617,16 @@ void disconnect_wifi_after_wol() {
     enter_state(WifiState::Idle);
 }
 
+// See WOL_DISCONNECT_DELAY_MS: arms a deferred cyw43_wifi_leave() instead
+// of calling disconnect_wifi_after_wol() synchronously, so its radio
+// activity doesn't stack with the lightbar indicator's own BT sends
+// (bt_wol_indicator_confirm()/_cancel(), called right before this in both
+// of drive_resend_cycle()'s branches) in the same tick.
+void arm_deferred_wifi_leave() {
+    g_wifi_leave_pending = true;
+    g_wifi_leave_not_before_ms = now_ms() + WOL_DISCONNECT_DELAY_MS;
+}
+
 // Starts (or restarts) the resend-until-confirmed cycle: sends immediately,
 // then wolwifi_task()'s drive_resend_cycle() takes over to resend every
 // WOL_RESEND_INTERVAL_MS until either the target confirms awake via ARP or
@@ -621,7 +660,7 @@ void drive_resend_cycle() {
         );
         g_resend_active = false;
         bt_wol_indicator_confirm();
-        disconnect_wifi_after_wol();
+        arm_deferred_wifi_leave();
         return;
     }
     const uint32_t elapsed = now_ms() - g_resend_started_ms;
@@ -633,7 +672,7 @@ void drive_resend_cycle() {
         bt_append_wol_trace_event(WolTraceStage::WolResendGaveUp);
         g_resend_active = false;
         bt_wol_indicator_cancel();
-        disconnect_wifi_after_wol();
+        arm_deferred_wifi_leave();
         return;
     }
     if (now_ms() - g_resend_last_sent_ms >= WOL_RESEND_INTERVAL_MS) {
@@ -684,11 +723,15 @@ void wolwifi_on_controller_connect(void) {
     // (see disconnect_wifi_after_wol()) or after a prior attempt exhausted
     // its connect retries (see MAX_WIFI_CONNECT_RETRIES) -- clear both
     // guards and reset the per-attempt retry counters so this fresh attempt
-    // gets its own full retry budget.
+    // gets its own full retry budget. Also cancel any still-pending deferred
+    // leave from a just-finished prior attempt (see WOL_DISCONNECT_DELAY_MS)
+    // -- this fresh attempt has its own reason to keep Wi-Fi up and doesn't
+    // want a stale leave firing mid-attempt.
     g_wifi_intentionally_idle = false;
     g_wifi_retries_exhausted = false;
     g_connect_retry_count = 0;
     g_badauth_seen = false;
+    g_wifi_leave_pending = false;
     if (g_wifi_state == WifiState::Connected && have_ip_lease()) {
         // Wi-Fi is already up from a prior session -- no new radio activity
         // about to start, so no reason to delay; begin resending right away.
@@ -781,8 +824,12 @@ bool wolwifi_wake_in_progress(void) {
     // g_send_pending covers the gap between a controller-connect trigger
     // and the resend cycle actually starting (still waiting on the delayed
     // Wi-Fi connect / DHCP lease) -- the controller needs to stay present
-    // through that gap too, not just once resending begins.
-    return g_resend_active || g_send_pending;
+    // through that gap too, not just once resending begins. g_wifi_leave_pending
+    // covers the WOL_DISCONNECT_DELAY_MS gap between the resend cycle ending
+    // and the deferred Wi-Fi leave actually firing -- without it, the
+    // USB-suspend controller-power-off suppression this function drives
+    // would have a gap during exactly the window this fix introduces.
+    return g_resend_active || g_send_pending || g_wifi_leave_pending;
 }
 
 void wolwifi_task(void) {
@@ -817,6 +864,15 @@ void wolwifi_task(void) {
     // cycle's own budget/ARP-confirmation logic is what decides when to
     // stop, not the connect state machine.
     drive_resend_cycle();
+
+    // Fire a deferred Wi-Fi leave armed by drive_resend_cycle() (see
+    // WOL_DISCONNECT_DELAY_MS/arm_deferred_wifi_leave()) once its delay has
+    // elapsed. Checked every tick, independent of g_wifi_state, same as
+    // drive_resend_cycle() above.
+    if (g_wifi_leave_pending && now_ms() >= g_wifi_leave_not_before_ms) {
+        g_wifi_leave_pending = false;
+        disconnect_wifi_after_wol();
+    }
 
     // Log every DHCP client state transition (see lwip/prot/dhcp.h
     // DHCP_STATE_*) regardless of our own WifiState -- useful alongside
