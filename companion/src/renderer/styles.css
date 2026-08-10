@@ -1334,7 +1334,7 @@ button {
    for, or the input gets squeezed to the point of overflowing the column). */
 .bridge-settings-preferences-modal {
   width: min(880px, calc(100vw - 48px));
-  max-height: min(700px, calc(100vh - 48px));
+  max-height: min(740px, calc(100vh - 48px));
 }
 
 .bridge-settings-modal-heading {
@@ -2137,22 +2137,11 @@ button {
   line-height: 1.16;
 }
 
-/* Debug Target's status text is open-ended (mirrors whatever
-   cyw43_wifi_link_status() and the debug result actually say -- see
-   wolDebugStatusText/wolRawLinkStatusHint), so it doesn't fit the fixed
-   45%-input-column layout .wol-settings-row uses. Stacks full-width
-   instead, matching .pico-firmware-row's shape: copy on top, actions
-   below aligned to the row's end. */
-.wol-debug-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 6px;
-}
-
-.wol-debug-row .settings-menu-copy > span {
-  overflow-wrap: anywhere;
-}
-
+/* Debug Target is label-left/buttons-right like a normal settings row --
+   detailed status (link state, raw cyw43 status, IP, etc.) intentionally
+   doesn't live here; it goes to the debug log file and (eventually) the
+   Diagnostics tab's WOL trace, keeping this settings row a plain action
+   row instead of a variable-height status readout. */
 .wol-debug-actions {
   display: flex;
   justify-content: flex-end;

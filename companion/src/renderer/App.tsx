@@ -10250,7 +10250,6 @@ export function App() {
                 <div className="settings-menu-row wol-debug-row">
                   <div className="settings-menu-copy">
                     <strong>Debug Target</strong>
-                    <span>{wolDebugStatusText(snapshot.diagnostics.wolDebugStatus)}</span>
                   </div>
                   <div className="wol-debug-actions">
                     <button
