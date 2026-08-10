@@ -5,6 +5,65 @@ Each entry: decision, rationale, alternatives considered, date.
 
 ---
 
+## 2026-08-10 — Pulsing lightbar indicator for an in-flight WOL send (Phase 11b, revised scope)
+
+**Context:** Phase 11b (see the plan entry further below) had originally
+scoped a single flash-and-restore, matching the existing controller-wake
+blue flash. Once the resend-until-confirmed fix (above) turned "sending
+WOL" into a real multi-second-to-15-second window rather than one instant,
+the user asked for a richer sequence reflecting that: pulsing while
+waiting, a distinct confirmed state, then restore.
+
+**Design, as requested:**
+- Pulsing dark green <-> light green while a resend cycle is actively
+  sending/waiting for confirmation.
+- Solid light green once the PC is confirmed awake, held briefly, then
+  restore to whatever color was showing before.
+- Asked the user to choose the trigger mapping and pulse speed rather than
+  guessing: confirmed "pulse starts at first send, confirmed = solid light
+  green then restore, no distinct failure color" over a variant that also
+  flashed a distinct color on budget-exhausted/no-confirmation (kept
+  it a purely positive signal, consistent with the earlier decision not to
+  ARP-check-then-skip on the automatic trigger -- same philosophy: don't
+  add negative/uncertain-outcome UI for a background feature). Chose
+  ~1.5s per pulse cycle over a faster ~0.8s "urgent" pulse -- a gentle
+  breathing indicator, not an alert.
+
+**Implementation:** the original Phase 11b plan (see below) already
+identified the core problem -- `bt_set_lightbar_color()` overwrites its
+own restore target (`saved_lightbar_*`) on every call, so nothing can
+snapshot "what was showing before" without a dedicated accessor. Solved
+with a separate snapshot (`wol_indicator_pre_red/green/blue/brightness` in
+`bt.cpp`) captured once in `bt_wol_indicator_begin()`, independent of
+`saved_lightbar_*`/`lightbar_restore_pending` -- necessary because the
+pulse animation itself calls `bt_set_lightbar_color()` on every tick
+(that's the only way to actually change what's displayed), which would
+otherwise immediately overwrite any snapshot taken via the normal
+mechanism.
+
+Four-function API (`bt_wol_indicator_begin/confirm/cancel/loop()`) rather
+than the originally-planned single
+`bt_flash_lightbar_and_restore(r,g,b,brightness,duration_ms)` helper --
+that shape fit a one-shot flash, not a multi-stage animation that needs to
+keep updating every tick and can end via two different paths (confirmed
+vs. budget-exhausted). `bt_wol_indicator_loop()` polled from `main.cpp`'s
+existing `Lightbar` phase, alongside `bt_lightbar_loop()`.
+
+Wired into `wolwifi.cpp`'s resend cycle, not `send_magic_packet_now()`
+itself (contrary to the original Phase 11b firing-point plan) -- the
+resend cycle is now the thing with a clear begin/end/confirm lifecycle;
+`send_magic_packet_now()` is called repeatedly within one cycle and isn't
+the right granularity for "start pulsing" or "stop and restore" anymore.
+Debug WOL Test button intentionally excluded (unchanged, single send, no
+indicator) -- same reasoning as the resend fix: it's on-demand manual
+tooling, not the reliability/UX-critical automatic path.
+
+**Status:** implemented and committed, debug firmware rebuilt at
+`build/waveshare/ds5-bridge.uf2`. Not yet visually verified on real
+hardware.
+
+---
+
 ## 2026-08-10 — Fifth bug/gap: single magic-packet send has no delivery guarantee; resend until confirmed
 
 **Context:** after the connect-start-delay fix (below), the user re-ran
