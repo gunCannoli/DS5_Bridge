@@ -15,6 +15,7 @@
 #include "host_input.h"
 #include "persona/host_persona.h"
 #include "usb.h"
+#include "wolwifi.h"
 
 uint8_t mute[2]; // 0: speaker/LED fallback, 1: mic/idle-disconnect fallback
 float volume[2] = {DEFAULT_COMPANION_SPEAKER_GAIN, 1.0f}; // 0: companion speaker gain 0-1, 1: haptics gain 0-5
@@ -367,8 +368,18 @@ void usb_pm_poll() {
         && usb_host_suspended
         && static_cast<uint32_t>(now - usb_suspend_at_us) >= USB_SUSPEND_POWEROFF_DEBOUNCE_US
     ) {
-        (void)bt_power_off_controller();
-        usb_suspend_at_us = 0;
+        // A WOL send needs the controller connection kept alive long enough
+        // to actually wake the PC back up -- powering the controller off
+        // here (its normal battery-saving behavior once the host has been
+        // suspended for a few seconds) would cut that attempt short before
+        // it has a chance to succeed. Defer the power-off while a wake is
+        // in progress (leave usb_suspend_at_us set so this re-checks every
+        // tick and fires as soon as the wake finishes, confirmed or timed
+        // out, instead of being skipped outright).
+        if (!wolwifi_wake_in_progress()) {
+            (void)bt_power_off_controller();
+            usb_suspend_at_us = 0;
+        }
     }
 
     if (usb_remote_wakeup_pending) {
