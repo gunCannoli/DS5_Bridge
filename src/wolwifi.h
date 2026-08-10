@@ -153,6 +153,16 @@ void wolwifi_debug_send_wol(void);
 
 WolDebugStatus wolwifi_debug_status(void);
 
+// True while an automatic-trigger resend cycle is actively sending/waiting
+// for the target to confirm it woke up (see begin_resend_cycle()/
+// drive_resend_cycle() in wolwifi.cpp). Used by usb.cpp to suppress the
+// USB-suspend controller-power-off behavior for exactly this window --
+// without it, the board would power off the controller ~3s after the PC
+// suspends, before WOL has a chance to actually wake it back up. Not true
+// for a single debug WOL Test send, which doesn't need the controller kept
+// alive for any particular duration.
+bool wolwifi_wake_in_progress(void);
+
 #else
 
 static inline void wolwifi_init(void) {}
@@ -172,5 +182,6 @@ static inline WolDebugStatus wolwifi_debug_status(void) {
     status.last_result = WolDebugResult::NotConfigured;
     return status;
 }
+static inline bool wolwifi_wake_in_progress(void) { return false; }
 
 #endif // ENABLE_WOLWIFI

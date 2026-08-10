@@ -509,6 +509,14 @@ WolDebugStatus wolwifi_debug_status(void) {
     return status;
 }
 
+bool wolwifi_wake_in_progress(void) {
+    // g_send_pending covers the gap between a controller-connect trigger
+    // and the resend cycle actually starting (still waiting on the delayed
+    // Wi-Fi connect / DHCP lease) -- the controller needs to stay present
+    // through that gap too, not just once resending begins.
+    return g_resend_active || g_send_pending;
+}
+
 void wolwifi_task(void) {
     if (
         g_debug_action == WolDebugAction::Ping
