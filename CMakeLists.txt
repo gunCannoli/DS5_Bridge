@@ -45,6 +45,16 @@ option(WAVESHARE_RP2350B_PLUS_W_BUILD "Build for Waveshare RP2350B-Plus-W (USB-C
 # offered (and only defaults on) for the Waveshare RP2350B-Plus-W target;
 # other boards are unaffected. See src/wolwifi.h for the isolated module.
 option(ENABLE_WOLWIFI "Enable Wake-on-LAN over Wi-Fi (requires CYW43 Wi-Fi + lwIP)" ${WAVESHARE_RP2350B_PLUS_W_BUILD})
+# The board's USB persona is plugged into the same target PC WOL wakes, so
+# usb_mounted && !usb_host_suspended_active() is used to skip sending WOL
+# (and the lightbar's in-progress pulse) when that PC is already running.
+# Some motherboards/BIOS settings ("power on by USB keyboard/mouse",
+# always-on charging ports) or Modern Standby (S0ix) keep the USB bus
+# enumerated and active even with the PC nominally off, which would make
+# that check permanently see "host active" and block every wake -- this
+# option skips the check entirely for those boards. Matches
+# awalol/DS5Dongle#207's WOL_ALWAYS option (same escape hatch, same name).
+option(WOL_ALWAYS "Skip the host-alive gate and always send WOL on a debounced controller connect (required on boards/BIOS settings that keep USB active in S5 or Modern Standby)" OFF)
 
 if (WAVESHARE_RP2350B_PLUS_W_BUILD)
     set(PICO_BOARD waveshare_rp2350b_plus_w CACHE STRING "Board type")
@@ -526,6 +536,11 @@ if (ENABLE_WOLWIFI)
     target_compile_definitions(ds5-bridge PRIVATE
             ENABLE_WOLWIFI
     )
+    if (WOL_ALWAYS)
+        target_compile_definitions(ds5-bridge PRIVATE
+                WOL_ALWAYS
+        )
+    endif ()
     target_link_libraries(ds5-bridge
             pico_cyw43_arch_lwip_poll
     )

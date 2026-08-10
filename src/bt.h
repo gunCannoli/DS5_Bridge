@@ -224,6 +224,13 @@ enum class WolTraceStage : uint8_t {
     // visible end-to-end (the timeout stages above only cover Failed's
     // entry, not its exit back toward another connect attempt).
     WolWifiBackoffElapsed = 24,
+    // A controller-connect edge arrived while usb_host_active() reports the
+    // target PC already on (USB enumerated and not suspended) -- WOL is
+    // skipped entirely (no Wi-Fi connect, no resend cycle, no lightbar
+    // pulse), since the PC doesn't need waking. See WOL_ALWAYS in
+    // CMakeLists.txt for the build-time escape hatch on boards where this
+    // heuristic can't work (USB stays active in S5, or Modern Standby).
+    WolTriggerSkippedHostActive = 25,
 };
 // detail's meaning depends on stage: HCI disconnect reason for
 // ConnDisconnected, 1/0 for whether WOL was queued-pending vs. sent
