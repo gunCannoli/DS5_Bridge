@@ -162,21 +162,41 @@ via the companion app after flashing (which will now persist it) before a
 true "PC fully off, no prior companion-app session this boot" test is
 valid.
 
+**2026-08-10: persistence confirmed working; real trace of a full attempt
+exposed an eighth bug.** After the companion app's normal reapply had
+already run once (confirmed by a successful manual Ping/WOL Test), a board
+power-cycle showed `wol-trigger-fired` immediately at `conn-ready` on every
+reconnect -- persistence fix confirmed working as designed. That let a full
+real trace through for the first time: `wol-trigger-fired` ->
+`wol-connect-delay-start` -> `wol-resend-begin` -> `wol-resend-confirmed`
+(WOL actually worked), but then the controller disconnected mid-PC-boot
+with **HCI reason 0x22 (LMP/LL response timeout)** -- a genuine BT
+radio-level timeout, several to ~17s after the resend cycle ended, on
+every cycle in the trace. Root cause: the 2s connect-start delay only
+covers contention at Wi-Fi connect *start*; staying associated to the AP
+afterward (DHCP renewal, beacon listening) is ongoing radio activity that
+kept contending with BT for the rest of the PC's boot. Fixed (committed):
+`disconnect_wifi_after_wol()` calls `cyw43_wifi_leave()` once a resend
+cycle ends (confirmed or given up), wired into both end branches of
+`drive_resend_cycle()` -- WOL doesn't need Wi-Fi connected once its job is
+done, and the next controller-connect trigger reconnects fresh via the
+existing delayed-start + leave-before-rejoin path. Debug firmware rebuilt
+at `build/waveshare/ds5-bridge.uf2`. Full writeup in decisions.md.
+
 ## Current task
 
-- [ ] **Flash the rebuilt debug firmware, open the companion app once to
-      re-enter/re-save the WOL SSID/password/target MAC (so it's freshly
-      persisted to flash under this firmware build), then power-cycle the
-      board once** (to prove the persisted config survives a reboot with
-      no companion app involved) before re-attempting the real PC-off wake
-      test. Check `ds5bridge-wol-debug.log` for `event=board-trace` lines
-      afterward -- specifically whether `stage=wol-trigger-fired` (not
-      `skipped`) now appears immediately at `conn-ready`, and whether
-      `stage=wol-resend-begin`/`wol-resend-confirmed`/`wol-resend-gave-up`
-      follow it. If `wol-trigger-fired` still doesn't appear, the flash
-      load itself needs debugging (check for `[WOL] Loaded persisted
-      config...` vs `[WOL] No persisted config found...` in the firmware
-      UART log, captured with the companion app running so it's visible).
+- [ ] **Flash the rebuilt debug firmware and re-attempt the real PC-off
+      wake test.** WOL config is already persisted in flash from prior
+      testing, so no re-save should be needed this time -- confirm via the
+      trace that `wol-trigger-fired` still appears immediately (persistence
+      surviving yet another reflash). The key thing to verify this round:
+      does the controller now survive the *entire* PC boot without
+      disconnecting (previously it survived until WOL fired/confirmed, then
+      dropped with reason 0x22 partway through boot)? Check
+      `ds5bridge-wol-debug.log` for `event=board-trace` lines afterward --
+      look for `stage=wol-resend-confirmed` followed by NOT seeing a
+      `stage=conn-disconnected` until the user actually intends to
+      disconnect (PC fully booted, session ending normally).
 
 ## Next task
 
