@@ -8,6 +8,23 @@ Architecture/known-issue knowledge that should inform future work lives in
 
 ---
 
+## 2026-08-10 — Host-alive gate: skip WOL when the target PC is already on
+
+User noticed the lightbar's WOL-in-progress pulse firing even when it
+wasn't actually needed. Added a gate at the top of
+`wolwifi_on_controller_connect()`: if `usb_host_active()` (new accessor in
+`usb.cpp`, `usb_mounted && !usb_host_suspended_active()`) reports the
+target PC already on, skip the whole WOL pipeline — no Wi-Fi connect, no
+resend cycle, no lightbar pulse. Researched `awalol/DS5Dongle#207` per user
+request and adopted its `WOL_ALWAYS` escape hatch design exactly (same
+name, same compile-time-option mechanism) for boards/BIOS settings where
+USB stays active even with the PC nominally off. New
+`WolTraceStage::WolTriggerSkippedHostActive` records the skip in the board
+trace. See `DECISIONS.md` for the full design writeup. Firmware compiles
+cleanly for both `WOL_ALWAYS` on and off, and for the default (non-WOL)
+board target. No companion-app changes needed (firmware-only, no
+protocol/wire-format change). Not yet bench-tested on real hardware.
+
 ## 2026-08-10 — Core WOL feature confirmed working end-to-end on real hardware
 
 With the fifteenth-bug fix in place: controller connects to the board while

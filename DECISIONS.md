@@ -7,6 +7,60 @@ test run; see `CHANGELOG.md` for that history. Newest first.
 
 ---
 
+## Architecture: host-alive gate skips WOL when the target PC is already on
+
+**Why:** the board's own USB persona is plugged into the *same* PC that WOL
+wakes (the deployment model — dongle plugged into the PC you want to
+remotely wake). Before this, a controller-connect edge always ran the full
+WOL pipeline (Wi-Fi connect, resend cycle, lightbar pulse) even when the PC
+was already running and didn't need waking — visibly pointless (the
+lightbar pulsing for no reason was the symptom that prompted this) and
+unnecessary CYW43 radio activity (see the radio-contention entry below —
+any avoidable Wi-Fi activity is worth skipping).
+
+**Signal used:** `usb_host_active()` (new, `usb.cpp`) = `usb_mounted &&
+!usb_host_suspended_active()` — true only while the host is both
+enumerated and awake, not merely suspended (S3) or torn down (S5). Checked
+at the very top of `wolwifi_on_controller_connect()` (`wolwifi.cpp`),
+before anything else WOL-related runs, so a positive check skips the Wi-Fi
+connect, the resend cycle, and the lightbar pulse entirely — not just the
+final magic-packet send. New `WolTraceStage::WolTriggerSkippedHostActive`
+(25) records the skip in the board trace, distinct from the existing
+`WolTriggerSkipped` (disabled/unconfigured).
+
+**Semantics by host power state:**
+- PC on, USB active → skip (this is the case being fixed).
+- PC asleep (S3) → USB stays enumerated but suspended → check reads
+  "inactive" → WOL still fires. Harmless (a magic packet to a sleeping NIC
+  still wakes it) and doesn't conflict with the separate, faster BT-based
+  "Wake PC on Controller" S3 path.
+- PC fully off (S5), Pico still powered → USB bus fully torn down → check
+  reads "inactive" → WOL fires. This is the actual target scenario for the
+  whole feature.
+
+**Known limitation, with an escape hatch (matches
+`awalol/DS5Dongle#207`'s `WOL_ALWAYS` exactly — same name, same
+mechanism, confirmed via `gh pr diff 207 --repo awalol/DS5Dongle`):** some
+motherboards/BIOS settings ("power on by USB keyboard/mouse", always-on
+charging ports) or Modern Standby (S0ix) keep the USB bus enumerated and
+active even with the PC nominally off — on those boards this gate would
+see "host active" permanently and block every wake. `WOL_ALWAYS` is a
+**compile-time** `option()` in root `CMakeLists.txt` (default OFF, only
+meaningful when `ENABLE_WOLWIFI` is on) that skips the gate entirely when
+set. Compile-time rather than a runtime companion-app setting deliberately
+— this is a board/BIOS hardware quirk workaround, decided once at flash
+time, not a everyday user preference; matches `ENABLE_WOLWIFI` itself as
+precedent, and avoids a new `COMMAND_ID`/settings-store/UI-row/protocol
+surface for something that isn't a normal setting.
+
+**Not debounced:** unlike the Wi-Fi-connect trigger debounce
+(`WOL_TRIGGER_DEBOUNCE_MS`, which exists specifically to avoid radio
+contention from repeated Wi-Fi activity), `usb_host_active()` is a free
+read of already-tracked in-memory flags — no radio/CPU cost to re-checking
+on every controller-connect edge, so no debounce was added for this check.
+
+---
+
 ## Known issue: CYW43 Wi-Fi/Bluetooth radio contention is a recurring failure mode
 
 The CYW43439 is a combo Wi-Fi/BT chip that **time-shares one radio**.
