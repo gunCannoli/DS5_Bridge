@@ -183,20 +183,37 @@ done, and the next controller-connect trigger reconnects fresh via the
 existing delayed-start + leave-before-rejoin path. Debug firmware rebuilt
 at `build/waveshare/ds5-bridge.uf2`. Full writeup in decisions.md.
 
+**2026-08-10: eighth-bug fix retested -- WOL/lightbar confirmed working,
+but controller still dropped before boot finished (ninth bug: the leave
+call was undoing itself).** Real trace showed `wol-resend-confirmed`
+followed almost immediately by fresh `dhcp_state=rebooting`/incrementing
+`connect_attempts` in the WOL debug log -- Wi-Fi was reassociating again
+right after the intentional leave, not staying disconnected. Root cause:
+`disconnect_wifi_after_wol()`'s `enter_state(WifiState::Idle)` fed straight
+into `wolwifi_task()`'s `Idle` case, which unconditionally starts a new
+connect on its very next tick -- turning the intentional leave into a
+self-inflicted immediate leave/rejoin loop, so the ongoing contention never
+actually stopped. Fixed (committed): new `g_wifi_intentionally_idle` flag
+set by `disconnect_wifi_after_wol()`, checked in the `Idle` case to
+actually stay idle; cleared only by the three legitimate reconnect
+triggers (`wolwifi_on_controller_connect()`, SSID/password setters). User
+confirmed WOL send + lightbar pulse/confirm both work correctly now --
+this fix is purely about making the post-WOL Wi-Fi teardown actually stick.
+Debug firmware rebuilt at `build/waveshare/ds5-bridge.uf2`. Full writeup in
+decisions.md.
+
 ## Current task
 
 - [ ] **Flash the rebuilt debug firmware and re-attempt the real PC-off
-      wake test.** WOL config is already persisted in flash from prior
-      testing, so no re-save should be needed this time -- confirm via the
-      trace that `wol-trigger-fired` still appears immediately (persistence
-      surviving yet another reflash). The key thing to verify this round:
-      does the controller now survive the *entire* PC boot without
-      disconnecting (previously it survived until WOL fired/confirmed, then
-      dropped with reason 0x22 partway through boot)? Check
+      wake test.** WOL config is already persisted in flash, so no re-save
+      needed. The key thing to verify this round: does the controller now
+      survive the *entire* PC boot without disconnecting? Check
       `ds5bridge-wol-debug.log` for `event=board-trace` lines afterward --
-      look for `stage=wol-resend-confirmed` followed by NOT seeing a
-      `stage=conn-disconnected` until the user actually intends to
-      disconnect (PC fully booted, session ending normally).
+      confirm `stage=wol-resend-confirmed` is NOT followed by a fresh
+      `dhcp_state` change / rising `connect_attempts` in the regular
+      `link-state-change` lines (would mean the reconnect-loop bug is back),
+      and that no `stage=conn-disconnected` appears until the user actually
+      intends to disconnect (PC fully booted, session ending normally).
 
 ## Next task
 

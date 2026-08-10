@@ -5,6 +5,53 @@ Each entry: decision, rationale, alternatives considered, date.
 
 ---
 
+## 2026-08-10 — Ninth bug: the post-WOL Wi-Fi leave was undoing itself
+
+**Context:** retesting the eighth-bug fix (`disconnect_wifi_after_wol()`)
+against a real PC boot: WOL and the lightbar sequence both confirmed
+working correctly by the user, but the controller still disconnected
+before the PC finished booting. The WOL debug log showed something
+telling right after `wol-resend-confirmed`: a fresh
+`dhcp_state=rebooting` and rising `connect_attempts` in the very next
+`link-state-change` line -- Wi-Fi was actively reassociating again, not
+staying disconnected as intended.
+
+**Root cause:** `disconnect_wifi_after_wol()` correctly calls
+`cyw43_wifi_leave()`, but then calls `enter_state(WifiState::Idle)` --
+and `WifiState::Idle` in `wolwifi_task()`'s switch statement is
+unconditionally "start a Wi-Fi connect whenever possible" (that's its
+whole purpose everywhere else it's used: the initial connect, and retry
+after `Failed`). With no guard, the very next `wolwifi_task()` tick after
+the leave immediately called `start_wifi_connect()` again -- the
+intentional disconnect was undoing itself one tick later, so the ongoing
+DHCP/association contention this fix was supposed to eliminate never
+actually stopped. The eighth-bug diagnosis (ongoing Wi-Fi radio activity
+contending with BT for the rest of a PC boot) was correct; the fix's
+*implementation* just didn't account for `Idle`'s existing always-connect
+behavior.
+
+**Fix:** added `g_wifi_intentionally_idle`, set by
+`disconnect_wifi_after_wol()` and checked at the top of the `Idle` case to
+return early (stay idle) instead of calling `start_wifi_connect()`.
+Cleared in the three places a reconnect is actually wanted:
+`wolwifi_on_controller_connect()` (a fresh controller-connect edge -- the
+core reason WOL exists to reconnect at all), and the SSID/password
+setters (new credentials should take effect immediately regardless of
+whatever state a prior WOL cycle left Wi-Fi in). The target MAC setter
+doesn't touch Wi-Fi connection state and needed no change. The `Failed`
+state's own retry-backoff-then-`Idle` transition also needed no change --
+it's internal to states unreachable once `g_wifi_intentionally_idle` is
+set, and even if reached, would just land back in the now-guarded `Idle`
+no-op.
+
+**Status:** implemented and committed, debug firmware rebuilt at
+`build/waveshare/ds5-bridge.uf2`. Not yet verified against a real PC-off
+test with this fix in place -- pending: confirm no post-confirm Wi-Fi
+reconnect activity appears in the log, and the controller survives the
+full boot.
+
+---
+
 ## 2026-08-10 — Eighth bug: staying Wi-Fi-associated after WOL contends with BT for the rest of the boot
 
 **Context:** with the seventh-bug (boot-time settings race) fix confirmed
