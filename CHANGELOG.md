@@ -8,6 +8,21 @@ Architecture/known-issue knowledge that should inform future work lives in
 
 ---
 
+## 2026-08-10 — Host-alive gate (`ObserveHost`) confirmed working on real hardware
+
+The new diagnostics (previous entry) paid off immediately: a real test (PC
+on, companion app open) produced a clean trace confirming the gate works
+exactly as designed. `observe-host-begin` (detail=2, USB not yet mounted
+for the fresh session) → `conn-controller-type-identified` 22ms later
+(matches the earlier 23ms measurement) → `observe-host-sample-edge`
+(detail=51: mounted, not suspended, transport ready+attached) ~217ms after
+`Ready` → `wol-trigger-skipped-host-active` exactly 100ms after that,
+matching `WOL_OBSERVE_HOST_SUSTAIN_MS`. No Wi-Fi connect, no lightbar WOL
+pulse — the user observed the ordinary controller-wake blue-flash restore,
+not a WOL pulse, confirming WOL correctly never started. Whole detect-and-
+skip cycle: ~340ms, well inside the 2s window. See `DECISIONS.md` for the
+now-confirmed design writeup.
+
 ## 2026-08-10 — ObserveHost still not skipping WOL with the host confirmed active; deep diagnostics added
 
 A real test with the companion app open (so USB was genuinely mounted and
