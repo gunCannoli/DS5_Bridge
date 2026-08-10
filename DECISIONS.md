@@ -395,3 +395,70 @@ The WOL debug Ping/Test tooling is a candidate to keep in the eventual
 upstream PR, not just as local dev tooling — the bugs found via this
 tooling are a strong argument that upstream reviewers/users would want the
 same diagnostic capability. Decide before opening the PR.
+
+**Superseded 2026-08-10:** once the feature was confirmed working
+end-to-end on real hardware, explicit user instruction was to strip all of
+it out before opening the PR — see "Decision: strip all debug/diagnostic
+scaffolding before the PR" below. The bug-hunting value was real but is a
+one-time cost already paid; it doesn't justify permanent surface area in
+an upstream PR for a feature that now works.
+
+---
+
+## Decision: strip all debug/diagnostic scaffolding before the PR
+
+Once WOL was confirmed correct end-to-end on real hardware (skips when the
+host is on, fires promptly when off, survives the resend/confirm/leave
+cycle), all of the bug-hunting infrastructure built up over ~15 rounds of
+hardware debugging was removed in one pass: the `WolTraceStage` ring buffer
+(`bt.h`/`bt.cpp`, all `bt_append_wol_trace_event()` call sites across
+`bt.cpp`/`main.cpp`/`wolwifi.cpp`), `usb_host_active_debug_bits()`
+(`usb.h`/`usb.cpp` — `usb_host_active()` itself, the real production
+signal `ObserveHost` gates on, was kept), the `WOL_DEBUG_STATUS` report and
+`wolwifi_debug_ping()`/`wolwifi_debug_send_wol()`/`wolwifi_debug_status()`
+(`wolwifi.h`/`wolwifi.cpp`), the `TRIGGER_WOL_DEBUG_PING`/`_SEND` commands
+and their `companion.cpp` handlers, and the companion app's entire "Debug
+Target" UI row (Ping/WOL Test buttons, Debug Log path) plus the
+`wolDebugStatus`/WOL-trace read-and-log machinery in `bridge-service.ts`,
+its two IPC channels (`main.ts`/`preload.ts`), and the corresponding
+constants/types/report IDs in `protocol.ts`/`types.ts`.
+
+**Why removed rather than kept as permanent tooling:** per explicit user
+instruction — the fork's stated purpose (`AGENTS.md`) is to ship WOL as a
+minimal, clean addition suitable for an upstream PR or a patch onto a
+future release; debug-only surface area works against that "touch the
+least number of things" goal once the feature it was built to debug is
+confirmed working. The reference implementations this feature was modeled
+on (`awalol/DS5Dongle#207`, `DevFreezing/DS5Dongle-WoL`) also ship without
+equivalent tooling.
+
+**What two genuinely shared code paths needed instead of deletion:**
+`arp_snoop_input()` (`wolwifi.cpp`) had its `debug_ping_watching` branch
+stripped but kept the `g_resend_active` branch — the real
+resend-confirmation ARP-liveness check is core to production behavior, not
+debug-only. `send_magic_packet_now()` lost its `is_debug_action` parameter
+and `finish_debug_action(...)` branches, simplified to a no-arg function
+with the same two production call sites (`begin_resend_cycle()`,
+`drive_resend_cycle()`).
+
+**Protocol IDs:** `COMMAND_ID.TRIGGER_WOL_DEBUG_PING`/`_SEND` (`0x3B`/
+`0x3C`) were the trailing two entries in both `CommandId` (`companion.cpp`)
+and `COMMAND_ID` (`protocol.ts`) — deleted cleanly, no gap. `REPORT_ID.
+WOL_TRACE`/`WOL_DEBUG_STATUS` (`0x0B`/`0x0C`) were **not** trailing
+(`DEVICE_IDENTITY`/`FIRMWARE_LOG` follow at `0x0D`/`0x0E`) — per explicit
+user instruction ("touch the least number of things, keeping vanilla
+baseline as much as possible"), those two constants were deleted outright
+rather than shifting the still-used entries down to close the gap; `0x0B`/
+`0x0C` are now simply unused, not reassigned. `PROTOCOL_MINOR` bumped
+20→21 in both `protocol.ts` and `companion.cpp`'s `kProtocolMinor`, since
+removing wire-format constants is exactly what that gate exists for.
+
+**Verification:** both firmware targets (Waveshare/`ENABLE_WOLWIFI` and the
+default non-WOL board) rebuilt clean with zero leftover
+`wol_trace`/`wol_debug`/`usb_host_active_debug_bits` symbols (confirmed via
+`arm-none-eabi-nm`); companion `npm run typecheck` and the full `vitest`
+suite (279/279) pass. The shippable feature surface left behind is exactly
+the "Wake-on-LAN" UI section (enable toggle, Wi-Fi SSID/password, target
+MAC) plus the underlying automatic-trigger → `ObserveHost` host-alive gate
+→ Wi-Fi connect/DHCP → magic-packet send → resend-until-confirmed logic —
+no debug-only code paths remain.
