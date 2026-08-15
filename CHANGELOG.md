@@ -8,6 +8,43 @@ Architecture/known-issue knowledge that should inform future work lives in
 
 ---
 
+## 2026-08-15 — Merged upstream v1.7.0, resolved the WOL/radial-deadzone `COMMAND_ID` collision, rebuilt PR #120 as a clean 2-commit history
+
+Merged `upstream/main` (v1.7.0: Edge persona, radial deadzones, Kitsune
+Input promotion, persona mic fixes) into `feature/wol-wifi`. Two real
+conflicts, both from independent `COMMAND_ID` additions at `0x37` — see
+`DECISIONS.md`'s new entry for the fix (WOL commands renumbered to
+`0x46`-`0x49`, `PROTOCOL_MINOR` bumped to 23) and the general lesson for
+future upstream syncs. Verified: companion build + 320/320 vitest tests,
+all 3 firmware host-side test suites, and a real Waveshare board build all
+pass (`ds5-bridge.uf2` produced).
+
+Separately rebuilt PR #120 (open against `SundayMoments/DS5_Bridge`,
+`port-dev`) as a clean 2-commit history (firmware core, then protocol/
+companion wiring) on top of the same v1.7.0 base, dropping this fork's
+internal tracking docs (`AGENTS.md`/`CHANGELOG.md`/`DECISIONS.md`/
+`TASK.md`) and the personal local-dev packaging tweak
+(`package:win:local`) — neither belongs in an upstream PR. Force-pushed to
+`origin/feature/wol-wifi`; PR #120 now shows `MERGEABLE`. Also stripped
+`Co-Authored-By: Claude Sonnet 5` trailers that had accumulated on ~50
+commits during iterative development — the squash incidentally cleared
+these along with the history cleanup. PR description updated to match
+(dropped stale `CHANGELOG.md`/`DECISIONS.md`-inclusion claim, corrected
+test count, resolved the old "want a squash?" note).
+
+**Post-merge trap hit and fixed:** after reflashing firmware with the new
+protocol version, the companion app kept showing "Update required" because
+the installed/packaged companion `.exe` builds
+(`companion/artifacts/installer/win-unpacked/`, `C:\game\DS5 Bridge App`)
+were several days stale — rebuilding firmware and rebuilding the packaged
+companion app are two separate steps, and only the firmware side had been
+redone. Also hit the same known Windows `objdump`/`picotool` Access
+violation crash (see "Local build environment notes" in `AGENTS.md`) in a
+second location — `tools/build-pico-universal-flash-nuke.ps1`, which
+`npm run installer:win`/`package:win`/`package:win:local` all depend on —
+worked around the same way. See `AGENTS.md`'s updated notes for the full
+procedure now that it's been hit twice in two different build targets.
+
 ## 2026-08-10 — Release prep: stripped all debug/diagnostic scaffolding, kept only the shippable WOL feature
 
 With WOL confirmed working end-to-end on real hardware (previous entry),

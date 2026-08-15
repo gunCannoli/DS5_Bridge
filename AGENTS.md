@@ -292,32 +292,117 @@ companion app writes them to a file on disk:
 ## Local build environment notes
 
 - On this machine, `arm-none-eabi-objdump`/the chained CMake `POST_BUILD`
-  step that generates `ds5-bridge.dis`/`.hex`/`.bin`/`.uf2` sometimes crashes
+  step that generates `.dis`/`.hex`/`.bin`/`.uf2` sometimes crashes
   (`Access violation`) when invoked through Ninja's nested `cmd.exe` chain.
   This is NOT related to firmware source changes — `objdump`, `objcopy`, and
   `picotool` all succeed when run manually against the same `.elf` (e.g. via
-  PowerShell) right after a failed build. If `cmake --build` fails only at
-  the final post-link step after "Linking CXX executable ds5-bridge.elf" and
-  "Verified complete live firmware hot paths...", the actual firmware build
-  succeeded — just re-run the objdump/objcopy/picotool commands from the
-  failing command line manually (or via PowerShell) to produce the missing
-  `.uf2`/`.hex`/`.bin`/`.dis` artifacts.
+  PowerShell) right after a failed build. It's also intermittent, not 100%
+  reproducible — the same target can crash on one invocation and link clean
+  on the next with no source changes in between. If `cmake --build` fails
+  only at the final post-link step after "Linking CXX executable
+  `<target>.elf`" (for the main firmware: after "Verified complete live
+  firmware hot paths..." too), the actual compile+link succeeded — just
+  re-run the objdump/objcopy/picotool commands from the failing command line
+  manually (or via PowerShell) to produce the missing artifacts. Example
+  (adjust paths/target/family per build):
+  ```powershell
+  $ArmGcc = "C:\Program Files (x86)\Arm GNU Toolchain arm-none-eabi\14.2 rel1\bin"
+  $Elf = "<path from the failing command>\<target>.elf"
+  Set-Location (Split-Path $Elf)
+  & "$ArmGcc\arm-none-eabi-objcopy.exe" -Oihex $Elf "<target>.hex"
+  & "$ArmGcc\arm-none-eabi-objcopy.exe" -Obinary $Elf "<target>.bin"
+  & ".\_deps\picotool\picotool.exe" uf2 convert --quiet $Elf "<target>.uf2" --family <rp2040|rp2350-arm-s>
+  ```
+- **This crash hits every Pico target built on this machine, not just the
+  main `ds5-bridge` firmware** — confirmed 2026-08-15 in
+  `tools/build-pico-universal-flash-nuke.ps1` too (invoked by `npm run
+  installer:win`/`package:win`/`package:win:local` via `build:firmware-tools`
+  before it does anything companion-app-specific). That script builds
+  **two** separate targets (`rp2040` board, `rp2350`/pico2 board) each via
+  their own `cmake --build ... --target flash_nuke`, then combines both
+  UF2s into `companion/firmware/pico-universal-flash-nuke.uf2` and writes a
+  SHA-256 into both a `.sha256` file and
+  `companion/src/main/pico-universal-flash-nuke-hash.ts`. If either target's
+  post-link step crashes, the whole `npm run installer:win`/etc. invocation
+  fails before reaching `electron-builder`, and any packaged companion app
+  you already had stays stale (see the next bullet for why that's a trap).
+  Workaround: build+workaround each target's `.uf2` individually as above,
+  then either retry the full `npm run installer:win` (Ninja may no-op the
+  already-built targets and get further this time — it did once and crashed
+  again on a fresh relink attempt, so this isn't guaranteed), or reproduce
+  the script's final combine+hash step by hand (`companion/firmware/pico-
+  universal-flash-nuke.uf2` = `rp2040/flash_nuke.uf2` bytes followed by
+  `rp2350/flash_nuke.uf2` bytes, then SHA-256 the combined file into both
+  destinations) and run `npm run build && npx electron-builder --win nsis
+  --x64` (installer) / `npm run build && node scripts/package-win.mjs
+  "<out dir>"` (portable/local copy) directly, skipping
+  `build:firmware-tools` since its output is already in place.
 - `PICO_NO_COPRO_DIS=1` avoids a separate, reproducible `picotool coprodis`
   segfault when it processes `bs2_default.dis` in-place; pass it when
   configuring if the boot_stage2 disassembly step crashes.
+- **A `build/` (or `build-*/`) directory configured from a different
+  worktree/checkout path errors immediately** ("The current
+  CMakeCache.txt directory ... is different than the directory ... where
+  CMakeCache.txt was created") — this repo has lived at more than one local
+  path (e.g. `c:/game/DS5_Bridge` before `c:/auto/arduino/DS5_Bridge`), and
+  every gitignored build directory (`build/waveshare`, `build/default`,
+  `build/pico-universal-flash-nuke/*`, `build-firmware-tests`, etc.) can
+  independently carry this stale-path cache. Safe fix: `rm -rf` just that
+  one build directory and reconfigure — these are pure build output, never
+  source.
+- **After a `PROTOCOL_MAJOR`/`PROTOCOL_MINOR` bump (own work or an upstream
+  merge), reflashing the firmware is only half the fix.** The companion app
+  checks the flashed firmware's protocol version against its own compiled-in
+  `PROTOCOL_MINOR` and shows "Update required: Bridge Settings > Firmware"
+  on any mismatch — so an *installed/packaged* companion `.exe`
+  (`companion/artifacts/installer/win-unpacked/DS5 Bridge.exe`, an NSIS
+  install, or a `package:win:local` copy) built before the bump will show
+  this error even though the newly-flashed firmware is completely correct.
+  Rebuilding firmware and rebuilding/repackaging the companion app are two
+  separate steps — always do both after a protocol version change, not just
+  whichever one you happened to be editing. `npm run dev` (unpacked,
+  runs from source) doesn't have this trap since it's never stale by
+  construction; only pre-built/packaged `.exe` copies can drift.
 
 ## Rebase/backport workflow
 
-When upstream `port-dev` moves forward:
+When upstream `port-dev`/`main` moves forward (e.g. the next release after
+v1.7.0):
 
-1. Fetch `upstream/port-dev`.
-2. Rebase (or merge) our feature branch onto the new `port-dev` tip.
+1. Fetch `upstream/main` and `upstream/port-dev` (check which one is ahead
+   — as of the v1.7.0 merge they'd converged to the same tip, but that's not
+   guaranteed to stay true).
+2. Merge (this fork has used merge, not rebase, for the v1.7.0 sync — see
+   `CHANGELOG.md`'s 2026-08-15 entry) our feature branch onto the new tip.
 3. Because WOL lives mostly in `wolwifi.h/.cpp` (firmware) and isolated
    companion-app additions, conflicts should be limited to the few hook
    points documented in `DECISIONS.md` (e.g. the `bt.cpp` connect-event call
-   site, `CMakeLists.txt` option block, `protocol.ts` COMMAND_ID list).
-4. Re-run the smoke tests in TASK.md/CHANGELOG.md before re-opening or
-   updating the PR.
+   site, `CMakeLists.txt` option block, `protocol.ts`/`companion.cpp`
+   COMMAND_ID lists).
+4. **Always check the `COMMAND_ID` lists for numeric collisions, even if
+   the merge reports no conflict on those lines.** Git can't detect two
+   independently-added enum values landing on the same number — this
+   happened for real at v1.7.0 (`SET_WOL_ENABLED` vs upstream's
+   `SET_RADIAL_DEADZONES`, both at `0x37`; see `DECISIONS.md`). Grep both
+   `protocol.ts`'s `COMMAND_ID` and `companion.cpp`'s `CommandId` for every
+   hex value in use, take the max across both, and renumber this fork's WOL
+   IDs above it if there's any overlap. Bump `PROTOCOL_MINOR`/
+   `kProtocolMinor` together in both files, and update the hardcoded
+   `constexpr uint8_t kProtocolMinor = N;` string match in
+   `tests/firmware/usb_descriptor_migration_test.cpp` to the new value —
+   that test will fail (correctly) if you forget.
+5. Rebuild and test both the firmware (all build targets, including the
+   default non-WOL board) and the companion app (`npm run test:companion`,
+   `npm run test:firmware`) — see "Quick reference: do I need to rebuild
+   firmware, companion, or both?" above. Reflash real hardware and rebuild/
+   repackage whichever companion `.exe` you actually run before calling it
+   done (see "Local build environment notes" — a protocol bump needs both
+   sides rebuilt, not just the one you were editing).
+6. If updating the existing upstream PR rather than opening a new one:
+   force-push is expected (the PR history gets rebuilt on the new base) —
+   confirm with the user first since it rewrites already-published history.
+   Re-check the PR description afterward for anything now-stale (file lists,
+   test counts, "want a squash?"-type notes that may already be resolved).
 
 ## Working style
 
