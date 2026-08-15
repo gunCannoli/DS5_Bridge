@@ -243,9 +243,10 @@ network adapter has Wake-on-LAN enabled.
 
 ### Requirements
 
-- Waveshare RP2350B-Plus-W board (the only board with the onboard CYW43
-  Wi-Fi radio this feature uses). Wake-on-LAN firmware builds are gated
-  behind this board at compile time; other boards simply don't show the
+- Waveshare RP2350B-Plus-W board. Wake-on-LAN firmware builds are gated
+  behind this board at compile time (not because other CYW43-equipped
+  boards like Pico W/Pico 2 W lack the radio — it's only been built and
+  tested on Waveshare so far); other boards simply don't show the
   Wake-on-LAN section in the app.
 - A Wi-Fi network that can reach your PC's network segment.
 - Wake-on-LAN enabled on the target PC's network adapter and in its BIOS/UEFI
