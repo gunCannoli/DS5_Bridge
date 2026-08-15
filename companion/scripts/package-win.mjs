@@ -9,7 +9,10 @@ const companionDir = path.resolve(scriptDir, '..');
 const repoDir = path.resolve(companionDir, '..');
 const electronDist = path.join(companionDir, 'node_modules', 'electron', 'dist');
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-const outDir = path.join(companionDir, 'artifacts', `DS5 Bridge-win32-x64-${stamp}`);
+const outDirOverride = process.argv[2] || process.env.DS5_BRIDGE_PACKAGE_OUT_DIR;
+const outDir = outDirOverride
+  ? path.resolve(outDirOverride)
+  : path.join(companionDir, 'artifacts', `DS5 Bridge-win32-x64-${stamp}`);
 const appDir = path.join(outDir, 'resources', 'app');
 const assetDir = path.join('assets', 'controllers');
 const appIcon = path.join(repoDir, assetDir, 'ds5-bridge_app-icon-tile.ico');
@@ -106,6 +109,10 @@ if (!fs.existsSync(picoUniversalFlashNukeUf2)) {
 }
 if (!fs.existsSync(picoUniversalFlashNukeSha256)) {
   throw new Error('Pico flash nuke SHA-256 manifest is missing. Run npm run build:firmware-tools first.');
+}
+
+if (outDirOverride && fs.existsSync(outDir)) {
+  fs.rmSync(outDir, { recursive: true, force: true });
 }
 
 copyRecursive(electronDist, outDir);

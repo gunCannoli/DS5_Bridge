@@ -100,6 +100,13 @@ since that adds nothing but rebase friction for zero benefit.
   produced by `npm run package:win` (`companion/scripts/package-win.mjs`) —
   a timestamped folder tree, not a single exe, used for quick manual testing
   without building a full installer.
+- **Companion app local unpacked build**: `C:\game\DS5 Bridge App`, produced
+  by `npm run package:win:local` — same unpacked build as `package:win` but
+  written to this fixed path instead of a timestamped `artifacts/` folder, so
+  it can be pointed at directly (e.g. a Task Scheduler action running
+  `"C:\game\DS5 Bridge App\DS5 Bridge.exe" --start-in-tray`). The script wipes
+  this directory before each rebuild. Outside the repo tree, so nothing to
+  gitignore.
 - Both `companion/artifacts` and `build`/`build-*` are already gitignored at
   the repo root; nothing extra was needed there.
 
@@ -174,13 +181,17 @@ To produce a distributable build:
 npm run installer:win   # NSIS installer -> companion/artifacts/installer/
 # or, for a quick portable folder without building a full installer:
 npm run package:win     # -> companion/artifacts/DS5 Bridge-win32-x64-<timestamp>/
+# or, to rebuild the fixed local copy used by the tray auto-start task:
+npm run package:win:local   # -> C:\game\DS5 Bridge App
 ```
 
 The desktop shortcut points at `companion/artifacts/installer/win-unpacked/DS5 Bridge.exe`
 directly (not a separate installed copy), so `npm run installer:win` is what
 actually needs to run to make the shortcut launch fresh code -- rebuilding
 only `companion/artifacts/DS5 Bridge-win32-x64-<timestamp>/` via
-`package:win` does NOT update what the shortcut launches.
+`package:win` does NOT update what the shortcut launches. Likewise, if
+`C:\game\DS5 Bridge App` is what a scheduled task/shortcut launches, that
+copy only gets updated by explicitly running `npm run package:win:local`.
 
 If the app is currently running, close it first (it locks `DS5 Bridge.exe`
 and the rebuild will fail) -- always OK to close and rebuild without asking

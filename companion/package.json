@@ -15,6 +15,7 @@
     "build:app": "tsc -p tsconfig.main.json && vite build",
     "build": "npm run build:audio-helper && npm run build:app",
     "package:win": "npm run build:firmware-tools && npm run build && node scripts/package-win.mjs",
+    "package:win:local": "npm run build:firmware-tools && npm run build && node scripts/package-win.mjs \"C:\\game\\DS5 Bridge App\"",
     "installer:win": "npm run build:firmware-tools && npm run build && electron-builder --win nsis --x64",
     "test": "npm run test:companion && npm run test:installer && npm run test:native && npm run test:firmware",
     "test:companion": "vitest run src",
