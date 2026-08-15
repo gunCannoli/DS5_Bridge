@@ -41,9 +41,11 @@ endif ()
 option(WAVESHARE_RP2350B_PLUS_W_BUILD "Build for Waveshare RP2350B-Plus-W (USB-C, 16MB flash, RM2 wireless)" OFF)
 
 # Wake-on-LAN over Wi-Fi: sends a UDP magic packet to a configured target PC
-# when a controller connects. Requires a CYW43 radio and lwIP, so it is only
-# offered (and only defaults on) for the Waveshare RP2350B-Plus-W target;
-# other boards are unaffected. See src/wolwifi.h for the isolated module.
+# when a controller connects. Requires a CYW43 radio and lwIP, so it only
+# defaults on for the Waveshare RP2350B-Plus-W target. It can also be turned
+# on for the default pico2_w target (same CYW43439 radio), but that's opt-in
+# and untested -- Waveshare is the only board this has actually been run on.
+# See src/wolwifi.h for the isolated module.
 option(ENABLE_WOLWIFI "Enable Wake-on-LAN over Wi-Fi (requires CYW43 Wi-Fi + lwIP)" ${WAVESHARE_RP2350B_PLUS_W_BUILD})
 # The board's USB persona is plugged into the same target PC WOL wakes, so
 # usb_mounted && !usb_host_suspended_active() is used to skip sending WOL
@@ -63,9 +65,6 @@ if (WAVESHARE_RP2350B_PLUS_W_BUILD)
     list(APPEND PICO_BOARD_HEADER_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/boards/headers")
 else ()
     set(PICO_BOARD pico2_w CACHE STRING "Board type")
-    if (ENABLE_WOLWIFI)
-        message(FATAL_ERROR "ENABLE_WOLWIFI requires WAVESHARE_RP2350B_PLUS_W_BUILD=ON (CYW43 Wi-Fi board).")
-    endif ()
 endif ()
 message(STATUS "ds5-bridge board target -- PICO_BOARD=${PICO_BOARD}")
 set(SYS_CLOCK_KHZ_VALUE 150000 CACHE STRING "RP2350 system clock in kHz")

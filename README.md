@@ -243,11 +243,10 @@ network adapter has Wake-on-LAN enabled.
 
 ### Requirements
 
-- Waveshare RP2350B-Plus-W board. Wake-on-LAN firmware builds are gated
-  behind this board at compile time (not because other CYW43-equipped
-  boards like Pico W/Pico 2 W lack the radio — it's only been built and
-  tested on Waveshare so far); other boards simply don't show the
-  Wake-on-LAN section in the app.
+- A board with a CYW43 Wi-Fi radio: on by default for Waveshare
+  RP2350B-Plus-W, or build with `-DENABLE_WOLWIFI=ON` on the default Pico
+  2 W target (only tested on Waveshare so far). Boards without a radio
+  simply don't show the Wake-on-LAN section in the app.
 - A Wi-Fi network that can reach your PC's network segment.
 - Wake-on-LAN enabled on the target PC's network adapter and in its BIOS/UEFI
   power settings, and the adapter's wake support has to survive a full
@@ -293,7 +292,7 @@ steps.
 | `src/companion.cpp` | Vendor HID companion protocol, status reports, command ACKs, and runtime setting dispatch. |
 | `src/usb.cpp` | TinyUSB audio control callbacks and runtime settings fallback. |
 | `src/usb_descriptors.c` | USB device, configuration, HID report, audio, and string descriptors. |
-| `src/wolwifi.cpp` | Wake-on-LAN over Wi-Fi: host-alive gate, Wi-Fi connect, and magic-packet send/resend (Waveshare RP2350B-Plus-W only). |
+| `src/wolwifi.cpp` | Wake-on-LAN over Wi-Fi: host-alive gate, Wi-Fi connect, and magic-packet send/resend. On by default for Waveshare RP2350B-Plus-W, opt-in via `ENABLE_WOLWIFI` on other CYW43 boards. |
 | `companion/` | Electron companion app source, protocol parser, HID service, assets, and UI. |
 | `companion/native/AudioHelper/` | Windows audio helper used by the companion app for audio sessions, haptics mirroring, endpoint setup, and media integrations. |
 | `.github/workflows` | CI and release builds. |
