@@ -7,6 +7,42 @@ test run; see `CHANGELOG.md` for that history. Newest first.
 
 ---
 
+## Known issue: merging/rebasing onto a new upstream release can collide `COMMAND_ID` values — always check for gaps, don't just append
+
+**What happened (2026-08-15, merging upstream v1.7.0):** upstream added
+`SET_RADIAL_DEADZONES` and `SET_EDGE_PROFILE_SWITCHING_BLOCKED` at `0x37`/
+`0x45` between when this fork branched and v1.7.0 shipped. This fork's own
+`SET_WOL_ENABLED`/`SET_WOL_WIFI_SSID`/`SET_WOL_WIFI_PASSWORD`/
+`SET_WOL_TARGET_MAC` had independently claimed `0x37`-`0x3A` — a silent
+collision that `git merge` cannot detect on its own (both sides just add a
+new enum value; the same numeric ID ends up meaning two different commands
+depending on which side's build you're running). Caught during manual
+conflict resolution, not by any automated check.
+
+**Fix applied:** renumbered this fork's four WOL command IDs to
+`0x46`-`0x49`, past upstream's highest currently-assigned ID (`0x45`) at
+merge time, in both `companion/src/shared/protocol.ts`'s `COMMAND_ID` and
+`src/companion.cpp`'s `CommandId` enum (must always be edited together —
+see `AGENTS.md`'s protocol-change rebuild table). `PROTOCOL_MINOR`/
+`kProtocolMinor` bumped to 23 (upstream's own bump to 22 plus this fork's
+independent bump to 21, combined) in both files, plus the hardcoded parity
+check in `tests/firmware/usb_descriptor_migration_test.cpp` that asserts
+the exact string `constexpr uint8_t kProtocolMinor = N;` — that test will
+fail loudly (not silently) if the two files disagree, which is useful, but
+it still needs updating by hand to the new expected value after any bump.
+
+**How to apply next time:** before assigning a new `COMMAND_ID` value —
+whether adding a WOL feature or rebasing onto a newer upstream release —
+grep both `protocol.ts`'s `COMMAND_ID` and `companion.cpp`'s `CommandId`
+for every currently-assigned hex value first (`grep -n "0x" ...` on both
+enums), take the max, and assign new IDs above it. Don't assume the next
+"round" unused number (like `0x3B`) is actually free just because this
+fork's own history doesn't use it — upstream may have claimed it since the
+last sync. This will recur on every future upstream merge as long as both
+sides keep adding commands independently between syncs.
+
+---
+
 ## Known issue: `watchdog_enable_caused_reboot()` misses deliberate `watchdog_reboot()` calls
 
 **Symptom that exposed this:** the host-alive gate (see the entry below)
