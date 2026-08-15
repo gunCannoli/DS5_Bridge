@@ -55,6 +55,14 @@ describe('renderer behavior guards', () => {
     expect(appSource).toContain('Pico Local');
   });
 
+  it('presents DualSense Edge as a PlayStation host persona', () => {
+    expect(appSource).toContain("['DualSense Edge', 'dualsense-edge']");
+    expect(appSource).toContain("['DualSense Edge', 'persona-dualsense-edge']");
+    const option = extractFunction('HostPersonaOption');
+    expect(option).toContain("value === 'dualsense-edge'");
+    expect(option).toContain('host-persona-brand-icon');
+  });
+
   it('requires explicit confirmation and a disconnected controller before emergency device repair', () => {
     const openFunction = extractFunction('openDeviceCleanupConfirm');
     const runFunction = extractFunction('runWindowsDeviceCleanup');
@@ -191,6 +199,14 @@ describe('renderer behavior guards', () => {
     expect(appSource).toContain('<strong>Wake PC on Controller</strong>');
     expect(appSource).toContain('firmwareFlags.wakeOnConnectControl');
     expect(appSource).toContain('window.bridge.setWakeOnConnectEnabled(!snapshot.settings.wakeOnConnectEnabled)');
+  });
+
+  it('exposes the DualSense Edge profile blocker and uses it to gate reserved chords', () => {
+    expect(appSource).toContain('Block Edge Profile Switching');
+    expect(appSource).toContain('snapshot.settings.edgeProfileSwitchingBlocked');
+    expect(appSource).toContain('window.bridge.setEdgeProfileSwitchingBlocked');
+    expect(appSource).toContain('edgeProfileSwitchingBlocked');
+    expect(appSource).toContain('isChordBindingAllowed(');
   });
 
   it('distinguishes active charging from connected external power', () => {
@@ -345,6 +361,75 @@ describe('renderer behavior guards', () => {
     expect(appSource).not.toContain("id: 'tools',");
     expect(appSource).not.toContain('setTriggerLabOpen');
     expect(appSource).not.toContain('setAudioHapticsOpen');
+  });
+
+  it('exposes only radial stick deadzones from the premium analog controls', () => {
+    const deadzonesPanelStart = appSource.indexOf('id="control-panel-deadzones"');
+    const deadzonesPanelEnd = appSource.indexOf('<FeatureTipsPanel tab="deadzones" />', deadzonesPanelStart);
+    const deadzonesPanelSource = appSource.slice(deadzonesPanelStart, deadzonesPanelEnd);
+
+    expect(appSource).toContain("deadzones: { id: 'deadzones', label: 'Stick Deadzones'");
+    expect(appSource).toContain("deadzones: { id: 'deadzones', label: 'Stick Deadzones', Icon: IconViewfinder }");
+    expect(deadzonesPanelSource).toContain('<span className="feature-icon"><IconViewfinder size={20} /></span>');
+    expect(deadzonesPanelSource).not.toContain('<ProfileSaveStatus />');
+    expect(appSource).toContain('window.bridge.setRadialDeadzones(leftPercent, rightPercent)');
+    expect(appSource).toContain('window.bridge.requestStickInputPreview()');
+    expect(appSource).toContain('window.bridge.releaseStickInputPreview()');
+    expect(appSource).toContain("`${Math.max(3, value)}%`");
+    expect(appSource).toContain('radialDeadzonePreview(');
+    expect(appSource).toContain('Physical</span>');
+    expect(appSource).toContain('Output</span>');
+    expect(appSource).toContain("'Left Stick' : 'Right Stick'");
+    expect(appSource).toContain('aria-label={`${label} radial deadzone`}');
+    expect(appSource).toContain('<FeatureTipsPanel tab="deadzones" />');
+    expect(appSource).toContain("title: 'Tune Each Stick'");
+    expect(appSource).toContain("title: 'Keep It Low'");
+    expect(appSource).not.toContain('How Radial Deadzones Work');
+    expect(appSource).not.toContain('All Personas');
+    expect(appSource).not.toContain('invertHorizontal');
+    expect(appSource).not.toContain('responseCurve');
+    expect(appSource).not.toContain('zoneRotation');
+    expect(appSource).not.toContain('zoneOuterLimits');
+    expect(appSource).not.toContain('maxRangePercent');
+  });
+
+  it('keeps all four abbreviated personas on the overview quick-actions row', () => {
+    expect(stylesSource).toContain('grid-template-columns: repeat(4, minmax(0, 1fr));');
+    expect(appSource).toContain("dualsense: 'DS'");
+    expect(appSource).toContain("'dualsense-edge': 'DSE'");
+    expect(appSource).toContain("ds4: 'DS4'");
+    expect(appSource).toContain("xbox: 'XBOX'");
+    expect(appSource).toContain('<span>{HOST_PERSONA_SHORT_LABELS[mode]}</span>');
+    expect(appSource).toContain('aria-label={`Switch to ${label} mode`}');
+  });
+
+  it('advertises Kitsune Input with a dismissible titlebar promotion', () => {
+    expect(appSource).toContain("import '@fontsource/montserrat/latin-500.css';");
+    expect(appSource).toContain("import kitsuneInputLogoUrl from './assets/kitsune-input-logo.svg';");
+    expect(appSource).toContain('!snapshot.settings.kitsuneInputPromotionDismissed');
+    expect(appSource).toContain('aria-label="Explore Kitsune Input"');
+    expect(appSource).toContain('aria-label="Close Kitsune Input promotion"');
+    expect(appSource).toContain('Take controller customization further');
+    expect(appSource).toContain('Deeper tuning, smarter profiles, and controller-first tools.');
+    expect(appSource).not.toContain('Shape every movement.');
+    expect(appSource).not.toContain('Ready when you play.');
+    expect(appSource).not.toContain('Features exclusive to Kitsune Input');
+    expect(appSource).toContain('<li>Advanced Stick Tuning</li>');
+    expect(appSource).toContain('<li>Advanced Trigger Tuning</li>');
+    expect(appSource).toContain('<li>Touchpad Gestures</li>');
+    expect(appSource).toContain('<li>Multi-Actions</li>');
+    expect(appSource).toContain('<li>Per-game Profiles</li>');
+    expect(appSource).toContain('<li>Kitsune Game Bar</li>');
+    expect(appSource).toContain('<li>More Personas &amp; Xbox Impulse Triggers</li>');
+    expect(appSource).toContain('<li>Mod API</li>');
+    expect(appSource).toContain('Purchase');
+    expect(appSource).toContain('Learn More');
+    expect(appSource).toContain('secondary-action kitsune-promotion-learn');
+    expect(appSource).toContain('<ArrowRight size={16} />');
+    expect(appSource).toContain("Don't show Kitsune Input promotions again");
+    expect(appSource).toContain("const KITSUNE_INPUT_URL = 'https://kitsuneinput.com/';");
+    expect(appSource).toContain("const KITSUNE_INPUT_PURCHASE_URL = 'https://ko-fi.com/s/d1f0a3b26f';");
+    expect(appSource).toContain('window.bridge.setKitsuneInputPromotionDismissed(true)');
   });
 
   it('keeps Audio Haptics page enablement aligned with its feature tile', () => {

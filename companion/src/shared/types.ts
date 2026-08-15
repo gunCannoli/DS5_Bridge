@@ -20,6 +20,7 @@ import type {
   MuteButtonMode,
   MuteKeyboardBehavior,
   PollingRateMode,
+  StickInputPreviewPayload,
   TriggerTestMode
 } from './protocol';
 
@@ -32,7 +33,10 @@ export interface CompanionSettings {
   uiThemePreset: UiThemePreset;
   launchAtStartupEnabled: boolean;
   showBatteryPercentTrayIcon: boolean;
+  kitsuneInputPromotionDismissed: boolean;
   firmwareLogDirectory: string | null;
+  leftStickRadialDeadzonePercent: number;
+  rightStickRadialDeadzonePercent: number;
   hapticsEnabled: boolean;
   hapticsGainPercent: number;
   feedbackBoostEnabled: boolean;
@@ -71,6 +75,7 @@ export interface CompanionSettings {
   muteKeyboardModifiers: number;
   muteKeyboardBehavior: MuteKeyboardBehavior;
   muteKeyboardChordStarterEnabled: boolean;
+  edgeProfileSwitchingBlocked: boolean;
   ledEnabled: boolean;
   playerLedEnabled: boolean;
   idleDisconnectEnabled: boolean;
@@ -169,6 +174,7 @@ export interface BridgeSnapshot {
   diagnostics: BridgeDiagnostics;
   personaTransition?: HostPersonaTransition | null;
   bridgeDevices?: BridgeDeviceCensus | null;
+  stickInputPreview?: StickInputPreviewPayload | null;
 }
 
 export interface BridgeDeviceInfo {

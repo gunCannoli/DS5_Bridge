@@ -19,10 +19,12 @@ import {
   buildButtonRemapPayload,
   buildChordBindingsPayload,
   buildCommandReport,
+  buildRadialDeadzonePayload,
   clampAudioInterleaveValues,
   hostPersonaModeValue,
   isChordBindingAllowed,
   normalizeBridgePresetId,
+  normalizeRadialDeadzonePercent,
   parseAudioDebugReport,
   parseAudioStatusReport,
   parseAudioStatsReport,
@@ -30,6 +32,7 @@ import {
   parseFeedbackTraceReport,
   parseFirmwareLogReport,
   parseDeviceIdentityReport,
+  parseCompanionInputReport,
   parseTriggerTraceReport,
   parseStatusReport,
   remapButtonIdValue
@@ -184,6 +187,16 @@ describe('companion protocol', () => {
     expect(status.muteButtonMode).toBe('chord');
   });
 
+  it('parses DualSense Edge host persona reports', () => {
+    const report = baseReport(REPORT_ID.STATUS);
+    report[48] = 7;
+    report[49] = 0x80;
+
+    const status = parseStatusReport(report);
+    expect(status.hostPersonaMode).toBe('dualsense-edge');
+    expect(status.supportedHostPersonaModes).toEqual(['dualsense-edge']);
+  });
+
   it('parses retained firmware log bytes', () => {
     const report = baseReport(REPORT_ID.FIRMWARE_LOG);
     report[7] = 0x01;
@@ -263,6 +276,7 @@ describe('companion protocol', () => {
     expect(hostPersonaModeValue('dualsense')).toBe(0);
     expect(hostPersonaModeValue('xbox')).toBe(1);
     expect(hostPersonaModeValue('ds4')).toBe(2);
+    expect(hostPersonaModeValue('dualsense-edge')).toBe(7);
   });
 
   it('parses an ACK report', () => {
@@ -605,11 +619,15 @@ describe('companion protocol', () => {
     expect(report.slice(11, 20)).toEqual(payload);
   });
 
-  it('marks Edge Fn face-button chord combos as reserved', () => {
+  it('allows Edge Fn face-button chord combos only while profile switching is blocked', () => {
     expect(isChordBindingAllowed('ps', 'triangle')).toBe(true);
+    expect(isChordBindingAllowed('mute', 'triangle')).toBe(true);
     expect(isChordBindingAllowed('lfn', 'options')).toBe(true);
     expect(isChordBindingAllowed('rfn', 'square')).toBe(false);
     expect(isChordBindingAllowed('lfn', 'circle')).toBe(false);
+    expect(isChordBindingAllowed('rfn', 'square', true)).toBe(true);
+    expect(isChordBindingAllowed('lfn', 'circle', true)).toBe(true);
+    expect(COMMAND_ID.SET_EDGE_PROFILE_SWITCHING_BLOCKED).toBe(0x45);
   });
 
   it('builds sleep controller command reports', () => {
@@ -769,6 +787,45 @@ describe('companion protocol', () => {
     const report = buildCommandReport(COMMAND_ID.SET_POLLING_RATE_MODE, 8, 1);
     expect(report[7]).toBe(COMMAND_ID.SET_POLLING_RATE_MODE);
     expect(report[9]).toBe(1);
+  });
+
+  it('normalizes the isolated radial deadzone payload to whole percentages', () => {
+    expect(normalizeRadialDeadzonePercent(-4)).toBe(0);
+    expect(normalizeRadialDeadzonePercent(12.6)).toBe(13);
+    expect(normalizeRadialDeadzonePercent(99)).toBe(50);
+    expect(buildRadialDeadzonePayload(12.4, 99)).toEqual([12, 50]);
+  });
+
+  it('parses shortcut and raw stick telemetry from the companion input report', () => {
+    const report = new Array<number>(64).fill(0);
+    report[0] = REPORT_ID.INPUT;
+    report[1] = 0x04;
+    report[2] = 1;
+    report[3] = 0x01;
+    report[4] = 140;
+    report[5] = 121;
+    report[6] = 210;
+    report[7] = 45;
+    writeU32(report, 8, 0x12345678);
+
+    expect(parseCompanionInputReport(report)).toEqual({
+      shortcutEvent: 0x04,
+      stickPreview: {
+        sequence: 0x12345678,
+        raw: { lx: 140, ly: 121, rx: 210, ry: 45 }
+      }
+    });
+  });
+
+  it('accepts legacy input reports without stick telemetry', () => {
+    const report = new Array<number>(64).fill(0);
+    report[0] = REPORT_ID.INPUT;
+    report[1] = 0x02;
+
+    expect(parseCompanionInputReport(report)).toEqual({
+      shortcutEvent: 0x02,
+      stickPreview: null
+    });
   });
 
   it('normalizes deleted or unknown bridge presets to a fallback', () => {

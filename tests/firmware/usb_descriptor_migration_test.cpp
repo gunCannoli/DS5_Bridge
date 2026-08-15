@@ -11,8 +11,8 @@
 
 namespace {
 
-constexpr uint16_t kExpectedUsbDeviceRevision = 0x0154;
-constexpr uint64_t kExpectedCompanionDescriptorHash = 0x57632c24ad95e61dull;
+constexpr uint16_t kExpectedUsbDeviceRevision = 0x0155;
+constexpr uint64_t kExpectedCompanionDescriptorHash = 0xbf4f9410baf82bc4ull;
 
 std::string read_text(std::filesystem::path const &path) {
     std::ifstream input(path, std::ios::binary);
@@ -179,6 +179,7 @@ void assert_persona_support_requires_verified_descriptors(
 
     if (
         usb_descriptors.find("#define DUALSENSE_HID_REPORT_DESC_FNV1A32 0x98EE8A4Au") == std::string::npos
+        || usb_descriptors.find("#define DUALSENSE_EDGE_HID_REPORT_DESC_FNV1A32 0x48E90EC1u") == std::string::npos
         || usb_descriptors.find("#define DS4_HID_REPORT_DESC_FNV1A32 0x9316A41Du") == std::string::npos
         || usb_descriptors.find("#define XUSB360_INTERFACE_DESC_FNV1A32 0x824C084Au") == std::string::npos
         || usb_descriptors.find("#define XUSB360_INTERFACE_DESC_FNV1A32 0xAAC10AD0u") == std::string::npos
@@ -195,9 +196,17 @@ void assert_persona_support_requires_verified_descriptors(
     ) {
         throw std::runtime_error("XUSB persona must be gated on its intended descriptor fingerprint");
     }
+
+    if (
+        usb_descriptors.find("case HostPersonaModeDualSenseEdge:") == std::string::npos
+        || usb_descriptors.find("desc_hid_report_dse") == std::string::npos
+        || usb_descriptors.find("DUALSENSE_EDGE_HID_REPORT_DESC_FNV1A32") == std::string::npos
+    ) {
+        throw std::runtime_error("DualSense Edge persona must be gated on its intended descriptor fingerprint");
+    }
 }
 
-void assert_dse_identity_reports_do_not_use_edge_passthrough(std::filesystem::path const &source_root) {
+void assert_dualsense_persona_identity_reports_are_isolated(std::filesystem::path const &source_root) {
     const auto bt_h = read_text(source_root / "src" / "bt.h");
     const auto main_cpp = read_text(source_root / "src" / "main.cpp");
     const auto dualsense_persona_cpp = read_text(source_root / "src" / "persona" / "dualsense_persona.cpp");
@@ -212,17 +221,103 @@ void assert_dse_identity_reports_do_not_use_edge_passthrough(std::filesystem::pa
         bt_h.find("ControllerTypeDualSenseEdge = 2") == std::string::npos
         || main_cpp.find("dualsense_feature_report_may_use_bt_passthrough") == std::string::npos
         || main_cpp.find("report_id != 0x20 && report_id != 0x22") == std::string::npos
-        || main_cpp.find("bt_controller_type() != ControllerTypeDualSenseEdge") == std::string::npos
+        || main_cpp.find("output_persona == HostPersonaModeDualSenseEdge") == std::string::npos
+        || main_cpp.find("upstream_type == ControllerTypeDualSenseEdge") == std::string::npos
+        || main_cpp.find("upstream_type == ControllerTypeDualSense") == std::string::npos
         || get_report_callback.find("report_type != HID_REPORT_TYPE_FEATURE") == std::string::npos
-        || get_report_callback.find("dualsense_feature_report_may_use_bt_passthrough(report_id)") == std::string::npos
+        || get_report_callback.find("dualsense_feature_report_may_use_bt_passthrough(active_persona, report_id)") == std::string::npos
         || get_report_callback.find("get_feature_data(report_id, reqlen)") == std::string::npos
-        || get_report_callback.find("dualsense_persona_get_feature_report(report_id, buffer, reqlen)") == std::string::npos
+        || get_report_callback.find("dualsense_persona_get_feature_report(active_persona, report_id, buffer, reqlen)") == std::string::npos
         || dualsense_persona_h.find("dualsense_persona_get_feature_report") == std::string::npos
         || dualsense_persona_cpp.find("kDualSenseFeatureFirmwareInfo = 0x20") == std::string::npos
-        || dualsense_persona_cpp.find("write_firmware_feature_report") == std::string::npos
+        || dualsense_persona_cpp.find("write_dualsense_firmware_feature_report") == std::string::npos
+        || dualsense_persona_cpp.find("write_dualsense_edge_firmware_feature_report") == std::string::npos
         || dualsense_persona_cpp.find("kFirmwareVersion = 0x0110002a") == std::string::npos
+        || dualsense_persona_cpp.find("kSoftwareSeries = 0x0044") == std::string::npos
+        || dualsense_persona_cpp.find("kUpdateVersion = 0x0217") == std::string::npos
     ) {
-        throw std::runtime_error("DualSense identity feature reports must not leak DualSense Edge identity through BT passthrough");
+        throw std::runtime_error("DualSense personas must isolate native identity passthrough and synthesize the selected firmware identity");
+    }
+}
+
+void assert_dualsense_edge_persona_is_edge_facing(
+    std::string const &source,
+    std::filesystem::path const &source_root
+) {
+    const auto cmake = read_text(source_root / "CMakeLists.txt");
+    const auto companion_cpp = read_text(source_root / "src" / "companion.cpp");
+    const auto host_persona_h = read_text(source_root / "src" / "persona" / "host_persona.h");
+    const auto audio_cpp = read_text(source_root / "src" / "audio.cpp");
+    const auto tusb_config_h = read_text(source_root / "src" / "tusb_config.h");
+
+    if (
+        cmake.find("ENABLE_DSE") != std::string::npos
+        || source.find("ENABLE_DSE") != std::string::npos
+        || host_persona_h.find("HostPersonaModeDualSenseEdge = 7") == std::string::npos
+        || companion_cpp.find("mask |= 1 << HostPersonaModeDualSenseEdge") == std::string::npos
+    ) {
+        throw std::runtime_error("DualSense Edge must be a normal runtime-selectable persona advertised on protocol bit 7");
+    }
+
+    if (
+        source.find("#define DUALSENSE_EDGE_VENDOR_ID 0x054C") == std::string::npos
+        || source.find("#define DUALSENSE_EDGE_PRODUCT_ID 0x0DF2") == std::string::npos
+        || source.find("#define DUALSENSE_EDGE_USB_BCD_DEVICE 0x0101") == std::string::npos
+        || source.find("#define DUALSENSE_EDGE_STRING_PRODUCT \"DualSense Edge Wireless Controller\"") == std::string::npos
+        || source.find("#define DUALSENSE_EDGE_HID_REPORT_DESC_LEN 0x01B5") == std::string::npos
+        || source.find("TU_VERIFY_STATIC(sizeof(desc_hid_report_dse) == DUALSENSE_EDGE_HID_REPORT_DESC_LEN") == std::string::npos
+    ) {
+        throw std::runtime_error("DualSense Edge USB identity, report descriptor, and cache revision must match the pinned contract");
+    }
+
+    const std::string edge_descriptor = extract_between(
+        source,
+        "uint8_t const desc_hid_report_dse[] = {",
+        "\n};\nTU_VERIFY_STATIC(sizeof(desc_hid_report_dse)"
+    );
+    for (std::string const report_id : {"0xF6", "0xF7", "0xF8", "0xF9"}) {
+        if (edge_descriptor.find("0x85, " + report_id) == std::string::npos) {
+            throw std::runtime_error("DualSense Edge descriptor is missing feature report " + report_id);
+        }
+    }
+
+    const std::string device_callback = extract_between(
+        source,
+        "uint8_t const *tud_descriptor_device_cb(void) {",
+        "\n}\n\n//--------------------------------------------------------------------+\n// Configuration Descriptor"
+    );
+    const std::string report_callback = extract_between(
+        source,
+        "uint8_t const *tud_hid_descriptor_report_cb(uint8_t itf) {",
+        "\n}\n\n//--------------------------------------------------------------------+\n// String Descriptors"
+    );
+    const std::string string_helper = extract_between(
+        source,
+        "static char const *descriptor_string_for_index(uint8_t index) {",
+        "\n}\n\n// Invoked when received GET STRING DESCRIPTOR request"
+    );
+    if (
+        device_callback.find("host_persona_active() == HostPersonaModeDualSenseEdge") == std::string::npos
+        || device_callback.find("desc_device_runtime.idProduct = DUALSENSE_EDGE_PRODUCT_ID") == std::string::npos
+        || report_callback.find("return desc_hid_report_dse") == std::string::npos
+        || string_helper.find("return DUALSENSE_EDGE_STRING_PRODUCT") == std::string::npos
+        || source.find("return DUALSENSE_EDGE_HID_REPORT_DESC_LEN") == std::string::npos
+    ) {
+        throw std::runtime_error("DualSense Edge persona must select its runtime device, HID, and product descriptors together");
+    }
+
+    if (
+        tusb_config_h.find("#define CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_TX              2") == std::string::npos
+        || source.find("#define CONTROLLER_MIC_MONO_EP_SIZE 0x0060") == std::string::npos
+        || source.find("build_dualsense_edge_configuration_descriptor") == std::string::npos
+        || source.find("descriptor_configuration_dualsense_edge") == std::string::npos
+        || source.find("source_interface == 2") == std::string::npos
+        || audio_cpp.find("host_persona_active() == HostPersonaModeDualSenseEdge ? 2 : 1") == std::string::npos
+        || audio_cpp.find("host_mic_usb_channel_count()") == std::string::npos
+    ) {
+        throw std::runtime_error(
+            "DualSense Edge must expose its stereo microphone contract without changing the mono contract of other personas"
+        );
     }
 }
 
@@ -235,7 +330,7 @@ void assert_xusb_persona_strings_are_xbox_facing(std::string const &source) {
         throw std::runtime_error("Xbox persona must expose a non-Sony composite-safe USB product ID");
     }
 
-    if (source.find("#define XUSB360_USB_BCD_DEVICE 0x0156") == std::string::npos) {
+    if (source.find("#define XUSB360_USB_BCD_DEVICE 0x0157") == std::string::npos) {
         throw std::runtime_error("Xbox persona USB revision must be bumped for Windows descriptor cache separation");
     }
 
@@ -287,8 +382,8 @@ void assert_ds4_persona_identity_is_ds4_facing(std::string const &source) {
         throw std::runtime_error("DS4 persona must expose the DS4 v2 USB product ID");
     }
 
-    if (source.find("#define DS4_USB_BCD_DEVICE 0x0103") == std::string::npos) {
-        throw std::runtime_error("DS4 persona must bump its USB revision for the remote-wake descriptor");
+    if (source.find("#define DS4_USB_BCD_DEVICE 0x0104") == std::string::npos) {
+        throw std::runtime_error("DS4 persona must bump its USB revision when its shared audio descriptor changes");
     }
 
     if (source.find("#define DS4_HID_REPORT_DESC_LEN 0x01FB") == std::string::npos) {
@@ -1294,9 +1389,9 @@ void assert_companion_device_management_contract(std::filesystem::path const &ro
     const auto protocol_ts = read_text(root / "companion" / "src" / "shared" / "protocol.ts");
 
     if (
-        companion_cpp.find("constexpr uint8_t kProtocolMinor = 19;")
+        companion_cpp.find("constexpr uint8_t kProtocolMinor = 23;")
             == std::string::npos
-        || protocol_ts.find("export const PROTOCOL_MINOR = 19;")
+        || protocol_ts.find("export const PROTOCOL_MINOR = 23;")
             == std::string::npos
         || companion_h.find("#define COMPANION_REPORT_DEVICE_IDENTITY 0x0D")
             == std::string::npos
@@ -1318,6 +1413,22 @@ void assert_companion_device_management_contract(std::filesystem::path const &ro
             == std::string::npos
         || protocol_ts.find("SET_WAKE_ON_CONNECT: 0x35")
             == std::string::npos
+        || companion_cpp.find("CommandSetEdgeProfileSwitchingBlocked = 0x45")
+            == std::string::npos
+        || protocol_ts.find("SET_EDGE_PROFILE_SWITCHING_BLOCKED: 0x45")
+            == std::string::npos
+        || companion_cpp.find("CommandSetRadialDeadzones = 0x37")
+            == std::string::npos
+        || protocol_ts.find("SET_RADIAL_DEADZONES: 0x37")
+            == std::string::npos
+        || companion_cpp.find("uint16_t build_input_report")
+            == std::string::npos
+        || companion_cpp.find("memcpy(last_raw_stick_axes, report, sizeof(last_raw_stick_axes));")
+            == std::string::npos
+        || companion_cpp.find("write_u32(buffer + 7, raw_stick_sequence);")
+            == std::string::npos
+        || protocol_ts.find("export function parseCompanionInputReport")
+            == std::string::npos
     ) {
         throw std::runtime_error(
             "Firmware and companion controller-management protocol identifiers must remain in parity"
@@ -1327,7 +1438,7 @@ void assert_companion_device_management_contract(std::filesystem::path const &ro
     const std::string identity = extract_between(
         companion_cpp,
         "uint16_t build_device_identity",
-        "\n}\n\nuint16_t build_shortcut_event"
+        "\n}\n\nuint16_t build_input_report"
     );
     if (
         identity.find("bt_get_device_identity(&identity)") == std::string::npos
@@ -1379,6 +1490,35 @@ void assert_companion_device_management_contract(std::filesystem::path const &ro
     ) {
         throw std::runtime_error(
             "Companion controller-management commands must validate and report persistent mutation failures"
+        );
+    }
+}
+
+void assert_dualsense_edge_profile_switching_blocker(
+    std::filesystem::path const &root
+) {
+    const auto companion = read_text(root / "src" / "companion.cpp");
+    const auto bt = read_text(root / "src" / "bt.cpp");
+    const auto bt_h = read_text(root / "src" / "bt.h");
+    const auto output = read_text(root / "src" / "dualsense_output.h");
+    const auto protocol = read_text(root / "companion" / "src" / "shared" / "protocol.ts");
+    const auto service = read_text(root / "companion" / "src" / "main" / "bridge-service.ts");
+
+    if (
+        output.find("kFlag2EdgeProfileSwitchingControlEnable = 0x40") == std::string::npos
+        || output.find("kEdgeProfileSwitchingModeOffset = 40") == std::string::npos
+        || output.find("kEdgeProfileSwitchingBlocked = 0x80") == std::string::npos
+        || output.find("render_edge_profile_switching_payload") == std::string::npos
+        || bt_h.find("void bt_set_edge_profile_switching_blocked(bool blocked);") == std::string::npos
+        || bt.find("controller_type != ControllerTypeDualSenseEdge") == std::string::npos
+        || bt.find("service_edge_profile_switching_mode();") == std::string::npos
+        || companion.find("value == 0 && has_edge_profile_switching_chord()") == std::string::npos
+        || companion.find("!edge_profile_switching_blocked") == std::string::npos
+        || protocol.find("edgeProfileSwitchingBlocked = false") == std::string::npos
+        || service.find("settings.edgeProfileSwitchingBlocked") == std::string::npos
+    ) {
+        throw std::runtime_error(
+            "DualSense Edge profile switching must be blocked before reserved Fn face-button chords become active"
         );
     }
 }
@@ -2036,7 +2176,8 @@ int main() {
         const uint64_t descriptor_hash = companion_descriptor_hash(source);
         assert_xusb_descriptor_uses_endpoint_constants(source);
         assert_persona_support_requires_verified_descriptors(source, source_root);
-        assert_dse_identity_reports_do_not_use_edge_passthrough(source_root);
+        assert_dualsense_persona_identity_reports_are_isolated(source_root);
+        assert_dualsense_edge_persona_is_edge_facing(source, source_root);
         assert_xusb_persona_strings_are_xbox_facing(source);
         assert_ds4_persona_identity_is_ds4_facing(source);
         assert_persona_switch_quiets_input_only(source_root);
@@ -2049,6 +2190,7 @@ int main() {
         assert_firmware_version_has_one_canonical_source(source_root);
         assert_bluetooth_device_management_policy(source_root);
         assert_companion_device_management_contract(source_root);
+        assert_dualsense_edge_profile_switching_blocker(source_root);
         assert_bluetooth_hid_recovery_and_encryption_watchdog(source_root);
         assert_dualsense_feature_startup_is_paced(source_root);
         assert_watchdog_and_bootsel_flash_safety(source_root);

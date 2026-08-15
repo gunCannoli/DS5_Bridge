@@ -62,7 +62,18 @@ describe('SettingsStore', () => {
     expect(settings.micMuted).toBe(false);
     expect(settings.lightbarColor).toBe('#0000ff');
     expect(settings.showBatteryPercentTrayIcon).toBe(false);
+    expect(settings.kitsuneInputPromotionDismissed).toBe(false);
     expect(settings.wakeOnConnectEnabled).toBe(true);
+  });
+
+  it('persists the app-wide Kitsune Input promotion dismissal across controller resets', () => {
+    const userDataPath = tempUserDataPath();
+    const store = new SettingsStore(userDataPath);
+
+    expect(store.update({ kitsuneInputPromotionDismissed: true }).kitsuneInputPromotionDismissed).toBe(true);
+    expect(persistedSettings(userDataPath).kitsuneInputPromotionDismissed).toBe(true);
+    expect(new SettingsStore(userDataPath).get().kitsuneInputPromotionDismissed).toBe(true);
+    expect(store.restoreDefaults().kitsuneInputPromotionDismissed).toBe(true);
   });
 
   it('persists the wake-on-connect preference', () => {
@@ -74,6 +85,37 @@ describe('SettingsStore', () => {
     expect(updated.wakeOnConnectEnabled).toBe(false);
     expect(persistedSettings(userDataPath).wakeOnConnectEnabled).toBe(false);
     expect(new SettingsStore(userDataPath).get().wakeOnConnectEnabled).toBe(false);
+  });
+
+  it('persists the DualSense Edge persona', () => {
+    const userDataPath = tempUserDataPath();
+    const store = new SettingsStore(userDataPath);
+
+    expect(store.update({ hostPersonaMode: 'dualsense-edge' }).hostPersonaMode)
+      .toBe('dualsense-edge');
+    expect(new SettingsStore(userDataPath).get().hostPersonaMode).toBe('dualsense-edge');
+  });
+
+  it('persists per-stick radial deadzones in the selected controller profile', () => {
+    const userDataPath = tempUserDataPath();
+    const store = new SettingsStore(userDataPath);
+
+    const updated = store.update({
+      leftStickRadialDeadzonePercent: 12.4,
+      rightStickRadialDeadzonePercent: 99
+    });
+
+    expect(updated.leftStickRadialDeadzonePercent).toBe(12);
+    expect(updated.rightStickRadialDeadzonePercent).toBe(50);
+    expect(updated.selectedControllerProfileId).toBe('custom');
+    expect(updated.controllerProfiles.find((profile) => profile.id === 'custom')?.settings).toMatchObject({
+      leftStickRadialDeadzonePercent: 12,
+      rightStickRadialDeadzonePercent: 50
+    });
+    expect(new SettingsStore(userDataPath).get()).toMatchObject({
+      leftStickRadialDeadzonePercent: 12,
+      rightStickRadialDeadzonePercent: 50
+    });
   });
 
   it('migrates legacy custom-only profile data without stealing selection', () => {
@@ -325,8 +367,42 @@ describe('SettingsStore', () => {
       starter: 'ps',
       button: 'triangle',
       functionId: 'media-play'
+    }, {
+      id: 'reserved-lfn-square',
+      kind: 'chord',
+      starter: 'lfn',
+      button: 'square',
+      functionId: 'media-play'
     }]);
     expect(new SettingsStore(userDataPath).get().chordAssignments).toEqual(updated.chordAssignments);
+  });
+
+  it('persists the Edge profile blocker with reserved chord assignments', () => {
+    const userDataPath = tempUserDataPath();
+    const store = new SettingsStore(userDataPath);
+    const functions: ChordFunction[] = [{
+      id: 'edge-action',
+      name: 'Edge Action',
+      type: 'keyboard',
+      keys: ['F13']
+    }];
+    const assignments: ChordAssignment[] = [{
+      id: 'lfn-triangle',
+      kind: 'chord',
+      starter: 'lfn',
+      button: 'triangle',
+      functionId: 'edge-action'
+    }];
+
+    store.update({ edgeProfileSwitchingBlocked: true });
+    const updated = store.setChordConfiguration(functions, assignments);
+
+    expect(updated.edgeProfileSwitchingBlocked).toBe(true);
+    expect(updated.chordAssignments).toEqual(assignments);
+    expect(new SettingsStore(userDataPath).get()).toMatchObject({
+      edgeProfileSwitchingBlocked: true,
+      chordAssignments: assignments
+    });
   });
 
   it('preserves notch controller-setting chord functions', () => {

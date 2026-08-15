@@ -13,6 +13,7 @@
 #include "firmware_log.h"
 #include "host_input.h"
 #include "persona/host_persona.h"
+#include "radial_deadzone.h"
 #include "pico/critical_section.h"
 #include "pico/cyw43_arch.h"
 #include "pico/bootrom.h"
@@ -31,7 +32,7 @@ namespace {
 
 constexpr uint8_t kMagic[] = {'D', 'S', '5', 'B'};
 constexpr uint8_t kProtocolMajor = 1;
-constexpr uint8_t kProtocolMinor = 21;
+constexpr uint8_t kProtocolMinor = 23;
 constexpr uint8_t kProtocolMinSupportedMinor = 7;
 static_assert(DS5_FIRMWARE_VERSION_MAJOR <= 255);
 static_assert(DS5_FIRMWARE_VERSION_MINOR <= 255);
@@ -158,10 +159,12 @@ enum CommandId : uint8_t {
     CommandEnterBootloader = 0x33,
     CommandSetWakeOnConnect = 0x35,
     CommandSetLightbarRestoreEnabled = 0x36,
-    CommandSetWolEnabled = 0x37,
-    CommandSetWolWifiSsid = 0x38,
-    CommandSetWolWifiPassword = 0x39,
-    CommandSetWolTargetMac = 0x3A,
+    CommandSetRadialDeadzones = 0x37,
+    CommandSetEdgeProfileSwitchingBlocked = 0x45,
+    CommandSetWolEnabled = 0x46,
+    CommandSetWolWifiSsid = 0x47,
+    CommandSetWolWifiPassword = 0x48,
+    CommandSetWolTargetMac = 0x49,
 };
 
 enum AckResult : uint8_t {
@@ -268,6 +271,9 @@ struct DynamicChordProcessingResult {
 critical_section_t companion_report_cs;
 uint8_t last_controller_report[63]{};
 bool have_controller_report = false;
+uint8_t last_raw_stick_axes[4]{128, 128, 128, 128};
+bool have_raw_stick_sample = false;
+uint32_t raw_stick_sequence = 0;
 uint16_t settings_revision = 0;
 uint8_t lightbar_red = 0xff;
 uint8_t lightbar_green = 0xd7;
@@ -341,6 +347,9 @@ uint8_t mute_keyboard_modifiers = 0;
 bool mute_button_last_pressed = false;
 bool sleep_keybind_enabled = false;
 bool speaker_volume_shortcut_enabled = false;
+bool edge_profile_switching_blocked = false;
+uint8_t left_stick_radial_deadzone_percent = 0;
+uint8_t right_stick_radial_deadzone_percent = 0;
 bool shortcut_binding_last_pressed[kShortcutBindingCount]{};
 uint32_t shortcut_binding_last_step_us[kShortcutBindingCount]{};
 bool home_chord_gate_active = false;
@@ -849,12 +858,16 @@ void restore_defaults() {
     mute_button_last_pressed = false;
     sleep_keybind_enabled = false;
     speaker_volume_shortcut_enabled = false;
+    edge_profile_switching_blocked = false;
+    left_stick_radial_deadzone_percent = 0;
+    right_stick_radial_deadzone_percent = 0;
     std::fill(shortcut_binding_last_pressed, shortcut_binding_last_pressed + kShortcutBindingCount, false);
     std::fill(shortcut_binding_last_step_us, shortcut_binding_last_step_us + kShortcutBindingCount, 0);
     home_chord_gate_active = false;
     home_chord_gate_until_us = 0;
     home_chord_replay_until_us = 0;
     clear_dynamic_chord_bindings();
+    bt_set_edge_profile_switching_blocked(false);
     clear_shortcut_events();
     mute_keyboard_pending = false;
     mute_keyboard_pressed = false;
@@ -906,9 +919,7 @@ uint8_t firmware_flags() {
 #ifdef ENABLE_COMPANION
     flags |= 1 << 0;
 #endif
-#ifdef ENABLE_DSE
     flags |= 1 << 1;
-#endif
     flags |= 1 << 2;
     flags |= 1 << 3;
     flags |= 1 << 4;
@@ -928,6 +939,9 @@ uint8_t supported_host_persona_mask() {
     }
     if (host_persona_is_supported(HostPersonaModeDs4)) {
         mask |= 1 << HostPersonaModeDs4;
+    }
+    if (host_persona_is_supported(HostPersonaModeDualSenseEdge)) {
+        mask |= 1 << HostPersonaModeDualSenseEdge;
     }
     return mask;
 }
@@ -1325,7 +1339,7 @@ bool valid_chord_button(uint8_t button) {
         && button != RemapHome;
 }
 
-bool reserved_edge_chord_combo(uint8_t starter, uint8_t button) {
+bool edge_profile_switching_chord_combo(uint8_t starter, uint8_t button) {
     if (starter != kChordStarterLfn && starter != kChordStarterRfn) {
         return false;
     }
@@ -1333,6 +1347,11 @@ bool reserved_edge_chord_combo(uint8_t starter, uint8_t button) {
         || button == RemapCircle
         || button == RemapCross
         || button == RemapSquare;
+}
+
+bool reserved_edge_chord_combo(uint8_t starter, uint8_t button) {
+    return !edge_profile_switching_blocked
+        && edge_profile_switching_chord_combo(starter, button);
 }
 
 bool valid_chord_bindings_payload(uint8_t const *payload, uint16_t len, uint16_t count) {
@@ -1378,6 +1397,18 @@ void set_dynamic_chord_bindings(uint8_t const *payload, uint16_t count) {
             false
         };
     }
+}
+
+bool has_edge_profile_switching_chord() {
+    for (uint8_t i = 0; i < dynamic_chord_binding_count; i++) {
+        if (edge_profile_switching_chord_combo(
+            dynamic_chord_bindings[i].starter,
+            static_cast<uint8_t>(dynamic_chord_bindings[i].button)
+        )) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool schedule_adaptive_trigger_test(uint8_t mode, uint8_t target) {
@@ -1769,13 +1800,23 @@ uint16_t build_device_identity(uint8_t *buffer, uint16_t reqlen) {
     return COMPANION_PAYLOAD_SIZE;
 }
 
-uint16_t build_shortcut_event(uint8_t *buffer, uint16_t reqlen) {
+uint16_t build_input_report(uint8_t *buffer, uint16_t reqlen) {
     if (reqlen < COMPANION_PAYLOAD_SIZE) {
         return 0;
     }
 
     memset(buffer, 0, COMPANION_PAYLOAD_SIZE);
     buffer[0] = take_shortcut_event();
+    buffer[1] = 1;
+
+    critical_section_enter_blocking(&companion_report_cs);
+    const bool has_stick_sample = have_raw_stick_sample && bt_is_controller_connected();
+    if (has_stick_sample) {
+        buffer[2] |= 0x01;
+        memcpy(buffer + 3, last_raw_stick_axes, sizeof(last_raw_stick_axes));
+        write_u32(buffer + 7, raw_stick_sequence);
+    }
+    critical_section_exit(&companion_report_cs);
     return COMPANION_PAYLOAD_SIZE;
 }
 
@@ -2444,6 +2485,32 @@ void handle_command(uint8_t const *buffer, uint16_t bufsize) {
             }
             set_dynamic_chord_bindings(buffer + 10, value);
             clear_shortcut_events();
+            settings_revision++;
+            set_ack(command_id, sequence, AckOk);
+            return;
+
+        case CommandSetEdgeProfileSwitchingBlocked:
+            if (value > 1 || (value == 0 && has_edge_profile_switching_chord())) {
+                set_ack(command_id, sequence, AckInvalidValue);
+                return;
+            }
+            edge_profile_switching_blocked = value == 1;
+            bt_set_edge_profile_switching_blocked(edge_profile_switching_blocked);
+            settings_revision++;
+            set_ack(command_id, sequence, AckOk);
+            return;
+
+        case CommandSetRadialDeadzones:
+            if (
+                value != 0
+                || buffer[10] > ds5::radial_deadzone::kMaxPercent
+                || buffer[11] > ds5::radial_deadzone::kMaxPercent
+            ) {
+                set_ack(command_id, sequence, AckInvalidValue);
+                return;
+            }
+            left_stick_radial_deadzone_percent = buffer[10];
+            right_stick_radial_deadzone_percent = buffer[11];
             settings_revision++;
             set_ack(command_id, sequence, AckOk);
             return;
@@ -3121,9 +3188,15 @@ void companion_loop() {
 }
 
 void companion_process_controller_report(uint8_t *report, uint16_t len) {
-    if (len <= 9) {
+    if (report == nullptr || len <= 9) {
         return;
     }
+
+    critical_section_enter_blocking(&companion_report_cs);
+    memcpy(last_raw_stick_axes, report, sizeof(last_raw_stick_axes));
+    have_raw_stick_sample = true;
+    raw_stick_sequence++;
+    critical_section_exit(&companion_report_cs);
 
     const bool home_pressed = (report[9] & kHomeButtonBit) != 0;
     const uint8_t dpad_direction = report[7] & kDpadMask;
@@ -3166,6 +3239,20 @@ void companion_process_controller_report(uint8_t *report, uint16_t len) {
 
     mute_button_last_pressed = mute_pressed;
     apply_button_remap(report, len);
+    const auto left_stick = ds5::radial_deadzone::apply(
+        report[0],
+        report[1],
+        left_stick_radial_deadzone_percent
+    );
+    const auto right_stick = ds5::radial_deadzone::apply(
+        report[2],
+        report[3],
+        right_stick_radial_deadzone_percent
+    );
+    report[0] = left_stick.x;
+    report[1] = left_stick.y;
+    report[2] = right_stick.x;
+    report[3] = right_stick.y;
 }
 
 void companion_update_controller_report(uint8_t const *report, uint16_t len) {
@@ -3383,7 +3470,7 @@ uint16_t companion_get_report(uint8_t report_id, hid_report_type_t report_type, 
         case COMPANION_REPORT_ACK:
             return build_ack(buffer, reqlen);
         case COMPANION_REPORT_INPUT:
-            return build_shortcut_event(buffer, reqlen);
+            return build_input_report(buffer, reqlen);
 #if DS5_AUDIO_DEBUG_ENABLED
         case COMPANION_REPORT_AUDIO_DEBUG:
             return build_audio_debug(buffer, reqlen);
