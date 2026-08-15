@@ -19,6 +19,7 @@
 #include "haptics_test_signal.h"
 #include "kitsune_button_gesture.h"
 #include "output_scheduler.h"
+#include "radial_deadzone.h"
 #include "usb_audio_render_gain.h"
 #include "persona/ds4_persona.h"
 #include "persona/dualsense_persona.h"
@@ -30,6 +31,7 @@ using namespace ds5::output;
 extern "C" bool host_persona_descriptors_verified(HostPersonaMode mode) {
     switch (mode) {
         case HostPersonaModeDualSense:
+        case HostPersonaModeDualSenseEdge:
         case HostPersonaModeXusb360:
         case HostPersonaModeDs4:
             return true;
@@ -291,6 +293,14 @@ void dualsense_audio_section_mask_matches_0x39_layout() {
     EXPECT_EQ(ds5::output::audio_section_enable_mask(false), 0x7e);
     EXPECT_EQ(ds5::output::controller_microphone_transport_mask(true), 0x03);
     EXPECT_EQ(ds5::output::controller_microphone_transport_mask(false), 0x02);
+}
+
+void dualsense_mic_volume_percent_uses_0x30_ceiling() {
+    EXPECT_EQ(mic_volume_from_percent(0), 0x00);
+    EXPECT_EQ(mic_volume_from_percent(50), 0x18);
+    EXPECT_EQ(mic_volume_from_percent(75), 0x24);
+    EXPECT_EQ(mic_volume_from_percent(100), 0x30);
+    EXPECT_EQ(mic_volume_from_percent(255), 0x30);
 }
 
 void classic_rumble_delivery_is_bounded_and_protects_managed_stop() {
@@ -1153,15 +1163,50 @@ void bootsel_gesture_policy_emits_click_double_triple_and_hold() {
 void dualsense_persona_preserves_native_report_bytes() {
     const auto report = sample_dualsense_input_report();
     BridgeControllerState state{};
-    HostPersonaInputReport encoded{};
 
     EXPECT_TRUE(dualsense_decode_usb_input_report(report.data(), report.size(), state));
-    EXPECT_TRUE(host_persona_encode_input(HostPersonaModeDualSense, state, encoded));
-    EXPECT_EQ(encoded.report_id, 0x01);
-    EXPECT_EQ(encoded.len, kDualSenseUsbInputReportSize);
-    for (uint8_t index = 0; index < kDualSenseUsbInputReportSize; index++) {
-        EXPECT_EQ(encoded.bytes[index], report[index]);
+    for (HostPersonaMode const mode : {
+        HostPersonaModeDualSense,
+        HostPersonaModeDualSenseEdge,
+    }) {
+        HostPersonaInputReport encoded{};
+        EXPECT_TRUE(host_persona_encode_input(mode, state, encoded));
+        EXPECT_EQ(encoded.report_id, 0x01);
+        EXPECT_EQ(encoded.len, kDualSenseUsbInputReportSize);
+        for (uint8_t index = 0; index < kDualSenseUsbInputReportSize; index++) {
+            EXPECT_EQ(encoded.bytes[index], report[index]);
+        }
     }
+}
+
+void dualsense_edge_profile_switching_payload_sets_owned_mode_byte() {
+    auto payload = empty_payload();
+    payload[kValidFlag2Offset] = kFlag2LightbarSetupControlEnable;
+
+    EXPECT_TRUE(render_edge_profile_switching_payload(
+        payload.data(),
+        static_cast<uint16_t>(payload.size()),
+        true
+    ));
+    EXPECT_EQ(
+        payload[kValidFlag2Offset],
+        static_cast<uint8_t>(
+            kFlag2LightbarSetupControlEnable
+            | kFlag2EdgeProfileSwitchingControlEnable
+        )
+    );
+    EXPECT_EQ(
+        payload[kEdgeProfileSwitchingModeOffset],
+        kEdgeProfileSwitchingBlocked
+    );
+
+    EXPECT_TRUE(render_edge_profile_switching_payload(
+        payload.data(),
+        static_cast<uint16_t>(payload.size()),
+        false
+    ));
+    EXPECT_EQ(payload[kEdgeProfileSwitchingModeOffset], 0);
+    EXPECT_FALSE(render_edge_profile_switching_payload(nullptr, 0, true));
 }
 
 void xusb360_persona_maps_standard_gamepad_fields() {
@@ -1329,14 +1374,24 @@ void dualsense_persona_feature_reports_cover_identity_probe_surface() {
     std::array<uint8_t, 63> feature{};
 
     feature.fill(0xaa);
-    EXPECT_EQ(dualsense_persona_get_feature_report(0x03, feature.data(), 47), 47);
+    EXPECT_EQ(dualsense_persona_get_feature_report(
+        HostPersonaModeDualSense,
+        0x03,
+        feature.data(),
+        47
+    ), 47);
     EXPECT_TRUE(dualsense_persona_has_synthetic_feature_report(0x03));
     EXPECT_EQ(feature[1], 0x28);
     EXPECT_EQ(feature[3], 0x4e);
     EXPECT_EQ(feature[19], 0x81);
 
     feature.fill(0xaa);
-    EXPECT_EQ(dualsense_persona_get_feature_report(0x05, feature.data(), 40), 40);
+    EXPECT_EQ(dualsense_persona_get_feature_report(
+        HostPersonaModeDualSense,
+        0x05,
+        feature.data(),
+        40
+    ), 40);
     EXPECT_TRUE(dualsense_persona_has_synthetic_feature_report(0x05));
     EXPECT_EQ(feature[6], 0x00);
     EXPECT_EQ(feature[7], 0x04);
@@ -1344,7 +1399,12 @@ void dualsense_persona_feature_reports_cover_identity_probe_surface() {
     EXPECT_EQ(feature[9], 0xfc);
 
     feature.fill(0xaa);
-    EXPECT_EQ(dualsense_persona_get_feature_report(0x09, feature.data(), 19), 19);
+    EXPECT_EQ(dualsense_persona_get_feature_report(
+        HostPersonaModeDualSense,
+        0x09,
+        feature.data(),
+        19
+    ), 19);
     EXPECT_TRUE(dualsense_persona_has_synthetic_feature_report(0x09));
     EXPECT_EQ(feature[0], 0x00);
     EXPECT_EQ(feature[1], 0xa5);
@@ -1354,7 +1414,12 @@ void dualsense_persona_feature_reports_cover_identity_probe_surface() {
     EXPECT_EQ(feature[5], 0x02);
 
     feature.fill(0xaa);
-    EXPECT_EQ(dualsense_persona_get_feature_report(0x20, feature.data(), 63), 63);
+    EXPECT_EQ(dualsense_persona_get_feature_report(
+        HostPersonaModeDualSense,
+        0x20,
+        feature.data(),
+        63
+    ), 63);
     EXPECT_TRUE(dualsense_persona_has_synthetic_feature_report(0x20));
     EXPECT_EQ(feature[0], static_cast<uint8_t>('J'));
     EXPECT_EQ(feature[11], static_cast<uint8_t>('1'));
@@ -1374,7 +1439,37 @@ void dualsense_persona_feature_reports_cover_identity_probe_surface() {
     EXPECT_EQ(feature[55], 0x06);
 
     feature.fill(0xaa);
-    EXPECT_EQ(dualsense_persona_get_feature_report(0x22, feature.data(), 63), 63);
+    EXPECT_EQ(dualsense_persona_get_feature_report(
+        HostPersonaModeDualSenseEdge,
+        0x20,
+        feature.data(),
+        63
+    ), 63);
+    EXPECT_EQ(feature[0], static_cast<uint8_t>('S'));
+    EXPECT_EQ(feature[10], static_cast<uint8_t>('5'));
+    EXPECT_EQ(feature[11], static_cast<uint8_t>('1'));
+    EXPECT_EQ(feature[18], static_cast<uint8_t>('0'));
+    EXPECT_EQ(feature[19], 0x02);
+    EXPECT_EQ(feature[21], 0x44);
+    EXPECT_EQ(feature[23], 0x16);
+    EXPECT_EQ(feature[24], 0x02);
+    EXPECT_EQ(feature[26], 0x01);
+    EXPECT_EQ(feature[27], 0x8b);
+    EXPECT_EQ(feature[30], 0x01);
+    EXPECT_EQ(feature[43], 0x17);
+    EXPECT_EQ(feature[44], 0x02);
+    EXPECT_EQ(feature[47], 0x14);
+    EXPECT_EQ(feature[51], 0x0a);
+    EXPECT_EQ(feature[53], 0x02);
+    EXPECT_EQ(feature[55], 0x06);
+
+    feature.fill(0xaa);
+    EXPECT_EQ(dualsense_persona_get_feature_report(
+        HostPersonaModeDualSense,
+        0x22,
+        feature.data(),
+        63
+    ), 63);
     EXPECT_FALSE(dualsense_persona_has_synthetic_feature_report(0x22));
     for (uint8_t value : feature) {
         EXPECT_EQ(value, 0);
@@ -1413,6 +1508,31 @@ void ds4_feature_reports_cover_native_probe_surface() {
     EXPECT_EQ(feature[4], 0x00);
 }
 
+void radial_deadzone_preserves_direction_and_rescales_remaining_travel() {
+    using ds5::radial_deadzone::apply;
+
+    const auto unchanged = apply(140, 116, 0);
+    EXPECT_EQ(unchanged.x, 140);
+    EXPECT_EQ(unchanged.y, 116);
+
+    const auto centered = apply(140, 128, 10);
+    EXPECT_EQ(centered.x, 128);
+    EXPECT_EQ(centered.y, 128);
+
+    const auto halfway = apply(192, 128, 20);
+    EXPECT_EQ(halfway.x, 176);
+    EXPECT_EQ(halfway.y, 128);
+
+    const auto full_axis = apply(255, 128, 20);
+    EXPECT_EQ(full_axis.x, 255);
+    EXPECT_EQ(full_axis.y, 128);
+
+    const auto diagonal = apply(192, 192, 20);
+    EXPECT_EQ(diagonal.x, diagonal.y);
+    EXPECT_TRUE(diagonal.x > 128);
+    EXPECT_TRUE(diagonal.x < 192);
+}
+
 struct TestCase {
     char const *name;
     void (*run)();
@@ -1425,11 +1545,13 @@ std::vector<TestCase> tests{
     {"scheduler fifo orders host output and audio by arrival", scheduler_fifo_orders_host_output_and_audio_by_arrival},
     {"scheduler fifo timestamp order is wrap safe", scheduler_fifo_timestamp_order_is_wrap_safe},
     {"dualsense audio section mask matches 0x39 layout", dualsense_audio_section_mask_matches_0x39_layout},
+    {"dualsense mic volume percent uses 0x30 ceiling", dualsense_mic_volume_percent_uses_0x30_ceiling},
     {"classic rumble delivery is bounded and protects managed stop", classic_rumble_delivery_is_bounded_and_protects_managed_stop},
     {"classic rumble coalesces latest active without crossing stop", classic_rumble_coalesces_latest_active_without_crossing_stop},
     {"packet compositor initializes bluetooth report and wraps sequence", packet_compositor_initializes_bluetooth_report_and_wraps_sequence},
     {"usb host speaker gain does not attenuate native haptics", usb_host_speaker_gain_does_not_attenuate_native_haptics},
     {"classic rumble gain clamps rounds and touches motor payloads", classic_rumble_gain_clamps_rounds_and_touches_motor_payloads},
+    {"dualsense edge profile switching payload sets owned mode byte", dualsense_edge_profile_switching_payload_sets_owned_mode_byte},
     {"audio haptics replace tracks state without suppressing classic rumble", audio_haptics_replace_tracks_state_without_suppressing_classic_rumble},
     {"speaker sanitizer strips host amp flags and zeroes only controlled fields", speaker_sanitizer_strips_host_amp_flags_and_zeroes_only_controlled_fields},
     {"mic sanitizer removes mute led and only mic power save bit", mic_sanitizer_removes_mute_led_and_only_mic_power_save_bit},
@@ -1464,6 +1586,7 @@ std::vector<TestCase> tests{
     {"ds4 output decodes to ds5 rumble and lightbar payload", ds4_output_decodes_to_ds5_rumble_and_lightbar_payload},
     {"dualsense persona feature reports cover identity probe surface", dualsense_persona_feature_reports_cover_identity_probe_surface},
     {"ds4 feature reports cover native probe surface", ds4_feature_reports_cover_native_probe_surface},
+    {"radial deadzone preserves direction and rescales remaining travel", radial_deadzone_preserves_direction_and_rescales_remaining_travel},
 };
 
 } // namespace

@@ -18,7 +18,8 @@ import {
   isChordBindingAllowed,
   isRemapButtonId,
   normalizeChordControllerSettingStepPercent,
-  normalizeBridgePresetId
+  normalizeBridgePresetId,
+  normalizeRadialDeadzonePercent
 } from '../shared/protocol';
 import type {
   BridgePresetId,
@@ -44,6 +45,8 @@ import type {
 import type { CompanionSettings, UiScalePercent, UiThemePreset } from '../shared/types';
 
 const DEFAULT_CONTROLLER_PROFILE_SETTINGS: ControllerProfileSettings = {
+  leftStickRadialDeadzonePercent: 0,
+  rightStickRadialDeadzonePercent: 0,
   hapticsEnabled: true,
   hapticsGainPercent: 100,
   feedbackBoostEnabled: false,
@@ -74,6 +77,7 @@ const DEFAULT_CONTROLLER_PROFILE_SETTINGS: ControllerProfileSettings = {
   muteKeyboardModifiers: 0,
   muteKeyboardBehavior: 'tap',
   muteKeyboardChordStarterEnabled: false,
+  edgeProfileSwitchingBlocked: false,
   sleepKeybindEnabled: false,
   speakerVolumeShortcutEnabled: false,
   pollingRateMode: '1000',
@@ -102,6 +106,8 @@ const CUSTOM_BUTTON_REMAP_PROFILE: ButtonRemapProfile = {
 };
 
 const CONTROLLER_PROFILE_SETTING_KEYS = new Set<keyof ControllerProfileSettings>([
+  'leftStickRadialDeadzonePercent',
+  'rightStickRadialDeadzonePercent',
   'hapticsEnabled',
   'hapticsGainPercent',
   'feedbackBoostEnabled',
@@ -132,6 +138,7 @@ const CONTROLLER_PROFILE_SETTING_KEYS = new Set<keyof ControllerProfileSettings>
   'muteKeyboardModifiers',
   'muteKeyboardBehavior',
   'muteKeyboardChordStarterEnabled',
+  'edgeProfileSwitchingBlocked',
   'sleepKeybindEnabled',
   'speakerVolumeShortcutEnabled',
   'pollingRateMode',
@@ -146,7 +153,10 @@ export const DEFAULT_SETTINGS: CompanionSettings = {
   uiThemePreset: 'dark',
   launchAtStartupEnabled: false,
   showBatteryPercentTrayIcon: false,
+  kitsuneInputPromotionDismissed: false,
   firmwareLogDirectory: null,
+  leftStickRadialDeadzonePercent: DEFAULT_CONTROLLER_PROFILE_SETTINGS.leftStickRadialDeadzonePercent,
+  rightStickRadialDeadzonePercent: DEFAULT_CONTROLLER_PROFILE_SETTINGS.rightStickRadialDeadzonePercent,
   hapticsEnabled: DEFAULT_CONTROLLER_PROFILE_SETTINGS.hapticsEnabled,
   hapticsGainPercent: DEFAULT_CONTROLLER_PROFILE_SETTINGS.hapticsGainPercent,
   feedbackBoostEnabled: DEFAULT_CONTROLLER_PROFILE_SETTINGS.feedbackBoostEnabled,
@@ -185,6 +195,7 @@ export const DEFAULT_SETTINGS: CompanionSettings = {
   muteKeyboardModifiers: DEFAULT_CONTROLLER_PROFILE_SETTINGS.muteKeyboardModifiers,
   muteKeyboardBehavior: DEFAULT_CONTROLLER_PROFILE_SETTINGS.muteKeyboardBehavior,
   muteKeyboardChordStarterEnabled: DEFAULT_CONTROLLER_PROFILE_SETTINGS.muteKeyboardChordStarterEnabled,
+  edgeProfileSwitchingBlocked: DEFAULT_CONTROLLER_PROFILE_SETTINGS.edgeProfileSwitchingBlocked,
   ledEnabled: true,
   playerLedEnabled: true,
   idleDisconnectEnabled: true,
@@ -236,6 +247,7 @@ function normalizePollingRateMode(value: unknown): CompanionSettings['pollingRat
 
 function normalizeHostPersonaMode(value: unknown): HostPersonaMode {
   switch (value) {
+    case 'dualsense-edge':
     case 'xbox':
     case 'ds4':
       return value;
@@ -353,6 +365,8 @@ function cloneControllerProfileSettings(settings: ControllerProfileSettings): Co
 
 export function controllerProfileSettingsFrom(settings: CompanionSettings): ControllerProfileSettings {
   return {
+    leftStickRadialDeadzonePercent: settings.leftStickRadialDeadzonePercent,
+    rightStickRadialDeadzonePercent: settings.rightStickRadialDeadzonePercent,
     hapticsEnabled: settings.hapticsEnabled,
     hapticsGainPercent: settings.hapticsGainPercent,
     feedbackBoostEnabled: settings.feedbackBoostEnabled,
@@ -383,6 +397,7 @@ export function controllerProfileSettingsFrom(settings: CompanionSettings): Cont
     muteKeyboardModifiers: settings.muteKeyboardModifiers,
     muteKeyboardBehavior: settings.muteKeyboardBehavior,
     muteKeyboardChordStarterEnabled: settings.muteKeyboardChordStarterEnabled,
+    edgeProfileSwitchingBlocked: settings.edgeProfileSwitchingBlocked,
     sleepKeybindEnabled: settings.sleepKeybindEnabled,
     speakerVolumeShortcutEnabled: settings.speakerVolumeShortcutEnabled,
     pollingRateMode: settings.pollingRateMode,
@@ -395,6 +410,8 @@ export function controllerProfileSettingsFrom(settings: CompanionSettings): Cont
 function normalizeControllerProfileSettings(value: unknown): ControllerProfileSettings {
   const candidate = value && typeof value === 'object' ? value as Partial<ControllerProfileSettings> : {};
   return {
+    leftStickRadialDeadzonePercent: normalizeRadialDeadzonePercent(candidate.leftStickRadialDeadzonePercent ?? 0),
+    rightStickRadialDeadzonePercent: normalizeRadialDeadzonePercent(candidate.rightStickRadialDeadzonePercent ?? 0),
     hapticsEnabled: typeof candidate.hapticsEnabled === 'boolean'
       ? candidate.hapticsEnabled
       : DEFAULT_CONTROLLER_PROFILE_SETTINGS.hapticsEnabled,
@@ -472,6 +489,9 @@ function normalizeControllerProfileSettings(value: unknown): ControllerProfileSe
     muteKeyboardChordStarterEnabled: typeof candidate.muteKeyboardChordStarterEnabled === 'boolean'
       ? candidate.muteKeyboardChordStarterEnabled
       : DEFAULT_CONTROLLER_PROFILE_SETTINGS.muteKeyboardChordStarterEnabled,
+    edgeProfileSwitchingBlocked: typeof candidate.edgeProfileSwitchingBlocked === 'boolean'
+      ? candidate.edgeProfileSwitchingBlocked
+      : DEFAULT_CONTROLLER_PROFILE_SETTINGS.edgeProfileSwitchingBlocked,
     sleepKeybindEnabled: typeof candidate.sleepKeybindEnabled === 'boolean'
       ? candidate.sleepKeybindEnabled
       : DEFAULT_CONTROLLER_PROFILE_SETTINGS.sleepKeybindEnabled,
@@ -642,6 +662,7 @@ const CHORD_CONTROLLER_SETTING_ACTIONS = new Set<ChordControllerSettingAction>([
   'toggle-mic-mute',
   'sleep-controller',
   'persona-dualsense',
+  'persona-dualsense-edge',
   'persona-ds4',
   'persona-xbox',
   'speaker-down',
@@ -759,7 +780,7 @@ function normalizeChordAssignment(
     if (
       !isChordStarterId(candidate.starter)
       || !isChordAssignableButtonId(candidate.button)
-      || !isChordBindingAllowed(candidate.starter, candidate.button)
+      || !isChordBindingAllowed(candidate.starter, candidate.button, true)
     ) {
       return null;
     }
@@ -882,9 +903,18 @@ function normalizeSettings(value: Partial<CompanionSettings> | null | undefined)
     showBatteryPercentTrayIcon: typeof value?.showBatteryPercentTrayIcon === 'boolean'
       ? value.showBatteryPercentTrayIcon
       : DEFAULT_SETTINGS.showBatteryPercentTrayIcon,
+    kitsuneInputPromotionDismissed: typeof value?.kitsuneInputPromotionDismissed === 'boolean'
+      ? value.kitsuneInputPromotionDismissed
+      : DEFAULT_SETTINGS.kitsuneInputPromotionDismissed,
     firmwareLogDirectory: typeof value?.firmwareLogDirectory === 'string' && value.firmwareLogDirectory.trim()
       ? value.firmwareLogDirectory.trim()
       : DEFAULT_SETTINGS.firmwareLogDirectory,
+    leftStickRadialDeadzonePercent: normalizeRadialDeadzonePercent(
+      value?.leftStickRadialDeadzonePercent ?? DEFAULT_SETTINGS.leftStickRadialDeadzonePercent
+    ),
+    rightStickRadialDeadzonePercent: normalizeRadialDeadzonePercent(
+      value?.rightStickRadialDeadzonePercent ?? DEFAULT_SETTINGS.rightStickRadialDeadzonePercent
+    ),
     hapticsEnabled: typeof value?.hapticsEnabled === 'boolean'
       ? value.hapticsEnabled
       : DEFAULT_SETTINGS.hapticsEnabled,
@@ -996,6 +1026,9 @@ function normalizeSettings(value: Partial<CompanionSettings> | null | undefined)
     muteKeyboardChordStarterEnabled: typeof value?.muteKeyboardChordStarterEnabled === 'boolean'
       ? value.muteKeyboardChordStarterEnabled
       : DEFAULT_SETTINGS.muteKeyboardChordStarterEnabled,
+    edgeProfileSwitchingBlocked: typeof value?.edgeProfileSwitchingBlocked === 'boolean'
+      ? value.edgeProfileSwitchingBlocked
+      : DEFAULT_SETTINGS.edgeProfileSwitchingBlocked,
     ledEnabled: typeof value?.ledEnabled === 'boolean' ? value.ledEnabled : DEFAULT_SETTINGS.ledEnabled,
     playerLedEnabled: typeof value?.playerLedEnabled === 'boolean'
       ? value.playerLedEnabled
@@ -1110,11 +1143,13 @@ export class SettingsStore {
     const firmwareLogDirectory = this.settings.firmwareLogDirectory;
     const selectedBridgePath = this.settings.selectedBridgePath;
     const bridgeIdentities = this.settings.bridgeIdentities;
+    const kitsuneInputPromotionDismissed = this.settings.kitsuneInputPromotionDismissed;
     this.settings = normalizeSettings({
       ...DEFAULT_SETTINGS,
       firmwareLogDirectory,
       selectedBridgePath,
       bridgeIdentities,
+      kitsuneInputPromotionDismissed,
       selectedControllerProfileId: DEFAULT_CONTROLLER_PROFILE_ID,
       controllerProfiles
     });

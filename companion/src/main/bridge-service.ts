@@ -21,7 +21,9 @@ import {
   bluetoothAddressPayload,
   buildChordBindingsPayload,
   buildCommandReport,
+  buildRadialDeadzonePayload,
   clampAudioInterleaveValues,
+  isChordBindingAllowed,
   parseAckReport,
   parseAudioDebugReport,
   parseAudioStatsReport,
@@ -30,6 +32,7 @@ import {
   parseTriggerTraceReport,
   parseFeedbackTraceReport,
   parseFirmwareLogReport,
+  parseCompanionInputReport,
   parseStatusReport,
   readReportProtocolVersion,
   SHORTCUT_EVENT,
@@ -69,6 +72,7 @@ import type {
   PollingRateMode,
   ReportProtocolVersion,
   ShortcutEvent,
+  StickInputPreviewPayload,
   TriggerTestMode,
   TriggerTestTarget
 } from '../shared/protocol';
@@ -106,6 +110,7 @@ import { WinUsbCompanionTransport } from './winusb-companion-transport';
 const POLL_INTERVAL_MS = 500;
 const SHORTCUT_POLL_INTERVAL_MS = 50;
 const SHORTCUT_POLL_ERROR_RETRY_MS = 250;
+const STICK_INPUT_PREVIEW_LEASE_MS = 1500;
 const AUDIO_STATUS_READ_INTERVAL_MS = 500;
 const AUDIO_DEBUG_READ_INTERVAL_MS = 500;
 const TRIGGER_TRACE_READ_INTERVAL_MS = 250;
@@ -636,9 +641,7 @@ type InputShortcutEvent =
   | { kind: 'shortcut'; event: ShortcutEvent }
   | { kind: 'chord-function'; slot: number };
 
-function parseShortcutEvent(data: Buffer | number[]): InputShortcutEvent | null {
-  const report = Array.from(data);
-  const event = report[0] === REPORT_ID.INPUT ? report[1] : report[0];
+function parseShortcutEvent(event: number): InputShortcutEvent | null {
   if (event >= CHORD_FUNCTION_EVENT_BASE && event < CHORD_FUNCTION_EVENT_BASE + MAX_CHORD_ASSIGNMENTS) {
     return {
       kind: 'chord-function',
@@ -796,13 +799,14 @@ function formatUsbDebugEvent(prefix: string, args: number[]): string {
 }
 
 function normalizeHostPersonaMode(mode: HostPersonaMode): HostPersonaMode {
-  if (mode === 'xbox' || mode === 'ds4') {
+  if (mode === 'dualsense-edge' || mode === 'xbox' || mode === 'ds4') {
     return mode;
   }
   return 'dualsense';
 }
 
 function hostPersonaModeLabel(mode: HostPersonaMode): string {
+  if (mode === 'dualsense-edge') return 'DualSense Edge';
   if (mode === 'ds4') return 'DualShock 4';
   return mode === 'xbox' ? 'Xbox Controller' : 'DualSense';
 }
@@ -1238,10 +1242,14 @@ export class BridgeService extends EventEmitter {
   private pollAgainRequested = false;
   private shortcutPollTimer: NodeJS.Timeout | null = null;
   private shortcutPollInFlight = false;
+  private stickInputPreviewLeaseUntil = 0;
+  private stickInputPreview: StickInputPreviewPayload | null = null;
   private readonly systemAudioHapticsEngine = new SystemAudioHapticsEngine();
   private readonly audioHapticsSessionMonitor = new AudioHapticsSessionMonitor();
   private readonly micKeepaliveEngine = new MicKeepaliveEngine();
   private readonly hidDiscovery = new HidDiscoveryClient();
+  private unavailableDiscoveryRequested = false;
+  private unavailableDevices: HidDeviceSummary[] = [];
   private audioHapticsSessionCache: { key: string; expiresAt: number; sessions: AudioHapticsSession[] } | null = null;
   private audioHapticsSessionListInFlight: Promise<AudioHapticsSession[]> | null = null;
   private audioHapticsSessionListInFlightKey: string | null = null;
@@ -1358,16 +1366,41 @@ export class BridgeService extends EventEmitter {
   }
 
   private async pollShortcutEvent(): Promise<void> {
+    const now = Date.now();
+    if (this.stickInputPreviewLeaseUntil > 0 && this.stickInputPreviewLeaseUntil <= now) {
+      this.stickInputPreviewLeaseUntil = 0;
+      if (this.stickInputPreview !== null) {
+        this.stickInputPreview = null;
+        this.emitSnapshot();
+      }
+    }
+
     const device = this.device;
-    if (!device || Date.now() < this.shortcutFeaturePollRetryAt) {
+    if (!device || now < this.shortcutFeaturePollRetryAt) {
       return;
     }
 
     try {
-      const event = parseShortcutEvent(await device.getFeatureReport(REPORT_ID.INPUT, REPORT_LENGTH));
+      const input = parseCompanionInputReport(
+        await device.getFeatureReport(REPORT_ID.INPUT, REPORT_LENGTH)
+      );
       this.shortcutFeaturePollRetryAt = 0;
+      const event = parseShortcutEvent(input.shortcutEvent);
       if (event !== null) {
         this.enqueueShortcutEvent(event);
+      }
+      if (this.stickInputPreviewLeaseUntil > now) {
+        const nextPreview = input.stickPreview;
+        if (
+          nextPreview?.sequence !== this.stickInputPreview?.sequence
+          || nextPreview?.raw.lx !== this.stickInputPreview?.raw.lx
+          || nextPreview?.raw.ly !== this.stickInputPreview?.raw.ly
+          || nextPreview?.raw.rx !== this.stickInputPreview?.raw.rx
+          || nextPreview?.raw.ry !== this.stickInputPreview?.raw.ry
+        ) {
+          this.stickInputPreview = nextPreview;
+          this.emitSnapshot();
+        }
       }
     } catch {
       // Shortcut polling is optional and should never make the bridge look
@@ -1421,7 +1454,27 @@ export class BridgeService extends EventEmitter {
   }
 
   getSnapshot(): BridgeSnapshot {
-    return structuredClone(this.snapshot);
+    return structuredClone({
+      ...this.snapshot,
+      stickInputPreview: this.stickInputPreviewLeaseUntil > Date.now()
+        ? this.stickInputPreview
+        : null
+    });
+  }
+
+  requestStickInputPreview(): BridgeSnapshot {
+    this.stickInputPreviewLeaseUntil = Date.now() + STICK_INPUT_PREVIEW_LEASE_MS;
+    return this.getSnapshot();
+  }
+
+  releaseStickInputPreview(): BridgeSnapshot {
+    const hadPreview = this.stickInputPreview !== null;
+    this.stickInputPreviewLeaseUntil = 0;
+    this.stickInputPreview = null;
+    if (hadPreview) {
+      this.emitSnapshot();
+    }
+    return this.getSnapshot();
   }
 
   listDevices(): Promise<HidDeviceSummary[]> {
@@ -2606,6 +2659,23 @@ export class BridgeService extends EventEmitter {
     return this.getSnapshot();
   }
 
+  async setRadialDeadzones(leftPercent: number, rightPercent: number): Promise<BridgeSnapshot> {
+    const [leftStickRadialDeadzonePercent, rightStickRadialDeadzonePercent] = buildRadialDeadzonePayload(
+      leftPercent,
+      rightPercent
+    );
+    await this.sendSettingCommand(
+      COMMAND_ID.SET_RADIAL_DEADZONES,
+      0,
+      customSettingUpdate({
+        leftStickRadialDeadzonePercent,
+        rightStickRadialDeadzonePercent
+      }),
+      [leftStickRadialDeadzonePercent, rightStickRadialDeadzonePercent]
+    );
+    return this.getSnapshot();
+  }
+
   async setAudioInterleave(
     maxConsecutiveAudioSends: number,
     stateMaxAgeUs: number
@@ -2706,6 +2776,9 @@ export class BridgeService extends EventEmitter {
         return;
       case 'persona-dualsense':
         await this.setHostPersonaMode('dualsense');
+        return;
+      case 'persona-dualsense-edge':
+        await this.setHostPersonaMode('dualsense-edge');
         return;
       case 'persona-ds4':
         await this.setHostPersonaMode('ds4');
@@ -2983,6 +3056,14 @@ export class BridgeService extends EventEmitter {
   setShowBatteryPercentTrayIcon(enabled: boolean): BridgeSnapshot {
     this.snapshot.settings = this.settingsStore.update({
       showBatteryPercentTrayIcon: enabled
+    });
+    this.emitSnapshot();
+    return this.getSnapshot();
+  }
+
+  setKitsuneInputPromotionDismissed(dismissed: boolean): BridgeSnapshot {
+    this.snapshot.settings = this.settingsStore.update({
+      kitsuneInputPromotionDismissed: dismissed
     });
     this.emitSnapshot();
     return this.getSnapshot();
@@ -3269,6 +3350,25 @@ export class BridgeService extends EventEmitter {
     return this.getSnapshot();
   }
 
+  async setEdgeProfileSwitchingBlocked(enabled: boolean): Promise<BridgeSnapshot> {
+    const connected = this.snapshot.state === 'connected';
+    if (connected && !enabled) {
+      await this.applyChordBindings({
+        ...this.snapshot.settings,
+        edgeProfileSwitchingBlocked: false
+      });
+    }
+    await this.sendSettingCommand(
+      COMMAND_ID.SET_EDGE_PROFILE_SWITCHING_BLOCKED,
+      enabled ? 1 : 0,
+      { edgeProfileSwitchingBlocked: enabled }
+    );
+    if (connected) {
+      await this.applyChordBindings(this.snapshot.settings);
+    }
+    return this.getSnapshot();
+  }
+
   async setChordConfiguration(functions: ChordFunction[], assignments: ChordAssignment[]): Promise<BridgeSnapshot> {
     this.snapshot.settings = this.settingsStore.setChordConfiguration(functions, assignments);
     if (this.snapshot.state === 'connected') {
@@ -3307,9 +3407,16 @@ export class BridgeService extends EventEmitter {
   }
 
   private async applyChordBindings(settings: CompanionSettings): Promise<void> {
-    await this.sendCommand(COMMAND_ID.SET_CHORD_BINDINGS, settings.chordAssignments.length, {
+    const activeAssignments = settings.chordAssignments.filter((assignment) => (
+      isChordBindingAllowed(
+        assignment.starter,
+        assignment.button,
+        settings.edgeProfileSwitchingBlocked
+      )
+    ));
+    await this.sendCommand(COMMAND_ID.SET_CHORD_BINDINGS, activeAssignments.length, {
       throwOnCommandError: false,
-      extraPayload: buildChordBindingsPayload(settings.chordAssignments)
+      extraPayload: buildChordBindingsPayload(activeAssignments)
     });
   }
 
@@ -3559,7 +3666,7 @@ export class BridgeService extends EventEmitter {
     }
     await this.refreshBridgeCensusIfDue();
 
-    const rawDevices = await this.hidDiscovery.listDevices();
+    const rawDevices = await this.refreshUnavailableDevices();
     let status: BridgeStatusPayload | null;
     try {
       status = await this.openAndReadStatus();
@@ -3785,7 +3892,7 @@ export class BridgeService extends EventEmitter {
     this.closeDevice();
     let rawDevices: HidDeviceSummary[] = [];
     try {
-      rawDevices = await this.hidDiscovery.listDevices();
+      rawDevices = await this.refreshUnavailableDevices(true);
     } catch (error) {
       this.publishError(error);
     }
@@ -3909,6 +4016,13 @@ export class BridgeService extends EventEmitter {
         )
       ]
     });
+    await this.sendCommand(COMMAND_ID.SET_RADIAL_DEADZONES, 0, {
+      expectSettingsRevisionChange,
+      extraPayload: buildRadialDeadzonePayload(
+        settings.leftStickRadialDeadzonePercent,
+        settings.rightStickRadialDeadzonePercent
+      )
+    });
     await this.sendCommand(COMMAND_ID.SET_HAPTICS_GAIN, this.effectiveHapticsGain(settings), {
       expectSettingsRevisionChange
     });
@@ -4006,7 +4120,21 @@ export class BridgeService extends EventEmitter {
       { expectSettingsRevisionChange }
     );
     await this.applyButtonRemapping(settings, expectSettingsRevisionChange);
+    if (settings.edgeProfileSwitchingBlocked) {
+      await this.sendCommand(
+        COMMAND_ID.SET_EDGE_PROFILE_SWITCHING_BLOCKED,
+        1,
+        { expectSettingsRevisionChange }
+      );
+    }
     await this.applyChordBindings(settings);
+    if (!settings.edgeProfileSwitchingBlocked) {
+      await this.sendCommand(
+        COMMAND_ID.SET_EDGE_PROFILE_SWITCHING_BLOCKED,
+        0,
+        { expectSettingsRevisionChange }
+      );
+    }
     await this.sendCommand(
       COMMAND_ID.SET_POLLING_RATE_MODE,
       pollingRateModeValue(settings.pollingRateMode),
@@ -4304,9 +4432,31 @@ export class BridgeService extends EventEmitter {
   }
 
   async refreshBridgeDevices(): Promise<BridgeSnapshot> {
-    await this.refreshBridgeCensus();
+    const [, rawDevices] = await Promise.all([
+      this.refreshBridgeCensus(),
+      this.refreshUnavailableDevices(true)
+    ]);
+    if (!this.device) {
+      this.markBridgeUnavailableAfterDisconnect(rawDevices, rawDevices.some(isDualSenseDevice));
+    }
     this.emitSnapshot();
     return this.getSnapshot();
+  }
+
+  private async refreshUnavailableDevices(force = false): Promise<HidDeviceSummary[]> {
+    if (this.device) {
+      return this.unavailableDevices;
+    }
+    if (this.unavailableDiscoveryRequested && !force) {
+      return this.unavailableDevices;
+    }
+    // node-hid performs a full system-wide HID enumeration here. Keep the
+    // initial scan used to classify normal controller firmware, but never
+    // repeat it from the 500 ms poll. Explicit user refreshes and actual
+    // transport-loss events may force another scan.
+    this.unavailableDiscoveryRequested = true;
+    this.unavailableDevices = await this.hidDiscovery.listDevices();
+    return this.unavailableDevices;
   }
 
   private closeDevice(): void {
@@ -4315,6 +4465,7 @@ export class BridgeService extends EventEmitter {
     this.connectedBridgeUniqueId = null;
     this.connectedControllerMac = null;
     this.bindingAppliedForMac = null;
+    this.stickInputPreview = null;
     if (device) {
       try {
         device.removeAllListeners();
@@ -4368,6 +4519,7 @@ export class BridgeService extends EventEmitter {
       personaTransition,
       bridgeDevices: this.bridgeDevicesSnapshot()
     };
+    const publicSnapshot = this.getSnapshot();
     const signature = JSON.stringify({
       state: this.snapshot.state,
       message: this.snapshot.message,
@@ -4380,6 +4532,7 @@ export class BridgeService extends EventEmitter {
       settings: this.snapshot.settings,
       personaTransition: this.snapshot.personaTransition,
       bridgeDevices: this.snapshot.bridgeDevices,
+      stickInputPreview: publicSnapshot.stickInputPreview,
       diagnostics: {
         hidPath: this.snapshot.diagnostics.hidPath,
         protocolVersion: this.snapshot.diagnostics.protocolVersion,
@@ -4410,6 +4563,6 @@ export class BridgeService extends EventEmitter {
       return;
     }
     this.lastEmittedSnapshotSignature = signature;
-    this.emit('snapshot', this.getSnapshot());
+    this.emit('snapshot', publicSnapshot);
   }
 }

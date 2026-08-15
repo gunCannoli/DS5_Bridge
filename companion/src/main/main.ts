@@ -417,8 +417,10 @@ function isAppFileUrl(url: string, appIndexPath: string): boolean {
 
 function isAllowedExternalUrl(url: string): boolean {
   return /^https:\/\/ko-fi\.com\/sundaymoments\/?$/i.test(url)
+    || /^https:\/\/ko-fi\.com\/s\/d1f0a3b26f\/?$/i.test(url)
     || /^https:\/\/github\.com\/SundayMoments\/?$/i.test(url)
-    || /^https:\/\/discord\.gg\/By5jhh73wr\/?$/i.test(url);
+    || /^https:\/\/discord\.gg\/By5jhh73wr\/?$/i.test(url)
+    || /^https:\/\/kitsuneinput\.com\/?$/i.test(url);
 }
 
 function createWindow(uiScalePercent: UiScalePercent): BrowserWindow {
@@ -1062,6 +1064,11 @@ function registerIpc(service: BridgeService): void {
     service.deleteControllerProfile(profileId)
   ));
   ipcMain.handle('bridge:setHapticsGain', (_event, value: number) => service.setHapticsGain(value));
+  ipcMain.handle('bridge:setRadialDeadzones', (_event, leftPercent: number, rightPercent: number) => (
+    service.setRadialDeadzones(leftPercent, rightPercent)
+  ));
+  ipcMain.handle('bridge:requestStickInputPreview', () => service.requestStickInputPreview());
+  ipcMain.handle('bridge:releaseStickInputPreview', () => service.releaseStickInputPreview());
   ipcMain.handle('bridge:setHapticsEnabled', (_event, value: boolean) => service.setHapticsEnabled(value));
   ipcMain.handle('bridge:setFeedbackBoostEnabled', (_event, value: boolean) => (
     service.setFeedbackBoostEnabled(value)
@@ -1168,6 +1175,9 @@ function registerIpc(service: BridgeService): void {
   ipcMain.handle('bridge:setShowBatteryPercentTrayIcon', (_event, value: boolean) => (
     service.setShowBatteryPercentTrayIcon(Boolean(value))
   ));
+  ipcMain.handle('bridge:setKitsuneInputPromotionDismissed', (_event, value: boolean) => (
+    service.setKitsuneInputPromotionDismissed(Boolean(value))
+  ));
   ipcMain.handle('bridge:setPollingRateMode', (_event, value: PollingRateMode) => (
     service.setPollingRateMode(value)
   ));
@@ -1239,6 +1249,9 @@ function registerIpc(service: BridgeService): void {
   ipcMain.handle('bridge:restoreButtonRemappingDefaults', () => service.restoreButtonRemappingDefaults());
   ipcMain.handle('bridge:setChordConfiguration', (_event, functions: ChordFunction[], assignments: ChordAssignment[]) => (
     service.setChordConfiguration(functions, assignments)
+  ));
+  ipcMain.handle('bridge:setEdgeProfileSwitchingBlocked', (_event, value: boolean) => (
+    service.setEdgeProfileSwitchingBlocked(value)
   ));
   ipcMain.handle('bridge:setChordFunctions', (_event, functions: ChordFunction[]) => (
     service.setChordFunctions(functions)

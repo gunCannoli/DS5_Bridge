@@ -45,6 +45,15 @@ const api = {
     ipcRenderer.invoke('bridge:deleteControllerProfile', profileId)
   ),
   setHapticsGain: (value: number): Promise<BridgeSnapshot> => ipcRenderer.invoke('bridge:setHapticsGain', value),
+  setRadialDeadzones: (leftPercent: number, rightPercent: number): Promise<BridgeSnapshot> => (
+    ipcRenderer.invoke('bridge:setRadialDeadzones', leftPercent, rightPercent)
+  ),
+  requestStickInputPreview: (): Promise<BridgeSnapshot> => (
+    ipcRenderer.invoke('bridge:requestStickInputPreview')
+  ),
+  releaseStickInputPreview: (): Promise<BridgeSnapshot> => (
+    ipcRenderer.invoke('bridge:releaseStickInputPreview')
+  ),
   setHapticsEnabled: (value: boolean): Promise<BridgeSnapshot> => ipcRenderer.invoke('bridge:setHapticsEnabled', value),
   setFeedbackBoostEnabled: (value: boolean): Promise<BridgeSnapshot> => (
     ipcRenderer.invoke('bridge:setFeedbackBoostEnabled', value)
@@ -158,6 +167,9 @@ const api = {
   setShowBatteryPercentTrayIcon: (value: boolean): Promise<BridgeSnapshot> => (
     ipcRenderer.invoke('bridge:setShowBatteryPercentTrayIcon', value)
   ),
+  setKitsuneInputPromotionDismissed: (value: boolean): Promise<BridgeSnapshot> => (
+    ipcRenderer.invoke('bridge:setKitsuneInputPromotionDismissed', value)
+  ),
   setUiScalePercent: (value: number): Promise<BridgeSnapshot> => ipcRenderer.invoke('bridge:setUiScalePercent', value),
   setUiThemePreset: (value: UiThemePreset): Promise<BridgeSnapshot> => (
     ipcRenderer.invoke('bridge:setUiThemePreset', value)
@@ -227,6 +239,9 @@ const api = {
   ),
   setChordConfiguration: (functions: ChordFunction[], assignments: ChordAssignment[]): Promise<BridgeSnapshot> => (
     ipcRenderer.invoke('bridge:setChordConfiguration', functions, assignments)
+  ),
+  setEdgeProfileSwitchingBlocked: (value: boolean): Promise<BridgeSnapshot> => (
+    ipcRenderer.invoke('bridge:setEdgeProfileSwitchingBlocked', value)
   ),
   setChordFunctions: (functions: ChordFunction[]): Promise<BridgeSnapshot> => (
     ipcRenderer.invoke('bridge:setChordFunctions', functions)

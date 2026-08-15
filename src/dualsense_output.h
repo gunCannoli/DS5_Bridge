@@ -34,6 +34,7 @@ constexpr uint8_t kFlag1AudioControl2Enable = 0x80;
 constexpr uint8_t kFlag2LightbarSetupControlEnable = 0x02;
 constexpr uint8_t kFlag2EnableImprovedRumbleEmulation = 0x04;
 constexpr uint8_t kFlag2UseRumbleNotHaptics2 = 0x08;
+constexpr uint8_t kFlag2EdgeProfileSwitchingControlEnable = 0x40;
 
 constexpr uint8_t kAudioFlagsOutputPathHeadphones = 0x00;
 constexpr uint8_t kAudioFlagsOutputPathSpeaker = 0x30;
@@ -42,7 +43,7 @@ constexpr uint8_t kPowerSaveControlMicMute = 0x10;
 
 constexpr uint8_t kHeadphoneVolumeMax = 0x7f;
 constexpr uint8_t kSpeakerVolumeMax = 0x64;
-constexpr uint8_t kMicVolumeMax = 0x40;
+constexpr uint8_t kMicVolumeMax = 0x30;
 // DualSense 0x39 declares seven audio sections. Bit 7 is reserved and must
 // remain clear; bit 0 controls controller-microphone transport.
 constexpr uint8_t kAudioSectionEnableMask = 0x7f;
@@ -77,6 +78,7 @@ constexpr uint8_t kTriggerPowerOffset = 36;
 constexpr uint8_t kAudioControl2Offset = 37;
 constexpr uint8_t kValidFlag2Offset = 38;
 constexpr uint8_t kHapticLowPassFilterOffset = 39;
+constexpr uint8_t kEdgeProfileSwitchingModeOffset = 40;
 constexpr uint8_t kLightFadeAnimationOffset = 41;
 constexpr uint8_t kLedBrightnessOffset = 42;
 constexpr uint8_t kPlayerLedsOffset = 43;
@@ -87,6 +89,12 @@ constexpr uint8_t kLightbarBlueOffset = 46;
 constexpr uint8_t kLightbarSetupControlMask = 0x03;
 constexpr uint8_t kHostLedControlMask = 0x04 | 0x08 | 0x10;
 constexpr uint8_t kHostLightbarSetupMask = 0x01 | 0x02;
+constexpr uint8_t kEdgeProfileSwitchingBlocked = 0x80;
+
+constexpr uint8_t mic_volume_from_percent(uint8_t volume_percent) {
+    const uint8_t clamped = volume_percent > 100 ? 100 : volume_percent;
+    return static_cast<uint8_t>((static_cast<uint16_t>(clamped) * kMicVolumeMax + 50) / 100);
+}
 
 inline bool payload_has_len(uint16_t len, uint8_t offset) {
     return len > offset;
@@ -141,6 +149,24 @@ inline uint8_t controller_microphone_transport_mask(bool enabled) {
         kControllerMicrophoneTransportBaseMask
         | (enabled ? kAudioSectionControllerMicrophone : 0)
     );
+}
+
+inline bool render_edge_profile_switching_payload(
+    uint8_t *payload,
+    uint16_t payload_len,
+    bool blocked
+) {
+    if (
+        payload == nullptr
+        || !payload_has_len(payload_len, kEdgeProfileSwitchingModeOffset)
+    ) {
+        return false;
+    }
+    payload[kValidFlag2Offset] |= kFlag2EdgeProfileSwitchingControlEnable;
+    payload[kEdgeProfileSwitchingModeOffset] = blocked
+        ? kEdgeProfileSwitchingBlocked
+        : 0;
+    return true;
 }
 
 } // namespace ds5::output

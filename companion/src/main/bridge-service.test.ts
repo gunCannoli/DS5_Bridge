@@ -113,7 +113,7 @@ type StatusOverrides = {
   firmwarePatch?: number;
   firmwareFlags?: number;
   statusFlags?: number;
-  hostPersonaMode?: 'dualsense' | 'xbox' | 'ds4';
+  hostPersonaMode?: 'dualsense' | 'dualsense-edge' | 'xbox' | 'ds4';
   supportedHostPersonaModesMask?: number;
   micMuted?: boolean;
   wakeOnConnectEnabled?: boolean;
@@ -124,6 +124,7 @@ const FULL_REAPPLY_COMMANDS = [
   COMMAND_ID.SET_LIGHTBAR_COLOR,
   COMMAND_ID.SET_LIGHTBAR_OVERRIDE,
   COMMAND_ID.SET_MUTE_BUTTON_ACTION,
+  COMMAND_ID.SET_RADIAL_DEADZONES,
   COMMAND_ID.SET_HAPTICS_GAIN,
   COMMAND_ID.SET_HAPTICS_BUFFER_LENGTH,
   COMMAND_ID.SET_AUDIO_INTERLEAVE,
@@ -147,6 +148,7 @@ const FULL_REAPPLY_COMMANDS = [
   COMMAND_ID.SET_SPEAKER_VOLUME_SHORTCUT_ENABLED,
   COMMAND_ID.SET_BUTTON_REMAP,
   COMMAND_ID.SET_CHORD_BINDINGS,
+  COMMAND_ID.SET_EDGE_PROFILE_SWITCHING_BLOCKED,
   COMMAND_ID.SET_POLLING_RATE_MODE,
   COMMAND_ID.SET_HOST_PERSONA
 ];
@@ -160,6 +162,7 @@ class MockHidDevice extends EventEmitter {
   firmwareLogReports: number[][] = [];
   deviceIdentity = deviceIdentityReport();
   shortcutEvents: number[] = [];
+  inputReports: number[][] = [];
   shortcutReadError: Error | null = null;
   featureReportIds: number[] = [];
   sentReports: number[][] = [];
@@ -228,7 +231,7 @@ class MockHidDevice extends EventEmitter {
       if (this.shortcutReadError) {
         throw this.shortcutReadError;
       }
-      return shortcutEventReport(this.shortcutEvents.shift() ?? 0);
+      return [...(this.inputReports.shift() ?? shortcutEventReport(this.shortcutEvents.shift() ?? 0))];
     }
     throw new Error(`Unexpected report ID: ${reportId}`);
   }
@@ -335,7 +338,11 @@ function statusReport(overrides: StatusOverrides = {}): number[] {
   report[28] = overrides.firmwareFlags ?? 1;
   writeU16(report, 29, overrides.speakerVolumePercent ?? 30);
   writeU16(report, 43, overrides.idleDisconnectTimeoutMinutes ?? 15);
-  report[48] = overrides.hostPersonaMode === 'xbox' ? 1 : overrides.hostPersonaMode === 'ds4' ? 2 : 0;
+  report[48] = overrides.hostPersonaMode === 'dualsense-edge'
+    ? 7
+    : overrides.hostPersonaMode === 'xbox'
+      ? 1
+      : overrides.hostPersonaMode === 'ds4' ? 2 : 0;
   report[49] = overrides.supportedHostPersonaModesMask ?? 0;
   report[50] = overrides.wakeOnConnectEnabled === false ? 0 : 1;
   report[51] = overrides.micMuted ? 1 : 0;
@@ -500,6 +507,22 @@ function audioStatusReport(overrides: Partial<{
   return report;
 }
 
+function stickInputReport(
+  raw: { lx: number; ly: number; rx: number; ry: number },
+  sequence: number,
+  event = 0
+): number[] {
+  const report = shortcutEventReport(event);
+  report[2] = 1;
+  report[3] = 0x01;
+  report[4] = raw.lx;
+  report[5] = raw.ly;
+  report[6] = raw.rx;
+  report[7] = raw.ry;
+  writeU32(report, 8, sequence);
+  return report;
+}
+
 function firmwareLogReport(bytes: number[], options: {
   enabled?: boolean;
   sequence?: number;
@@ -613,6 +636,41 @@ describe('BridgeService', () => {
     expect(service.getSnapshot().message).toBe('Companion firmware required');
   });
 
+  it('does not repeat full HID discovery during disconnected polling', async () => {
+    const service = serviceFixture();
+
+    await poll(service);
+    await poll(service);
+    await poll(service);
+
+    expect(hidMock.devices).toHaveBeenCalledTimes(1);
+
+    hidMock.state.devicesList = [normalFirmwareDeviceInfo()];
+    const refreshed = await service.refreshBridgeDevices();
+
+    expect(hidMock.devices).toHaveBeenCalledTimes(2);
+    expect(refreshed.state).toBe('normal-firmware');
+    expect(refreshed.message).toBe('Companion firmware required');
+  });
+
+  it('connects when the Pico enumerates after the initial HID discovery', async () => {
+    const service = serviceFixture();
+
+    await poll(service);
+    await poll(service);
+    expect(service.getSnapshot().state).toBe('no-bridge');
+    expect(hidMock.devices).toHaveBeenCalledTimes(1);
+
+    const device = new MockHidDevice();
+    hidMock.state.openDevices.set('companion-path', device);
+    await poll(service);
+
+    expect(service.getSnapshot().state).toBe('connected');
+    expect(service.getSnapshot().message).toBe('Companion firmware connected');
+    expect(winUsbTransportMock.open).toHaveBeenCalledTimes(3);
+    expect(hidMock.devices).toHaveBeenCalledTimes(1);
+  });
+
   it('treats WinUSB transport close as a bridge disconnect', async () => {
     const service = serviceFixture();
     const device = new MockHidDevice();
@@ -674,6 +732,28 @@ describe('BridgeService', () => {
     await poll(service);
 
     expect(device.listenerCount('data')).toBe(0);
+  });
+
+  it('publishes raw stick movement only while the deadzone preview lease is active', async () => {
+    const service = serviceFixture();
+    const device = new MockHidDevice();
+    hidMock.state.devicesList = [companionDeviceInfo()];
+    hidMock.state.openDevices.set('companion-path', device);
+    await poll(service);
+
+    device.inputReports.push(stickInputReport({ lx: 140, ly: 128, rx: 200, ry: 64 }, 7));
+    service.requestStickInputPreview();
+    await pollShortcut(service);
+
+    expect(service.getSnapshot().stickInputPreview).toEqual({
+      sequence: 7,
+      raw: { lx: 140, ly: 128, rx: 200, ry: 64 }
+    });
+    expect(service.releaseStickInputPreview().stickInputPreview).toBeNull();
+
+    device.inputReports.push(stickInputReport({ lx: 255, ly: 255, rx: 0, ry: 0 }, 8));
+    await pollShortcut(service);
+    expect(service.getSnapshot().stickInputPreview).toBeNull();
   });
 
   it('blocks emergency Windows device repair while a controller is connected to the bridge', async () => {
@@ -1025,6 +1105,7 @@ describe('BridgeService', () => {
   });
 
   it.each([
+    ['dualsense-edge' as const],
     ['ds4' as const],
     ['xbox' as const]
   ])('plays test haptics through the %s persona audio endpoint', async (hostPersonaMode) => {
@@ -1602,6 +1683,22 @@ describe('BridgeService', () => {
     expect(snapshot.settings.usbSuspendDisconnectEnabled).toBe(false);
   });
 
+  it('plays test speaker through the isolated DualSense Edge audio endpoint', async () => {
+    const service = serviceFixture({ speakerVolumePercent: 65 });
+    const device = new MockHidDevice();
+    device.status = statusReport({
+      hostPersonaMode: 'dualsense-edge',
+      supportedHostPersonaModesMask: 0x80
+    });
+    hidMock.state.devicesList = [companionDeviceInfo()];
+    hidMock.state.openDevices.set('companion-path', device);
+
+    await poll(service);
+    await service.testSpeaker();
+
+    expect(audioHelperMock.playBridgeSpeakerTestTone).toHaveBeenCalledWith(65, 'dualsense-edge');
+  });
+
   it('sends and stores wake-on-connect settings', async () => {
     const service = serviceFixture();
     const device = new MockHidDevice();
@@ -1854,6 +1951,76 @@ describe('BridgeService', () => {
     expect(service.getSnapshot().settings.speakerVolumePercent).toBe(55);
     const volumeCommand = device.sentReports.filter((report) => report[7] === COMMAND_ID.SET_SPEAKER_VOLUME).at(-1);
     expect(volumeCommand?.[9]).toBe(55);
+  });
+
+  it('orders the Edge profile blocker safely and keeps reserved chords stored while inactive', async () => {
+    const service = serviceFixture();
+    const device = new MockHidDevice();
+    device.status = statusReport({
+      controllerConnected: true,
+      settingsRevision: 4
+    });
+    hidMock.state.devicesList = [companionDeviceInfo()];
+    hidMock.state.openDevices.set('companion-path', device);
+
+    await poll(service);
+    await flushReapply();
+    device.sentReports = [];
+    await service.setChordConfiguration([{
+      id: 'edge-action',
+      name: 'Edge Action',
+      type: 'keyboard',
+      keys: ['F13']
+    }], [{
+      id: 'lfn-triangle',
+      kind: 'chord',
+      starter: 'lfn',
+      button: 'triangle',
+      functionId: 'edge-action'
+    }]);
+
+    expect(device.sentReports.at(-1)?.[7]).toBe(COMMAND_ID.SET_CHORD_BINDINGS);
+    expect(device.sentReports.at(-1)?.[9]).toBe(0);
+
+    device.sentReports = [];
+    let snapshot = await service.setEdgeProfileSwitchingBlocked(true);
+    expect(device.sentReports.map((report) => [report[7], report[9]])).toEqual([
+      [COMMAND_ID.SET_EDGE_PROFILE_SWITCHING_BLOCKED, 1],
+      [COMMAND_ID.SET_CHORD_BINDINGS, 1]
+    ]);
+    expect(snapshot.settings.edgeProfileSwitchingBlocked).toBe(true);
+    expect(snapshot.settings.chordAssignments).toHaveLength(1);
+
+    device.sentReports = [];
+    snapshot = await service.setEdgeProfileSwitchingBlocked(false);
+    expect(device.sentReports.map((report) => [report[7], report[9]])).toEqual([
+      [COMMAND_ID.SET_CHORD_BINDINGS, 0],
+      [COMMAND_ID.SET_EDGE_PROFILE_SWITCHING_BLOCKED, 0],
+      [COMMAND_ID.SET_CHORD_BINDINGS, 0]
+    ]);
+    expect(snapshot.settings.edgeProfileSwitchingBlocked).toBe(false);
+    expect(snapshot.settings.chordAssignments).toHaveLength(1);
+  });
+
+  it('applies only the two radial deadzone percentages to firmware', async () => {
+    const service = serviceFixture();
+    const device = new MockHidDevice();
+    device.status = statusReport({ controllerConnected: true, settingsRevision: 4 });
+    hidMock.state.devicesList = [companionDeviceInfo()];
+    hidMock.state.openDevices.set('companion-path', device);
+
+    await poll(service);
+    await flushReapply();
+    device.sentReports = [];
+
+    const snapshot = await service.setRadialDeadzones(12.4, 99);
+    const report = device.sentReports.at(-1);
+    expect(report?.[7]).toBe(COMMAND_ID.SET_RADIAL_DEADZONES);
+    expect(report?.slice(9, 13)).toEqual([0, 0, 12, 50]);
+    expect(snapshot.settings).toMatchObject({
+      leftStickRadialDeadzonePercent: 12,
+      rightStickRadialDeadzonePercent: 50
+    });
   });
 
   it('applies arbitrary whole-number chord steps without coarse slider notches', async () => {
@@ -2351,6 +2518,27 @@ describe('BridgeService', () => {
     expect(snapshot.diagnostics.lastAck?.resultCode).toBe(ACK_RESULT.OK);
   });
 
+  it('sends and stores DualSense Edge host persona settings', async () => {
+    const service = serviceFixture();
+    const device = new MockHidDevice();
+    device.status = statusReport({
+      controllerConnected: false,
+      supportedHostPersonaModesMask: 0x80
+    });
+    hidMock.state.devicesList = [companionDeviceInfo()];
+    hidMock.state.openDevices.set('companion-path', device);
+
+    await poll(service);
+    const snapshot = await service.setHostPersonaMode('dualsense-edge');
+
+    const command = device.sentReports.at(-1);
+    expect(command?.[7]).toBe(COMMAND_ID.SET_HOST_PERSONA);
+    expect(command?.[9]).toBe(7);
+    expect(snapshot.settings.hostPersonaMode).toBe('dualsense-edge');
+    expect(snapshot.message).toBe('Switching to DualSense Edge mode');
+    expect(snapshot.personaTransition?.to).toBe('dualsense-edge');
+  });
+
   it('polls controller identity as supplementary bridge diagnostics', async () => {
     const service = serviceFixture();
     const device = new MockHidDevice();
@@ -2608,6 +2796,14 @@ describe('BridgeService', () => {
 
     snapshot = await service.setNotifyLowBattery(true);
     expect(snapshot.settings.notifyLowBattery).toBe(true);
+  });
+
+  it('stores permanent Kitsune Input promotion dismissal without firmware traffic', () => {
+    const service = serviceFixture();
+
+    const snapshot = service.setKitsuneInputPromotionDismissed(true);
+
+    expect(snapshot.settings.kitsuneInputPromotionDismissed).toBe(true);
   });
 
   it('emits controller connect and disconnect toasts on status transitions', async () => {

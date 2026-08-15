@@ -4,7 +4,7 @@ export const REPORT_LENGTH = 64;
 export const PAYLOAD_LENGTH = 63;
 export const MAGIC = 'DS5B';
 export const PROTOCOL_MAJOR = 1;
-export const PROTOCOL_MINOR = 21;
+export const PROTOCOL_MINOR = 23;
 
 export const REPORT_ID = {
   STATUS: 0x01,
@@ -97,11 +97,28 @@ export const COMMAND_ID = {
   SET_AUDIO_INTERLEAVE: 0x34,
   SET_WAKE_ON_CONNECT: 0x35,
   SET_LIGHTBAR_RESTORE_ENABLED: 0x36,
-  SET_WOL_ENABLED: 0x37,
-  SET_WOL_WIFI_SSID: 0x38,
-  SET_WOL_WIFI_PASSWORD: 0x39,
-  SET_WOL_TARGET_MAC: 0x3A
+  SET_RADIAL_DEADZONES: 0x37,
+  SET_EDGE_PROFILE_SWITCHING_BLOCKED: 0x45,
+  SET_WOL_ENABLED: 0x46,
+  SET_WOL_WIFI_SSID: 0x47,
+  SET_WOL_WIFI_PASSWORD: 0x48,
+  SET_WOL_TARGET_MAC: 0x49
 } as const;
+
+export const RADIAL_DEADZONE_MAX_PERCENT = 50;
+
+export function normalizeRadialDeadzonePercent(value: number): number {
+  return Math.max(0, Math.min(RADIAL_DEADZONE_MAX_PERCENT, Math.round(
+    Number.isFinite(value) ? value : 0
+  )));
+}
+
+export function buildRadialDeadzonePayload(leftPercent: number, rightPercent: number): number[] {
+  return [
+    normalizeRadialDeadzonePercent(leftPercent),
+    normalizeRadialDeadzonePercent(rightPercent)
+  ];
+}
 
 export const ACK_RESULT = {
   OK: 0x00,
@@ -117,6 +134,20 @@ export const ACK_RESULT = {
 
 export type AckResultCode = typeof ACK_RESULT[keyof typeof ACK_RESULT];
 export type ShortcutEvent = typeof SHORTCUT_EVENT[keyof typeof SHORTCUT_EVENT];
+export interface RawStickAxes {
+  lx: number;
+  ly: number;
+  rx: number;
+  ry: number;
+}
+export interface StickInputPreviewPayload {
+  sequence: number;
+  raw: RawStickAxes;
+}
+export interface CompanionInputReportPayload {
+  shortcutEvent: number;
+  stickPreview: StickInputPreviewPayload | null;
+}
 export type MuteButtonMode = 'normal' | 'keyboard' | 'quiet' | 'chord';
 export type MuteKeyboardBehavior = 'tap' | 'hold';
 export type TriggerTestMode = 'feedback' | 'weapon' | 'vibration';
@@ -129,7 +160,7 @@ export interface AdaptiveTriggerPreviewEffect {
   forcePercent: number;
 }
 export type PollingRateMode = '250' | '500' | '1000';
-export type HostPersonaMode = 'dualsense' | 'xbox' | 'ds4';
+export type HostPersonaMode = 'dualsense' | 'dualsense-edge' | 'xbox' | 'ds4';
 export const CHORD_FUNCTION_EVENT_BASE = 0x20;
 export const MAX_CHORD_ASSIGNMENTS = 16;
 export const MAX_CHORD_FUNCTION_NAME_LENGTH = 16;
@@ -221,6 +252,7 @@ export type ChordControllerSettingAction =
   | 'toggle-mic-mute'
   | 'sleep-controller'
   | 'persona-dualsense'
+  | 'persona-dualsense-edge'
   | 'persona-ds4'
   | 'persona-xbox'
   | 'speaker-down'
@@ -271,6 +303,8 @@ export interface ButtonRemapProfile {
 }
 
 export interface ControllerProfileSettings {
+  leftStickRadialDeadzonePercent: number;
+  rightStickRadialDeadzonePercent: number;
   hapticsEnabled: boolean;
   hapticsGainPercent: number;
   feedbackBoostEnabled: boolean;
@@ -301,6 +335,7 @@ export interface ControllerProfileSettings {
   muteKeyboardModifiers: number;
   muteKeyboardBehavior: MuteKeyboardBehavior;
   muteKeyboardChordStarterEnabled: boolean;
+  edgeProfileSwitchingBlocked: boolean;
   sleepKeybindEnabled: boolean;
   speakerVolumeShortcutEnabled: boolean;
   pollingRateMode: PollingRateMode;
@@ -344,8 +379,20 @@ export function isChordAssignableButtonId(value: unknown): value is ChordAssigna
   return typeof value === 'string' && (CHORD_ASSIGNABLE_BUTTON_IDS as readonly string[]).includes(value);
 }
 
-export function isChordBindingAllowed(starter: ChordStarterId, button: ChordAssignableButtonId): boolean {
-  return starter === 'ps' || !(CHORD_EDGE_RESERVED_FACE_BUTTON_IDS as readonly string[]).includes(button);
+export function isChordBindingAllowed(
+  starter: ChordStarterId,
+  button: ChordAssignableButtonId,
+  edgeProfileSwitchingBlocked = false
+): boolean {
+  return edgeProfileSwitchingBlocked || !isEdgeProfileSwitchingChord(starter, button);
+}
+
+export function isEdgeProfileSwitchingChord(
+  starter: ChordStarterId,
+  button: ChordAssignableButtonId
+): boolean {
+  return (starter === 'lfn' || starter === 'rfn')
+    && (CHORD_EDGE_RESERVED_FACE_BUTTON_IDS as readonly string[]).includes(button);
 }
 
 export function defaultChordControllerSettingStepPercent(action: ChordControllerSettingAction): number {
@@ -673,6 +720,41 @@ function readU32(report: ArrayLike<number>, offset: number): number {
   ) >>> 0;
 }
 
+export function parseCompanionInputReport(report: ArrayLike<number>): CompanionInputReportPayload {
+  if (report.length !== REPORT_LENGTH) {
+    throw new ProtocolError(`Expected ${REPORT_LENGTH} bytes, received ${report.length}.`, 'bad-length');
+  }
+  if (report[0] !== REPORT_ID.INPUT) {
+    throw new ProtocolError(
+      `Expected report ID 0x${REPORT_ID.INPUT.toString(16)}, received 0x${report[0].toString(16)}.`,
+      'bad-report-id'
+    );
+  }
+
+  const schemaVersion = report[2];
+  if (schemaVersion === 0) {
+    return { shortcutEvent: report[1], stickPreview: null };
+  }
+  if (schemaVersion !== 1) {
+    throw new ProtocolError(`Unsupported companion input schema ${schemaVersion}.`, 'bad-schema');
+  }
+
+  return {
+    shortcutEvent: report[1],
+    stickPreview: (report[3] & 0x01) !== 0
+      ? {
+          sequence: readU32(report, 8),
+          raw: {
+            lx: report[4],
+            ly: report[5],
+            rx: report[6],
+            ry: report[7]
+          }
+        }
+      : null
+  };
+}
+
 export interface FirmwareLogPayload {
   enabled: boolean;
   sequence: number;
@@ -711,12 +793,14 @@ export function pollingRateModeValue(mode: PollingRateMode): number {
 }
 
 export function hostPersonaModeValue(mode: HostPersonaMode): number {
+  if (mode === 'dualsense-edge') return 7;
   if (mode === 'xbox') return 1;
   if (mode === 'ds4') return 2;
   return 0;
 }
 
 function hostPersonaMode(value: number): HostPersonaMode {
+  if (value === 7) return 'dualsense-edge';
   if (value === 2) return 'ds4';
   return value === 1 ? 'xbox' : 'dualsense';
 }
@@ -731,6 +815,9 @@ function supportedHostPersonaModes(mask: number): HostPersonaMode[] {
   }
   if ((mask & 0x04) !== 0) {
     modes.push('ds4');
+  }
+  if ((mask & 0x80) !== 0) {
+    modes.push('dualsense-edge');
   }
   return modes.length === 0 ? ['dualsense'] : modes;
 }

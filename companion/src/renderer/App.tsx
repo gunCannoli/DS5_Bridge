@@ -1,3 +1,5 @@
+import '@fontsource/montserrat/latin-500.css';
+import '@fontsource/montserrat/latin-600.css';
 import { type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
@@ -5,7 +7,7 @@ import {
   IconAdjustmentsSpark,
   IconActivity as Activity,
   IconAdjustmentsHorizontal as Settings2,
-  IconAdjustmentsHorizontal as SlidersHorizontal,
+  IconViewfinder,
   IconAlertHexagon,
   IconAlertTriangle,
   IconArrowRight as ArrowRight,
@@ -22,6 +24,8 @@ import {
   IconDeviceFloppy as Save,
   IconDeviceGamepad2,
   IconDeviceGamepad3,
+  IconExternalLink,
+  IconEyeOff,
   IconFlame,
   IconFlask2,
   IconBrandDeezer,
@@ -84,7 +88,13 @@ import r2GlyphUrl from '../../../assets/glyphs/ps5-buttons-outline-white/svg/R2.
 import rightStickClickGlyphUrl from '../../../assets/glyphs/ps5-buttons-outline-white/svg/Right Stick Click.svg';
 import squareGlyphUrl from '../../../assets/glyphs/ps5-buttons-outline-white/svg/Square.svg';
 import triangleGlyphUrl from '../../../assets/glyphs/ps5-buttons-outline-white/svg/Triangle.svg';
+import kitsuneInputLogoUrl from './assets/kitsune-input-logo.svg';
 import testSpeakerToneUrl from './assets/test-speaker-tone-silence-tail.mp3';
+import {
+  bridgeAudioInputLabelScore,
+  bridgeAudioOutputLabelScore,
+  isBridgeAudioDeviceLabel
+} from './audio-endpoint-matching';
 import {
   DEFAULT_UI_THEME_PRESET,
   UI_THEME_KOFI_BADGES,
@@ -101,13 +111,15 @@ import {
   MAX_CHORD_ASSIGNMENTS,
   MAX_CHORD_FUNCTION_NAME_LENGTH,
   MAX_KEYBOARD_FUNCTION_KEYS,
+  RADIAL_DEADZONE_MAX_PERCENT,
   REMAP_BUTTON_IDS,
   WOL_WIFI_PASSWORD_MAX_LENGTH,
   WOL_WIFI_SSID_MAX_LENGTH,
   ProtocolError,
   ackResultName,
   normalizeChordControllerSettingStepPercent,
-  isChordBindingAllowed
+  isChordBindingAllowed,
+  normalizeRadialDeadzonePercent
 } from '../shared/protocol';
 import type {
   AudioReactiveHapticsBassFocus,
@@ -149,8 +161,9 @@ import {
   type ControllerDeviceForgetDialog,
   type ControllerDeviceRenameDialog
 } from './ControllerDevicesPage';
+import { radialDeadzonePreview, stickPositionPercent } from './radial-deadzone-preview';
 
-type ControlTab = 'overview' | 'devices' | 'haptics' | 'audio-haptics' | 'audio' | 'triggers' | 'trigger-lab' | 'lighting' | 'remapping' | 'chords' | 'system';
+type ControlTab = 'overview' | 'devices' | 'haptics' | 'audio-haptics' | 'audio' | 'triggers' | 'trigger-lab' | 'lighting' | 'deadzones' | 'remapping' | 'chords' | 'system';
 type SidebarControlTab = ControlTab;
 type ControlTabDefinition = Readonly<{ id: SidebarControlTab; label: string; Icon: TablerIcon }>;
 type ControlTabGroupId = 'controller' | 'input' | 'labs';
@@ -284,7 +297,7 @@ type LightbarPaletteCell = {
   name: string;
 };
 type FeatureTipsPanelProps = {
-  tab: 'audio' | 'haptics' | 'triggers' | 'lighting';
+  tab: 'audio' | 'haptics' | 'triggers' | 'lighting' | 'deadzones';
   onSettingsFocusRequest?: (target: SettingsFocusTarget) => void;
   audioHapticsOpen?: boolean;
   triggerLabOpen?: boolean;
@@ -292,6 +305,8 @@ type FeatureTipsPanelProps = {
 type SettingsFocusTarget = 'controller-power-saving' | 'sleep-shortcut' | 'volume-shortcut';
 type NotificationFocusTarget = 'controller-status' | 'low-battery' | 'all';
 
+const KITSUNE_INPUT_URL = 'https://kitsuneinput.com/';
+const KITSUNE_INPUT_PURCHASE_URL = 'https://ko-fi.com/s/d1f0a3b26f';
 const HAPTICS_STEP = 20;
 const STANDARD_FEEDBACK_GAIN_PERCENT = 200;
 const BOOSTED_FEEDBACK_GAIN_PERCENT = 500;
@@ -304,6 +319,8 @@ const AUDIO_BUFFER_LENGTH_RISKY_MAX = 63;
 const LIGHTBAR_BRIGHTNESS_STEP = 10;
 const TRIGGER_EFFECT_STEP = 10;
 const CONTROLLER_POWER_SAVING_CAP_PERCENT = 60;
+const RADIAL_DEADZONE_PRESETS = [0, 5, 10, 20] as const;
+const RADIAL_DEADZONE_TICKS = Array.from({ length: 11 }, (_, index) => index * 5);
 const TEST_HAPTICS_LOCK_MS = 1100;
 const TEST_SPEAKER_LOCK_MS = 900;
 const TEST_MIC_LISTEN_MS = 5000;
@@ -356,10 +373,8 @@ const PERCENT_SLIDER_TICKS = Array.from({ length: 11 }, (_, index) => index * 10
 const TRIGGER_LAB_SLIDER_STEP = 5;
 const TRIGGER_LAB_SLIDER_TICKS = Array.from({ length: 21 }, (_, index) => index * TRIGGER_LAB_SLIDER_STEP);
 const STANDARD_HAPTICS_SLIDER_TICKS = Array.from({ length: 11 }, (_, index) => index * 20);
-const BRIDGE_AUDIO_OUTPUT_RE = /ds5|dualsense|dual sense|wireless controller|bridge/i;
-const BRIDGE_AUDIO_INPUT_RE = /ds5|dualsense|dual sense|wireless controller|bridge/i;
-const BRIDGE_AUDIO_ENDPOINT_UNAVAILABLE = 'DualSense audio endpoint unavailable';
-const BRIDGE_MIC_ENDPOINT_UNAVAILABLE = 'DualSense microphone unavailable';
+const BRIDGE_AUDIO_ENDPOINT_UNAVAILABLE = 'Controller audio endpoint unavailable';
+const BRIDGE_MIC_ENDPOINT_UNAVAILABLE = 'Controller microphone unavailable';
 const MUTE_KEY_OPTIONS: Array<[string, number]> = [
   ['F1', 0x3A], ['F2', 0x3B], ['F3', 0x3C], ['F4', 0x3D], ['F5', 0x3E], ['F6', 0x3F],
   ['F7', 0x40], ['F8', 0x41], ['F9', 0x42], ['F10', 0x43], ['F11', 0x44], ['F12', 0x45],
@@ -417,9 +432,16 @@ const POLLING_RATE_OPTIONS: Array<[string, PollingRateMode]> = [
 ];
 const HOST_PERSONA_OPTIONS: Array<[string, HostPersonaMode]> = [
   ['DualSense', 'dualsense'],
+  ['DualSense Edge', 'dualsense-edge'],
   ['DualShock 4', 'ds4'],
   ['Xbox', 'xbox']
 ];
+const HOST_PERSONA_SHORT_LABELS: Record<HostPersonaMode, string> = {
+  dualsense: 'DS',
+  'dualsense-edge': 'DSE',
+  ds4: 'DS4',
+  xbox: 'XBOX'
+};
 const SPEAKER_GAIN_OPTIONS: Array<[string, number]> = [
   ['1', 1],
   ['2', 2],
@@ -588,6 +610,7 @@ const CHORD_CONTROLLER_SETTING_ACTION_OPTIONS: Array<[string, ChordControllerSet
   ['Mic Mute', 'toggle-mic-mute'],
   ['Sleep Controller', 'sleep-controller'],
   ['DualSense', 'persona-dualsense'],
+  ['DualSense Edge', 'persona-dualsense-edge'],
   ['DualShock 4', 'persona-ds4'],
   ['Xbox', 'persona-xbox'],
   ...CHORD_NOTCH_TARGETS.map((target): [string, ChordNotchTargetId] => [target.label, target.id])
@@ -749,6 +772,7 @@ const CONTROL_TAB_DEFINITIONS: Record<SidebarControlTab, ControlTabDefinition> =
   triggers: { id: 'triggers', label: 'Adaptive Triggers', Icon: IconDeviceGamepad2 },
   'trigger-lab': { id: 'trigger-lab', label: 'Trigger Lab', Icon: IconFlask2 },
   lighting: { id: 'lighting', label: 'Lighting', Icon: IconBulb },
+  deadzones: { id: 'deadzones', label: 'Stick Deadzones', Icon: IconViewfinder },
   remapping: { id: 'remapping', label: 'Button Remapping', Icon: IconDeviceGamepad3 },
   chords: { id: 'chords', label: 'Chords', Icon: IconReplace },
   system: { id: 'system', label: 'System', Icon: IconCpu }
@@ -772,6 +796,7 @@ const CONTROL_TAB_GROUPS: readonly ControlTabGroupDefinition[] = [
     label: 'Input',
     Icon: IconReplace,
     tabs: [
+      CONTROL_TAB_DEFINITIONS.deadzones,
       CONTROL_TAB_DEFINITIONS.remapping,
       CONTROL_TAB_DEFINITIONS.chords
     ]
@@ -1272,6 +1297,111 @@ function BridgeMark() {
   );
 }
 
+function KitsuneInputWordmark() {
+  return (
+    <span className="kitsune-promotion-wordmark" aria-label="Kitsune Input">
+      <span className="kitsune-promotion-wordmark-kitsune">Kitsune</span>
+      <span className="kitsune-promotion-wordmark-input">Input</span>
+    </span>
+  );
+}
+
+function KitsuneInputPromotionDialog({
+  dismissing,
+  onClose,
+  onDismissForever,
+  onLearnMore,
+  onPurchase
+}: {
+  dismissing: boolean;
+  onClose(): void;
+  onDismissForever(): void;
+  onLearnMore(): void;
+  onPurchase(): void;
+}) {
+  return (
+    <div className="modal-backdrop kitsune-promotion-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="settings-menu kitsune-promotion-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="kitsune-promotion-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <button
+          className="modal-close-button kitsune-promotion-close"
+          type="button"
+          aria-label="Close Kitsune Input promotion"
+          onClick={onClose}
+        >
+          <X size={18} />
+        </button>
+
+        <header className="kitsune-promotion-hero">
+          <img className="kitsune-promotion-hero-logo" src={kitsuneInputLogoUrl} alt="" />
+          <div className="kitsune-promotion-hero-copy">
+            <KitsuneInputWordmark />
+            <h2 id="kitsune-promotion-title">Take controller customization further</h2>
+            <p>Deeper tuning, smarter profiles, and controller-first tools.</p>
+          </div>
+        </header>
+
+        <div className="kitsune-promotion-feature-grid">
+          <article className="kitsune-promotion-feature-card">
+            <div className="kitsune-promotion-feature-kicker">
+              <span>01</span>
+              <strong>Advanced Inputs</strong>
+            </div>
+            <ul>
+              <li>Advanced Stick Tuning</li>
+              <li>Advanced Trigger Tuning</li>
+              <li>Gyro Aim</li>
+              <li>Touchpad Gestures</li>
+              <li>Kitsune Cursor</li>
+              <li>Kitsune Keyboard</li>
+            </ul>
+          </article>
+
+          <article className="kitsune-promotion-feature-card">
+            <div className="kitsune-promotion-feature-kicker">
+              <span>02</span>
+              <strong>Game-Aware Tools</strong>
+            </div>
+            <ul>
+              <li>Per-game Profiles</li>
+              <li>Multi-Actions</li>
+              <li>Automatic Game Library</li>
+              <li>Kitsune Game Bar</li>
+              <li>More Personas &amp; Xbox Impulse Triggers</li>
+              <li>Mod API</li>
+            </ul>
+          </article>
+        </div>
+
+        <footer className="kitsune-promotion-actions">
+          <button type="button" className="primary-action" onClick={onPurchase}>
+            <IconExternalLink size={16} />
+            Purchase
+          </button>
+          <button type="button" className="secondary-action kitsune-promotion-learn" onClick={onLearnMore}>
+            Learn More
+            <ArrowRight size={16} />
+          </button>
+          <button
+            type="button"
+            className="secondary-action kitsune-promotion-dismiss"
+            disabled={dismissing}
+            onClick={onDismissForever}
+          >
+            <IconEyeOff size={16} />
+            {dismissing ? 'Dismissing…' : "Don't show Kitsune Input promotions again"}
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
 function StartupScreen({ ready }: { ready: boolean }) {
   return (
     <main className={`startup-screen ${ready ? 'ready' : ''}`} aria-live="polite">
@@ -1421,80 +1551,97 @@ function FeatureTipsPanel({
     title: string;
     text: string;
     tone?: 'success';
-  }> = [
-    {
-      key: 'toggle',
-      icon: <IconSparkleHighlight size={16} />,
-      title: 'Feature Tiles',
-      text: 'Click the square icon tile to enable or disable that feature.'
-    },
-    {
-      key: 'unavailable',
-      icon: <Settings2 size={16} />,
-      title: 'Unavailable',
-      text: 'Dimmed controls need the bridge, controller, or matching feature enabled.'
+  }> = tab === 'deadzones'
+    ? [
+        {
+          key: 'tune-each-stick',
+          icon: <IconViewfinder size={16} />,
+          title: 'Tune Each Stick',
+          text: 'Raise each value only until that stick rests cleanly at center.'
+        },
+        {
+          key: 'keep-it-low',
+          icon: <IconCircleCheck size={16} />,
+          title: 'Keep It Low',
+          text: 'Use the lowest stable value; larger deadzones reduce fine movement near center.'
+        }
+      ]
+    : [
+        {
+          key: 'toggle',
+          icon: <IconSparkleHighlight size={16} />,
+          title: 'Feature Tiles',
+          text: 'Click the square icon tile to enable or disable that feature.'
+        },
+        {
+          key: 'unavailable',
+          icon: <Settings2 size={16} />,
+          title: 'Unavailable',
+          text: 'Dimmed controls need the bridge, controller, or matching feature enabled.'
+        }
+      ];
+
+  if (tab !== 'deadzones') {
+    if (tab === 'triggers' && triggerLabOpen) {
+      tips.push({
+        key: 'trigger-lab-override',
+        icon: <IconFlask2 size={16} />,
+        title: 'Lab Override',
+        text: 'Active Lab effects stay applied and ignore incoming game trigger output.'
+      });
+    } else if (tab === 'haptics' && audioHapticsOpen) {
+      tips.push({
+        key: 'audio-haptics',
+        icon: <IconDeviceAudioTape size={16} />,
+        title: 'Audio Haptics',
+        text: 'Audio Haptics turns system audio into haptic feedback.'
+      });
+    } else if (tab === 'audio') {
+      tips.push({
+        key: 'headphones',
+        icon: <Headphones size={16} />,
+        title: 'Headphones',
+        text: 'Headphones use the same Pico-local audio path as the controller speaker.'
+      });
+    } else {
+      tips.push({
+        key: 'power-saving',
+        icon: <IconBatteryEco size={16} />,
+        title: 'Green Icon',
+        text: 'Power saving is temporarily capping this setting while headphones are connected.',
+        tone: 'success'
+      });
     }
-  ];
 
-  if (tab === 'triggers' && triggerLabOpen) {
-    tips.push({
-      key: 'trigger-lab-override',
-      icon: <IconFlask2 size={16} />,
-      title: 'Lab Override',
-      text: 'Active Lab effects stay applied and ignore incoming game trigger output.'
-    });
-  } else if (tab === 'haptics' && audioHapticsOpen) {
-    tips.push({
-      key: 'audio-haptics',
-      icon: <IconDeviceAudioTape size={16} />,
-      title: 'Audio Haptics',
-      text: 'Audio Haptics turns system audio into haptic feedback.'
-    });
-  } else if (tab === 'audio') {
-    tips.push({
-      key: 'headphones',
-      icon: <Headphones size={16} />,
-      title: 'Headphones',
-      text: 'Headphones use the same Pico-local audio path as the controller speaker.'
-    });
-  } else {
-    tips.push({
-      key: 'power-saving',
-      icon: <IconBatteryEco size={16} />,
-      title: 'Green Icon',
-      text: 'Power saving is temporarily capping this setting while headphones are connected.',
-      tone: 'success'
-    });
-  }
-
-  if (tab === 'triggers' && triggerLabOpen) {
-    tips.push({
-      key: 'trigger-lab-link',
-      icon: triggerLabLinkTipSplit ? <LinkOffIcon size={16} /> : <LinkIcon size={16} />,
-      title: 'Linked / Split',
-      text: 'When Linked is on, the selected effect mirrors across L2 and R2. Split keeps each trigger separate.'
-    });
-  } else if (tab === 'haptics' && audioHapticsOpen) {
-    tips.push({
-      key: 'audio-haptics-mode',
-      icon: <IconBrandDeezer size={16} />,
-      title: 'Mix / Replace',
-      text: 'Mix adds audio feedback to native haptics and rumble; Replace uses only the derived audio feel.'
-    });
-  } else if (tab === 'lighting') {
-    tips.push({
-      key: 'custom-color',
-      icon: <Palette size={16} />,
-      title: 'Custom Color',
-      text: 'Double-click the final color swatch to choose a custom lightbar color.'
-    });
-  } else {
-    tips.push({
-      key: 'tests',
-      icon: <Play size={16} />,
-      title: 'Tests',
-      text: 'Tests may pause while a game or audio stream is actively using the controller.'
-    });
+    if (tab === 'triggers' && triggerLabOpen) {
+      tips.push({
+        key: 'trigger-lab-link',
+        icon: triggerLabLinkTipSplit ? <LinkOffIcon size={16} /> : <LinkIcon size={16} />,
+        title: 'Linked / Split',
+        text: 'When Linked is on, the selected effect mirrors across L2 and R2. Split keeps each trigger separate.'
+      });
+    } else if (tab === 'haptics' && audioHapticsOpen) {
+      tips.push({
+        key: 'audio-haptics-mode',
+        icon: <IconBrandDeezer size={16} />,
+        title: 'Mix / Replace',
+        text: 'Mix adds audio feedback to native haptics and rumble; Replace uses only the derived audio feel.'
+      });
+    } else if (tab === 'lighting') {
+      tips.push({
+        key: 'custom-color',
+        icon: <Palette size={16} />,
+        title: 'Custom Color',
+        text: 'Double-click the final color swatch to choose a custom lightbar color.'
+      });
+    } else {
+      tips.push({
+        key: 'tests',
+        icon: <Play size={16} />,
+        title: 'Tests',
+        text: 'Tests may pause while a game or audio stream is actively using the controller.'
+      });
+    }
   }
 
   return (
@@ -1556,6 +1703,8 @@ function FeatureTipsPanel({
 
 function controllerProfileSettingsFromSnapshot(snapshot: BridgeSnapshot): ControllerProfileSettings {
   return {
+    leftStickRadialDeadzonePercent: snapshot.settings.leftStickRadialDeadzonePercent,
+    rightStickRadialDeadzonePercent: snapshot.settings.rightStickRadialDeadzonePercent,
     hapticsEnabled: snapshot.settings.hapticsEnabled,
     hapticsGainPercent: snapshot.settings.hapticsGainPercent,
     feedbackBoostEnabled: snapshot.settings.feedbackBoostEnabled,
@@ -1578,6 +1727,7 @@ function controllerProfileSettingsFromSnapshot(snapshot: BridgeSnapshot): Contro
     muteKeyboardModifiers: snapshot.settings.muteKeyboardModifiers,
     muteKeyboardBehavior: snapshot.settings.muteKeyboardBehavior,
     muteKeyboardChordStarterEnabled: snapshot.settings.muteKeyboardChordStarterEnabled,
+    edgeProfileSwitchingBlocked: snapshot.settings.edgeProfileSwitchingBlocked,
     sleepKeybindEnabled: snapshot.settings.sleepKeybindEnabled,
     speakerVolumeShortcutEnabled: snapshot.settings.speakerVolumeShortcutEnabled,
     pollingRateMode: snapshot.settings.pollingRateMode,
@@ -1673,6 +1823,7 @@ function SystemProfileSummary({
           <div><dt>Haptics</dt><dd className={ecoValueClass(hapticsEcoLimited)}>{settings.hapticsEnabled ? (hapticsEcoLimited ? effectiveEcoPercent(settings.hapticsGainPercent) : percentLabel(settings.hapticsGainPercent)) : 'Off'}</dd></div>
           <div><dt>Rumble</dt><dd className={ecoValueClass(rumbleEcoLimited)}>{settings.classicRumbleEnabled ? (rumbleEcoLimited ? effectiveEcoPercent(settings.classicRumbleGainPercent) : percentLabel(settings.classicRumbleGainPercent)) : 'Off'}</dd></div>
           <div><dt>Triggers</dt><dd className={ecoValueClass(triggersEcoLimited)}>{settings.adaptiveTriggersEnabled ? (triggersEcoLimited ? effectiveEcoPercent(settings.triggerEffectIntensityPercent) : percentLabel(settings.triggerEffectIntensityPercent)) : 'Off'}</dd></div>
+          <div><dt>Stick DZ</dt><dd>{`${settings.leftStickRadialDeadzonePercent}% / ${settings.rightStickRadialDeadzonePercent}%`}</dd></div>
         </dl>
       </div>
 
@@ -1696,6 +1847,7 @@ function SystemProfileSummary({
         <dl>
           <div><dt>Mute</dt><dd>{muteButtonSummary(settings)}</dd></div>
           <div><dt>Polling</dt><dd>{optionLabel(POLLING_RATE_OPTIONS, settings.pollingRateMode)}</dd></div>
+          <div><dt>Edge Profiles</dt><dd>{settings.edgeProfileSwitchingBlocked ? 'Blocked' : 'Available'}</dd></div>
           <div><dt>Power Save</dt><dd>{enabledLabel(settings.controllerPowerSavingEnabled)}</dd></div>
         </dl>
       </div>
@@ -1851,38 +2003,12 @@ function hexByte(value: number): string {
   return value.toString(16).padStart(2, '0').toUpperCase();
 }
 
-function normalizeAudioDeviceLabel(label: string): string {
-  return label
-    .toLowerCase()
-    .replace(/^\s*\d+\s*-\s*/, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function isBridgeAudioLabel(label: string): boolean {
-  return BRIDGE_AUDIO_OUTPUT_RE.test(normalizeAudioDeviceLabel(label));
-}
-
 function bridgeAudioOutputScore(device: MediaDeviceInfo): number {
-  const label = normalizeAudioDeviceLabel(device.label);
-  let score = 1;
-  if (label.includes('dualsense') || label.includes('dual sense')) score += 4;
-  if (label.includes('wireless controller')) score += 3;
-  if (label.includes('speaker') || label.includes('headphone') || label.includes('headset')) score += 2;
-  if (label.includes('microphone') || label.includes('mic')) score -= 4;
-  if (label.includes('ds5') || label.includes('bridge')) score += 1;
-  return score;
+  return bridgeAudioOutputLabelScore(device.label);
 }
 
 function bridgeAudioInputScore(device: MediaDeviceInfo): number {
-  const label = normalizeAudioDeviceLabel(device.label);
-  let score = 1;
-  if (label.includes('dualsense') || label.includes('dual sense')) score += 4;
-  if (label.includes('wireless controller')) score += 3;
-  if (label.includes('microphone') || label.includes('mic')) score += 2;
-  if (label.includes('speaker') || label.includes('headphone')) score -= 4;
-  if (label.includes('ds5') || label.includes('bridge')) score += 1;
-  return score;
+  return bridgeAudioInputLabelScore(device.label);
 }
 
 async function findBridgeAudioOutputIdOnce(): Promise<string | null> {
@@ -1894,7 +2020,7 @@ async function findBridgeAudioOutputIdOnce(): Promise<string | null> {
     const devices = await navigator.mediaDevices.enumerateDevices();
     const outputs = devices.filter((device) => (
       device.kind === 'audiooutput'
-      && isBridgeAudioLabel(device.label)
+      && isBridgeAudioDeviceLabel(device.label)
       && device.deviceId
       && device.deviceId !== 'default'
       && device.deviceId !== 'communications'
@@ -1916,7 +2042,7 @@ async function findBridgeAudioInputIdOnce(): Promise<string | null> {
     const devices = await navigator.mediaDevices.enumerateDevices();
     const inputs = devices.filter((device) => (
       device.kind === 'audioinput'
-      && BRIDGE_AUDIO_INPUT_RE.test(normalizeAudioDeviceLabel(device.label))
+      && isBridgeAudioDeviceLabel(device.label)
       && device.deviceId
       && device.deviceId !== 'default'
       && device.deviceId !== 'communications'
@@ -2543,7 +2669,7 @@ function ChordButtonGlyphOption({ label, value }: { label: string; value: ChordB
 }
 
 function HostPersonaOption({ label, value }: { label: string; value: HostPersonaMode }) {
-  const sonyPersona = value === 'dualsense' || value === 'ds4';
+  const sonyPersona = value === 'dualsense' || value === 'dualsense-edge' || value === 'ds4';
   return (
     <span className="host-persona-option">
       {sonyPersona ? (
@@ -2681,6 +2807,8 @@ function chordControllerSettingSummary(action: ChordControllerSettingAction, ste
       return 'Sleep Controller';
     case 'persona-dualsense':
       return 'Set Persona: DualSense';
+    case 'persona-dualsense-edge':
+      return 'Set Persona: DualSense Edge';
     case 'persona-ds4':
       return 'Set Persona: DualShock 4';
     case 'persona-xbox':
@@ -2844,6 +2972,8 @@ export function App() {
   const [activeControlTab, setActiveControlTab] = useState<ControlTab>('overview');
   const [openControlGroupId, setOpenControlGroupId] = useState<ControlTabGroupId | null>(null);
   const [hapticsValue, setHapticsValue] = useState(100);
+  const [leftStickRadialDeadzoneValue, setLeftStickRadialDeadzoneValue] = useState(0);
+  const [rightStickRadialDeadzoneValue, setRightStickRadialDeadzoneValue] = useState(0);
   const [classicRumbleValue, setClassicRumbleValue] = useState(100);
   const [speakerVolumeValue, setSpeakerVolumeValue] = useState(100);
   const [micVolumeValue, setMicVolumeValue] = useState(100);
@@ -2910,6 +3040,7 @@ export function App() {
   const [settingsFocusTarget, setSettingsFocusTarget] = useState<SettingsFocusTarget | null>(null);
   const [notificationFocusTarget, setNotificationFocusTarget] = useState<NotificationFocusTarget | null>(null);
   const [showNotificationsMenu, setShowNotificationsMenu] = useState(false);
+  const [showKitsuneInputPromotion, setShowKitsuneInputPromotion] = useState(false);
   const [showClassicRumbleControl, setShowClassicRumbleControl] = useState(false);
   const [showMicrophoneControl, setShowMicrophoneControl] = useState(false);
   const [lastRemapControllerType, setLastRemapControllerType] = useState<KnownControllerType>(storedRemapControllerType);
@@ -2923,6 +3054,7 @@ export function App() {
   const [micTestError, setMicTestError] = useState<string | null>(null);
   const [triggerTestLocked, setTriggerTestLocked] = useState(false);
   const [hapticsCommitPending, setHapticsCommitPending] = useState(false);
+  const [radialDeadzoneCommitPending, setRadialDeadzoneCommitPending] = useState(false);
   const [classicRumbleCommitPending, setClassicRumbleCommitPending] = useState(false);
   const [classicRumbleV1CommitPending, setClassicRumbleV1CommitPending] = useState(false);
   const [feedbackBoostCommitPending, setFeedbackBoostCommitPending] = useState(false);
@@ -2941,6 +3073,7 @@ export function App() {
   const [picoFirmwareMessage, setPicoFirmwareMessage] = useState<string | null>(null);
   const [picoFirmwareError, setPicoFirmwareError] = useState<string | null>(null);
   const hapticsEditingRef = useRef(false);
+  const radialDeadzoneEditingRef = useRef({ left: false, right: false });
   const classicRumbleEditingRef = useRef(false);
   const speakerVolumeEditingRef = useRef(false);
   const micVolumeEditingRef = useRef(false);
@@ -2978,6 +3111,19 @@ export function App() {
   useEffect(() => {
     saveTriggerLabCustomProfiles(triggerLabCustomProfiles);
   }, [triggerLabCustomProfiles]);
+
+  useEffect(() => {
+    if (!showKitsuneInputPromotion) {
+      return undefined;
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowKitsuneInputPromotion(false);
+      }
+    };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [showKitsuneInputPromotion]);
 
   useEffect(() => {
     const liveTheme = snapshot?.settings.uiThemePreset;
@@ -3077,6 +3223,7 @@ export function App() {
   const remappingLayoutAsset = showDualSenseEdgeRemapButtons ? REMAP_EDGE_LAYOUT_ASSET : REMAP_STANDARD_LAYOUT_ASSET;
   const chordFunctions = snapshot?.settings.chordFunctions ?? [];
   const chordAssignments = snapshot?.settings.chordAssignments ?? [];
+  const edgeProfileSwitchingBlocked = Boolean(snapshot?.settings.edgeProfileSwitchingBlocked);
   const muteButtonChordStarterActive = snapshot?.settings.muteButtonMode === 'chord'
     || (
       snapshot?.settings.muteButtonMode === 'keyboard'
@@ -3118,10 +3265,19 @@ export function App() {
         conflictKeys.add(key);
         conflictCount += 1;
       }
+      if (!isChordBindingAllowed(
+        assignment.starter,
+        assignment.button,
+        edgeProfileSwitchingBlocked
+      )) {
+        conflictKeys.add(key);
+        conflictCount += 1;
+      }
     }
     return { conflictKeys, conflictCount };
   }, [
     chordAssignments,
+    edgeProfileSwitchingBlocked,
     muteButtonChordStarterActive,
     snapshot?.settings.sleepKeybindEnabled,
     snapshot?.settings.speakerVolumeShortcutEnabled
@@ -3159,18 +3315,25 @@ export function App() {
   }
   function chordButtonOptionsFor(
     starter: ChordStarterId,
-    includeUnassigned = false
+    includeUnassigned = false,
+    currentButton?: ChordAssignableButtonId
   ): Array<[string, ChordButtonSelectValue]> {
-    const ids = chordAssignableButtonIds;
+    const ids = chordAssignableButtonIds.filter((id) => (
+      isChordBindingAllowed(starter, id, edgeProfileSwitchingBlocked)
+    ));
+    if (currentButton && !ids.includes(currentButton)) {
+      ids.push(currentButton);
+    }
     const options = ids
-      .filter((id) => isChordBindingAllowed(starter, id))
       .map((id): [string, ChordButtonSelectValue] => [chordButtonLabel(id), id]);
     return includeUnassigned
       ? [['Choose Button', CHORD_UNASSIGNED_BUTTON], ...options]
       : options;
   }
   function firstAllowedChordButton(starter: ChordStarterId): ChordAssignableButtonId | null {
-    return chordAssignableButtonIds.find((id) => isChordBindingAllowed(starter, id)) ?? null;
+    return chordAssignableButtonIds.find((id) => (
+      isChordBindingAllowed(starter, id, edgeProfileSwitchingBlocked)
+    )) ?? null;
   }
   const canAddChordDraft = Boolean(defaultChordFunctionId)
     && chordAssignments.length + chordAssignmentDraftRows.length < MAX_CHORD_ASSIGNMENTS;
@@ -3274,19 +3437,31 @@ export function App() {
           : defaultChordFunctionId;
         const button = row.button
           && chordAssignableButtonIds.includes(row.button)
-          && isChordBindingAllowed(starter, row.button)
+          && isChordBindingAllowed(starter, row.button, edgeProfileSwitchingBlocked)
           ? row.button
           : null;
         return functionId ? { ...row, starter, button, functionId } : null;
       })
       .filter((row): row is ChordAssignmentDraftRow => row !== null));
-  }, [chordAssignableButtonIds, chordFunctionsSignature, chordStarterOptions, defaultChordFunctionId]);
+  }, [
+    chordAssignableButtonIds,
+    chordFunctionsSignature,
+    chordStarterOptions,
+    defaultChordFunctionId,
+    edgeProfileSwitchingBlocked
+  ]);
 
   function applySnapshot(next: BridgeSnapshot) {
     setSnapshot(next);
     setRemapDraft(next.settings.buttonRemappingDraft);
     if (!hapticsEditingRef.current) {
       setHapticsValue(displayHapticsValue(next));
+    }
+    if (!radialDeadzoneEditingRef.current.left) {
+      setLeftStickRadialDeadzoneValue(next.settings.leftStickRadialDeadzonePercent);
+    }
+    if (!radialDeadzoneEditingRef.current.right) {
+      setRightStickRadialDeadzoneValue(next.settings.rightStickRadialDeadzonePercent);
     }
     if (!classicRumbleEditingRef.current) {
       setClassicRumbleValue(displayClassicRumbleValue(next));
@@ -3384,6 +3559,21 @@ export function App() {
       window.removeEventListener('blur', finishWindowDrag);
     };
   }, []);
+
+  useEffect(() => {
+    if (activeControlTab !== 'deadzones') {
+      return undefined;
+    }
+
+    void window.bridge.requestStickInputPreview();
+    const heartbeat = window.setInterval(() => {
+      void window.bridge.requestStickInputPreview();
+    }, 1000);
+    return () => {
+      window.clearInterval(heartbeat);
+      void window.bridge.releaseStickInputPreview();
+    };
+  }, [activeControlTab]);
 
   useEffect(() => {
     const controllerAudioReady = connected && controllerConnected;
@@ -4228,6 +4418,42 @@ export function App() {
     } catch {
       const next = await window.bridge.getStatus();
       setSnapshot(next);
+    }
+  }
+
+  async function commitRadialDeadzone(side: 'left' | 'right', value: number) {
+    const percent = normalizeRadialDeadzonePercent(value);
+    const leftPercent = side === 'left' ? percent : leftStickRadialDeadzoneValue;
+    const rightPercent = side === 'right' ? percent : rightStickRadialDeadzoneValue;
+    radialDeadzoneEditingRef.current[side] = true;
+    if (
+      !snapshot
+      || snapshot.state !== 'connected'
+      || radialDeadzoneCommitPending
+      || (
+        leftPercent === snapshot.settings.leftStickRadialDeadzonePercent
+        && rightPercent === snapshot.settings.rightStickRadialDeadzonePercent
+      )
+    ) {
+      radialDeadzoneEditingRef.current[side] = false;
+      return;
+    }
+
+    setRadialDeadzoneCommitPending(true);
+    try {
+      const next = await window.bridge.setRadialDeadzones(leftPercent, rightPercent);
+      setSnapshot(next);
+      setLeftStickRadialDeadzoneValue(next.settings.leftStickRadialDeadzonePercent);
+      setRightStickRadialDeadzoneValue(next.settings.rightStickRadialDeadzonePercent);
+    } catch {
+      const next = await window.bridge.getStatus();
+      setSnapshot(next);
+      setLeftStickRadialDeadzoneValue(next.settings.leftStickRadialDeadzonePercent);
+      setRightStickRadialDeadzoneValue(next.settings.rightStickRadialDeadzonePercent);
+    } finally {
+      setRadialDeadzoneCommitPending(false);
+      radialDeadzoneEditingRef.current.left = false;
+      radialDeadzoneEditingRef.current.right = false;
     }
   }
 
@@ -5509,7 +5735,11 @@ export function App() {
   }
 
   function commitChordAssignmentDraft(row: ChordAssignmentDraftRow, button: ChordAssignableButtonId) {
-    if (!row.functionId || !isChordBindingAllowed(row.starter, button)) {
+    if (!row.functionId || !isChordBindingAllowed(
+      row.starter,
+      button,
+      edgeProfileSwitchingBlocked
+    )) {
       return;
     }
     const nextAssignment: ChordAssignment = {
@@ -5529,7 +5759,11 @@ export function App() {
         ? {
           ...row,
           starter,
-          button: row.button && isChordBindingAllowed(starter, row.button) ? row.button : null
+          button: row.button && isChordBindingAllowed(
+            starter,
+            row.button,
+            edgeProfileSwitchingBlocked
+          ) ? row.button : null
         }
         : row
     )));
@@ -5560,7 +5794,11 @@ export function App() {
     if (!current) {
       return;
     }
-    const button = isChordBindingAllowed(starter, current.button)
+    const button = isChordBindingAllowed(
+      starter,
+      current.button,
+      edgeProfileSwitchingBlocked
+    )
       ? current.button
       : firstAllowedChordButton(starter);
     if (!button) {
@@ -5578,7 +5816,11 @@ export function App() {
       return;
     }
     const current = chordAssignments.find((assignment) => assignment.id === assignmentId);
-    if (!current || !isChordBindingAllowed(current.starter, button)) {
+    if (!current || !isChordBindingAllowed(
+      current.starter,
+      button,
+      edgeProfileSwitchingBlocked
+    )) {
       return;
     }
     commitChordAssignment({
@@ -6477,7 +6719,11 @@ export function App() {
         className="window-bar"
         onMouseDown={(event) => {
           const target = event.target as HTMLElement;
-          if (target.closest('.bridge-tools') || target.closest('.window-actions')) {
+          if (
+            target.closest('.kitsune-promotion-banner')
+            || target.closest('.bridge-tools')
+            || target.closest('.window-actions')
+          ) {
             return;
           }
           setShowBridgeSettings(false);
@@ -6492,6 +6738,24 @@ export function App() {
           <span className="bridge-wordmark-ds">DS5</span>
           <span className="bridge-wordmark-name">Bridge</span>
         </span>
+        {!snapshot.settings.kitsuneInputPromotionDismissed && (
+          <button
+            className="kitsune-promotion-banner"
+            type="button"
+            aria-label="Explore Kitsune Input"
+            aria-haspopup="dialog"
+            aria-expanded={showKitsuneInputPromotion}
+            onClick={() => {
+              setShowBridgeSettings(false);
+              setShowNotificationsMenu(false);
+              setShowKitsuneInputPromotion(true);
+            }}
+          >
+            <img src={kitsuneInputLogoUrl} alt="" />
+            <span className="kitsune-promotion-banner-copy">Explore</span>
+            <KitsuneInputWordmark />
+          </button>
+        )}
         <div className="topbar-right">
           <div className="bridge-tools">
             <div className="notifications-control" ref={notificationsRef}>
@@ -6958,6 +7222,7 @@ export function App() {
                         type="button"
                         className={`overview-persona-button persona-${mode} ${active ? 'active' : ''}`}
                         aria-pressed={active}
+                        aria-label={`Switch to ${label} mode`}
                         disabled={disabled}
                         title={`Switch to ${label} mode`}
                         onClick={() => {
@@ -6975,7 +7240,7 @@ export function App() {
                             aria-hidden="true"
                           />
                         )}
-                        <span>{label}</span>
+                        <span>{HOST_PERSONA_SHORT_LABELS[mode]}</span>
                       </button>
                     );
                   })}
@@ -7266,6 +7531,140 @@ export function App() {
             onCloseForget={closeControllerDeviceForget}
             onConfirmForget={() => void confirmControllerDeviceForget()}
           />
+
+          <div
+            className={`control-page deadzones-page ${activeControlTab === 'deadzones' ? 'active' : ''}`}
+            role="tabpanel"
+            id="control-panel-deadzones"
+            aria-labelledby="control-tab-deadzones"
+            aria-hidden={activeControlTab !== 'deadzones'}
+          >
+            <div className="feature-heading">
+              <div>
+                <h2>Stick Deadzones</h2>
+                <p>Remove center drift with independent radial deadzones for each stick.</p>
+              </div>
+            </div>
+
+            <div className="feature-card-grid deadzones-grid">
+              {(['left', 'right'] as const).map((side) => {
+                const value = side === 'left'
+                  ? leftStickRadialDeadzoneValue
+                  : rightStickRadialDeadzoneValue;
+                const setValue = side === 'left'
+                  ? setLeftStickRadialDeadzoneValue
+                  : setRightStickRadialDeadzoneValue;
+                const label = side === 'left' ? 'Left Stick' : 'Right Stick';
+                const rawAxes = snapshot?.stickInputPreview?.raw;
+                const livePreview = rawAxes
+                  ? radialDeadzonePreview(
+                      side === 'left' ? rawAxes.lx : rawAxes.rx,
+                      side === 'left' ? rawAxes.ly : rawAxes.ry,
+                      value
+                    )
+                  : null;
+                const disabled = !controllerControlsAvailable
+                  || pendingAction !== null
+                  || radialDeadzoneCommitPending;
+                return (
+                  <section className="feature-card deadzone-card" key={side}>
+                    <div className="feature-card-title">
+                      <span className="feature-icon"><IconViewfinder size={20} /></span>
+                      <div className="title-copy">
+                        <h3>{label}</h3>
+                        <p>Circular center filtering with full-range rescaling.</p>
+                      </div>
+                    </div>
+
+                    <div className="deadzone-stick-preview">
+                      <div
+                        className="deadzone-stick-field"
+                        role="img"
+                        aria-label={`${label} physical and deadzone-adjusted output position`}
+                        style={{ '--deadzone-diameter': `${Math.max(3, value)}%` } as CSSProperties}
+                      >
+                        <span className="deadzone-axis horizontal" />
+                        <span className="deadzone-axis vertical" />
+                        <span className="deadzone-radius" />
+                        {livePreview ? (
+                          <>
+                            <span
+                              className="deadzone-position-dot output"
+                              style={stickPositionPercent(livePreview.output)}
+                            />
+                            <span
+                              className="deadzone-position-dot physical"
+                              style={stickPositionPercent(livePreview.physical)}
+                            />
+                          </>
+                        ) : <span className="deadzone-center" />}
+                      </div>
+                      <div className="deadzone-preview-copy">
+                        <strong>{value}%</strong>
+                        <span>{value === 0 ? 'Native input' : 'Center radius'}</span>
+                        <div className="deadzone-position-legend" aria-label="Stick position legend">
+                          <span><i className="physical" />Physical</span>
+                          <span><i className="output" />Output</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <label className={`slider-row deadzone-slider-row ${disabled ? 'disabled' : ''}`}>
+                      <span>Radius</span>
+                      <div className="range-control">
+                        <input
+                          aria-label={`${label} radial deadzone`}
+                          type="range"
+                          min={0}
+                          max={RADIAL_DEADZONE_MAX_PERCENT}
+                          step={1}
+                          value={value}
+                          disabled={disabled}
+                          style={{ '--range-fill': `${value * 2}%` } as CSSProperties}
+                          onChange={(event) => {
+                            radialDeadzoneEditingRef.current[side] = true;
+                            setValue(normalizeRadialDeadzonePercent(Number(event.target.value)));
+                          }}
+                          onPointerUp={(event) => void commitRadialDeadzone(side, Number(event.currentTarget.value))}
+                          onKeyUp={(event) => {
+                            if (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'Home' || event.key === 'End') {
+                              void commitRadialDeadzone(side, Number(event.currentTarget.value));
+                            }
+                          }}
+                          onBlur={(event) => void commitRadialDeadzone(side, Number(event.currentTarget.value))}
+                        />
+                        <div className="range-ticks" aria-hidden="true">
+                          {RADIAL_DEADZONE_TICKS.map((tick) => (
+                            <span key={tick} className={sliderTickClass(tick, RADIAL_DEADZONE_MAX_PERCENT)} />
+                          ))}
+                        </div>
+                      </div>
+                      <strong>{value}%</strong>
+                    </label>
+
+                    <div className="segmented-row deadzone-presets" aria-label={`${label} deadzone presets`}>
+                      {RADIAL_DEADZONE_PRESETS.map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          className={value === preset ? 'active' : ''}
+                          disabled={disabled}
+                          onClick={() => {
+                            setValue(preset);
+                            void commitRadialDeadzone(side, preset);
+                          }}
+                        >
+                          {preset === 0 ? 'Off' : `${preset}%`}
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                );
+              })}
+            </div>
+
+            <FeatureTipsPanel tab="deadzones" />
+          </div>
 
           <div
             className={`control-page haptics-page ${activeControlTab === 'haptics' || audioHapticsOpen ? 'active' : ''}`}
@@ -9067,7 +9466,11 @@ export function App() {
                               <span className="chords-binding-connector" aria-hidden="true" />
                               <CustomSelect
                                 value={assignment.button}
-                                options={chordButtonOptionsFor(assignment.starter)}
+                                options={chordButtonOptionsFor(
+                                  assignment.starter,
+                                  false,
+                                  assignment.button
+                                )}
                                 disabled={pendingAction !== null}
                                 className="chords-inline-glyph-select chords-inline-button-select"
                                 floatingMenu
@@ -9507,6 +9910,22 @@ export function App() {
         </div>
       </section>
       </main>
+
+      {showKitsuneInputPromotion && !snapshot.settings.kitsuneInputPromotionDismissed && (
+        <KitsuneInputPromotionDialog
+          dismissing={pendingAction === 'dismiss-kitsune-input-promotion'}
+          onClose={() => setShowKitsuneInputPromotion(false)}
+          onPurchase={() => void window.bridge.openExternal(KITSUNE_INPUT_PURCHASE_URL)}
+          onLearnMore={() => void window.bridge.openExternal(KITSUNE_INPUT_URL)}
+          onDismissForever={() => {
+            setShowKitsuneInputPromotion(false);
+            void runAction(
+              'dismiss-kitsune-input-promotion',
+              () => window.bridge.setKitsuneInputPromotionDismissed(true)
+            );
+          }}
+        />
+      )}
 
       {startupTutorialStep !== 'done' && (
         <StartupTutorial
@@ -10040,7 +10459,7 @@ export function App() {
                 <div className="settings-menu-row">
                   <div className="settings-menu-copy">
                     <strong>Wake PC on Controller</strong>
-                    <span>Wake through USB when a controller reconnects. Requires Windows wake permission and DualSense or DS4 mode.</span>
+                    <span>Wake through USB when a controller reconnects. Requires Windows wake permission and DualSense, DualSense Edge, or DS4 mode.</span>
                   </div>
                   <button
                     type="button"
@@ -10268,6 +10687,24 @@ export function App() {
                   </div>
                 </div>
                 <div className="settings-menu-section-label">Shortcuts</div>
+                <div className="settings-menu-row">
+                  <div className="settings-menu-copy">
+                    <strong>Block Edge Profile Switching</strong>
+                    <span>Reserve LFN/RFN + face buttons for chords when a DualSense Edge connects to this bridge</span>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={snapshot.settings.edgeProfileSwitchingBlocked}
+                    className={`switch ${snapshot.settings.edgeProfileSwitchingBlocked ? 'on' : ''}`}
+                    disabled={!connected || pendingAction !== null}
+                    onClick={() => void runAction('edge-profile-switching', () => (
+                      window.bridge.setEdgeProfileSwitchingBlocked(!snapshot.settings.edgeProfileSwitchingBlocked)
+                    ))}
+                  >
+                    <span />
+                  </button>
+                </div>
                 <div className={`settings-menu-row ${settingsFocusTarget === 'sleep-shortcut' ? 'settings-menu-row-highlight' : ''}`}>
                   <div className="settings-menu-copy settings-menu-copy-tooltip">
                     <strong>Sleep Shortcut</strong>

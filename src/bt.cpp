@@ -73,7 +73,6 @@
 #define DS_OUTPUT_POWER_SAVE_CONTROL_MIC_MUTE 0x10
 #define DS_OUTPUT_HEADPHONE_VOLUME_MAX 0x7f
 #define DS_OUTPUT_SPEAKER_VOLUME_MAX 0x64
-#define DS_OUTPUT_MIC_VOLUME_MAX 0x40
 #define DS_OUTPUT_AUDIO_FLAGS2_SPEAKER_PREAMP_GAIN 0x04
 #define DS_OUTPUT_LIGHTBAR_SETUP_LIGHT_OUT 0x02
 #define DS_TRIGGER_EFFECT_SIZE 11
@@ -504,6 +503,9 @@ static constexpr uint8_t WOL_INDICATOR_DARK_GREEN = 0x20;
 static constexpr uint8_t WOL_INDICATOR_LIGHT_GREEN = 0xff;
 static constexpr uint8_t WOL_INDICATOR_BRIGHTNESS = 100;
 static uint8_t state_report_seq = 0;
+static bool edge_profile_switching_blocked = false;
+static bool edge_profile_switching_mode_applied = false;
+static bool edge_profile_switching_mode_applied_value = false;
 static bool speaker_output_enabled = false;
 static bool speaker_output_headset_route = false;
 static uint8_t speaker_output_gain = DS_OUTPUT_AUDIO_FLAGS2_SPEAKER_PREAMP_GAIN;
@@ -556,6 +558,7 @@ static void reset_controller_output_session_locked() {
     clear_output_queues_locked();
     controller_output_state_clear_classic_rumble();
     state_report_seq = 0;
+    edge_profile_switching_mode_applied = false;
     speaker_output_enabled = false;
     speaker_output_headset_route = false;
     lightbar_restore_pending = false;
@@ -1764,6 +1767,42 @@ static void init_state_report(uint8_t *report) {
     ds5::output::init_bt_output_report(report, 0);
 }
 
+static void service_edge_profile_switching_mode() {
+    if (
+        !bt_is_controller_connected()
+        || controller_type != ControllerTypeDualSenseEdge
+        || (
+            edge_profile_switching_mode_applied
+            && edge_profile_switching_mode_applied_value
+                == edge_profile_switching_blocked
+        )
+    ) {
+        return;
+    }
+
+    uint8_t report[DS_OUTPUT_REPORT_BT_SIZE];
+    init_state_report(report);
+    if (
+        ds5::output::render_edge_profile_switching_payload(
+            report + 3,
+            DS_OUTPUT_REPORT_COMMON_SIZE,
+            edge_profile_switching_blocked
+        )
+        && enqueue_urgent_output(report, sizeof(report), OutputReasonCriticalDirect)
+    ) {
+        edge_profile_switching_mode_applied = true;
+        edge_profile_switching_mode_applied_value = edge_profile_switching_blocked;
+    }
+}
+
+void bt_set_edge_profile_switching_blocked(bool blocked) {
+    if (edge_profile_switching_blocked != blocked) {
+        edge_profile_switching_blocked = blocked;
+        edge_profile_switching_mode_applied = false;
+    }
+    service_edge_profile_switching_mode();
+}
+
 static uint8_t trigger_strength_from_percent(uint8_t intensity_percent) {
     if (intensity_percent == 0) {
         return 0;
@@ -2139,7 +2178,7 @@ void bt_set_microphone_state(uint8_t volume_percent, bool muted, bool control_mu
     }
     report[3 + OUTPUT_PAYLOAD_MIC_VOLUME_OFFSET] = muted
         ? 0
-        : static_cast<uint8_t>((companion_mic_volume_percent * DS_OUTPUT_MIC_VOLUME_MAX + 50) / 100);
+        : ds5::output::mic_volume_from_percent(companion_mic_volume_percent);
     report[3 + OUTPUT_PAYLOAD_POWER_SAVE_CONTROL_OFFSET] = muted ? DS_OUTPUT_POWER_SAVE_CONTROL_MIC_MUTE : 0;
     bt_write(report, sizeof(report));
 }
@@ -2721,6 +2760,7 @@ static void service_disconnect_recovery(uint32_t now) {
 }
 
 void bt_connection_recovery_loop() {
+    service_edge_profile_switching_mode();
     if (acl_handle == HCI_CON_HANDLE_INVALID) {
         return;
     }
