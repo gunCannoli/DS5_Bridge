@@ -14,9 +14,16 @@ Cleaned up an accumulation of parallel build trees and stale companion
 artifacts, and made the firmware build produce self-identifying UF2s.
 
 **Firmware:**
-- Deleted the leftover `build/default`, `build/default-wolwifi`, `build/fwtests`
-  dirs. The only firmware build trees now are `build/waveshare/` (real build)
-  and `build/waveshare-tests/` (host-side tests) — the pattern `build/wave*`.
+- Deleted the leftover `build/default`, `build/default-wolwifi`, `build/fwtests`,
+  and `build-firmware-tests/` (root) dirs. The only firmware build trees now
+  are `build/waveshare/` (real build) and `build/waveshare-tests/` (host-side
+  tests) — the pattern `build/wave*`. `run_firmware_tests.sh` now `rm -rf`s a
+  stray `build-firmware-tests/` on each run (that's the name upstream's unused
+  `npm test` would create).
+- AGENTS.md "Build output locations" opens with a full table mapping every
+  `build*/` and `firmware*/` path — which one is the flashable firmware
+  (`firmware/ds5-bridge-<version>-wol-<variant>.uf2`), which are work dirs,
+  which (`companion/firmware/`) is an unrelated upstream utility.
 - New `tools/build-firmware.ps1 [final|debug|smoke]` is the single build path,
   launched from a **native PowerShell session** (picotool's post-link UF2
   conversion segfaults inside any Git Bash process tree on this machine,

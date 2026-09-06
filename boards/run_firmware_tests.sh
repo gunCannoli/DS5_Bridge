@@ -20,6 +20,12 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${PROJECT_ROOT}/build/waveshare-tests"
 
 cd "${PROJECT_ROOT}"
+
+# Upstream's unused `npm test` -> `test:firmware` script builds the same tests
+# into ./build-firmware-tests. If that stale dir is lying around, drop it so
+# there's only ever one host-test build tree (this one). See AGENTS.md.
+rm -rf "${PROJECT_ROOT}/build-firmware-tests"
+
 cmake -S tests/firmware -B "${BUILD_DIR}" -G Ninja
 cmake --build "${BUILD_DIR}"
 

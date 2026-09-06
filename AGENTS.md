@@ -86,6 +86,22 @@ This fork keeps exactly **one** firmware build tree and **one** companion
 build. Don't spin up parallel `build/<name>` dirs or build the NSIS installer
 — that's just rebase friction and disk for zero benefit here.
 
+### Where everything lives (the whole map)
+
+| Path | What it is | Flashable? | Who writes it |
+|---|---|---|---|
+| `build/waveshare/` | CMake work dir for the real firmware build. `ds5-bridge.uf2` here is the raw compiler output — a working file, not the thing you keep. | (raw) | `tools/build-firmware.ps1` |
+| **`firmware/`** | **Staged, flashable firmware.** `ds5-bridge-<version>-wol-<variant>.uf2`. **This is what you smoke-test with** — pick the file for the variant you want (`final` / `debug` / `smoke`). Gitignored. | **YES — use this** | `tools/build-firmware.ps1` (copies from `build/waveshare/`) |
+| `build/waveshare-tests/` | Host-side **unit tests** (`firmware_logic_tests.exe` etc.) — plain PC executables, the firmware equivalent of the companion's vitest. Not firmware. | no | `boards/run_firmware_tests.sh` |
+| `companion/firmware/` | `pico-universal-flash-nuke.uf2` — an **unrelated** bundled utility (wipes a Pico's flash), a build *input* the companion packager copies into the app. Upstream-owned; nothing to do with WOL. Leave it. | no (not ours) | `tools/build-pico-universal-flash-nuke.ps1` |
+| `build/pico-universal-flash-nuke/` | CMake work dir for that flash-nuke utility. | no | same |
+| **`C:\game\DS5 Bridge App\`** | **The unpacked companion app you run.** A scheduled task / shortcut launches `"C:\game\DS5 Bridge App\DS5 Bridge.exe" --start-in-tray`. Outside the repo. | n/a | `npm run package:win:local` |
+| `build-firmware-tests/` (root) | **Stale — should not exist.** The dir name upstream's unused `npm test` → `test:firmware` script would create. If it reappears, delete it; use `build/waveshare-tests/` instead. | — | (nothing, ideally) |
+
+So: **smoke-test firmware = `firmware/ds5-bridge-<version>-wol-<variant>.uf2`.**
+**Companion app = `C:\game\DS5 Bridge App\`.** Everything else is a work dir or
+not ours.
+
 ### Firmware — one build dir, one staging folder
 
 - **Only build path**: `tools/build-firmware.ps1 [variant]`, launched from a
