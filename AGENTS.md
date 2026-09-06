@@ -80,42 +80,74 @@ push on every single commit.
   DECISIONS.md/TASK.md phase breakdown) — pushing is about syncing to GitHub,
   not about commit granularity.
 
-## Build output locations (use upstream's existing conventions, don't invent new ones)
+## Build output locations
 
-Both the board firmware and the companion app already have defined output
-locations upstream. Always use these — don't add a parallel `dist/` or similar,
-since that adds nothing but rebase friction for zero benefit.
+This fork keeps exactly **one** firmware build tree and **one** companion
+build. Don't spin up parallel `build/<name>` dirs or build the NSIS installer
+— that's just rebase friction and disk for zero benefit here.
 
-- **Board firmware UF2**: `build/waveshare/ds5-bridge.uf2`, produced by
-  `boards/build_waveshare_rp2350b_plus_w.sh` (default board target) or
-  `build/<name>/ds5-bridge.uf2` for other `-B <dir>` CMake configure targets
-  (e.g. our manual test builds used `build/waveshare_test`). This is CMake's
-  own build directory (gitignored via `build`/`build-*` in `.gitignore`), not
-  a separate release/dist step — upstream does not currently stage a "final"
-  firmware release copy anywhere else.
-- **Companion app installer**: `companion/artifacts/installer/` (NSIS `.exe`),
-  produced by `npm run installer:win` inside `companion/` via electron-builder
-  (`companion/package.json`'s `build.directories.output`).
-- **Companion app portable/debug package**: `companion/artifacts/DS5 Bridge-win32-x64-<timestamp>/`,
-  produced by `npm run package:win` (`companion/scripts/package-win.mjs`) —
-  a timestamped folder tree, not a single exe, used for quick manual testing
-  without building a full installer.
-- **Companion app local unpacked build**: `C:\game\DS5 Bridge App`, produced
-  by `npm run package:win:local` — same unpacked build as `package:win` but
-  written to this fixed path instead of a timestamped `artifacts/` folder, so
-  it can be pointed at directly (e.g. a Task Scheduler action running
-  `"C:\game\DS5 Bridge App\DS5 Bridge.exe" --start-in-tray`). The script wipes
-  this directory before each rebuild. Outside the repo tree, so nothing to
-  gitignore.
-- Both `companion/artifacts` and `build`/`build-*` are already gitignored at
-  the repo root; nothing extra was needed there.
+### Firmware — one build dir, one staging folder
 
-If a future version of this feature needs a genuinely new output location
-(e.g. bundling the Waveshare UF2 into the companion installer the way
-`pico-universal-flash-nuke.uf2` is bundled via `companion/firmware/` +
-`extraResources` in `package.json`), record that decision in `DECISIONS.md`
-with the reasoning, so it's clear it was an intentional addition and not
-drift from upstream's layout.
+- **Only build path**: `tools/build-firmware.ps1 [variant]`, launched from a
+  **native PowerShell session** (the project's primary shell). picotool's
+  post-link UF2 conversion segfaults (access violation) whenever it runs
+  anywhere inside a Git Bash process tree on this machine — *including*
+  `powershell.exe` spawned from Git Bash, because the broken environment is
+  inherited. Only starting from PowerShell works; re-running picotool from
+  inside the bad tree does not (see "Local build environment notes").
+- `boards/build_waveshare_rp2350b_plus_w.sh` is upstream's generic convenience
+  script — left exactly as upstream ships it (no `-DENABLE_COMPANION`, no
+  version/variant staging) to avoid rebase friction. It works anywhere the
+  picotool crash doesn't bite, but on this machine use the `.ps1`.
+- This fork ships only the Waveshare RP2350B-Plus-W target (it's the board WOL
+  needs), so there is no stock-board build anymore.
+- **CMake work dir**: always `build/waveshare/` (reconfigured in place). Raw
+  output is `build/waveshare/ds5-bridge.uf2`.
+- **Staged UF2**: the script copies the result to `firmware/` at the repo root
+  as `ds5-bridge-<version>-wol-<variant>.uf2` — e.g.
+  `ds5-bridge-1.71-wol-final.uf2`. `<version>` comes from `firmware-version.txt`
+  (`1.7.1` → `1.71`). This folder is the one place to grab any UF2; every build
+  is self-identifying by version and variant.
+- **Variants** (script arg, default `final`):
+  - `final` — Release, no diagnostics, host-alive gate active. The shippable firmware.
+  - `debug` — Release + `DS5_DIAGNOSTICS_PRESET=all` (921600-baud UART trace of
+    every WOL/BT state transition). Host-alive gate still active. Use after a
+    failed smoke test when you need the trace.
+  - `smoke` — `final` + `-DWOL_ALWAYS=ON`: skips the host-alive gate so WOL
+    fires on every controller connect regardless of PC power state. Bring-up
+    testing only.
+- **Gitignore**: `build`/`build-*` and `firmware/*.uf2` are all ignored.
+- **No non-Waveshare sanity build.** If a shared-code change genuinely needs a
+  stock-board compile check before going upstream, configure it into a
+  throwaway dir and delete it — don't leave a second persistent build tree.
+  Upstream CI covers the non-Waveshare build on PR anyway.
+
+### Firmware host-side tests — `./boards/run_firmware_tests.sh`
+
+Builds `tests/firmware/*` into `build/waveshare-tests/` (keeps the only build
+pattern `build/wave*`) and runs the three suites directly. Runs the exes
+directly rather than via `ctest` because Git Bash's spawn context hits a DLL
+loader error (`0xc0000139`) on the MinGW-built test exes even when the build
+is fine — the script prepends the compiler's bin dir to PATH to fix it. This
+one is fine to run from Git Bash (it's the picotool step specifically that
+needs PowerShell, and these tests don't use it). (Upstream's
+`companion/package.json` still has a `test:firmware` npm script that uses
+`../build-firmware-tests` — left untouched to avoid rebase friction; just
+don't run it, use the boards script.)
+
+### Companion — unpacked local build only
+
+- **`npm run package:win:local`** (inside `companion/`) → `C:\game\DS5 Bridge App`
+  (fixed path, wiped and rebuilt each time, outside the repo). This is the only
+  companion build this fork uses — a scheduled task / shortcut launches
+  `"C:\game\DS5 Bridge App\DS5 Bridge.exe" --start-in-tray` directly.
+- **Do not** run `npm run installer:win` (NSIS installer) or `npm run package:win`
+  (timestamped `artifacts/` folder). Nothing here needs them.
+- `companion/artifacts` is gitignored; this fork doesn't populate it at all.
+
+If a future version genuinely needs a new output location (e.g. bundling the
+Waveshare UF2 into a companion build), record that decision in `DECISIONS.md`
+with the reasoning so it's clearly intentional, not drift.
 
 ## Rebuild rules — what to rebuild after a change
 
@@ -128,41 +160,28 @@ Rebuild the board firmware. The companion app does NOT need rebuilding —
 it talks to whatever firmware is currently flashed over the existing HID
 protocol, it isn't compiled against firmware source.
 
-```bash
-export PICO_SDK_PATH="C:/auto/arduino/build/pico-sdk"
-./boards/build_waveshare_rp2350b_plus_w.sh
-# UF2 at build/waveshare/ds5-bridge.uf2
+```powershell
+$env:PICO_SDK_PATH = "C:\auto\arduino\build\pico-sdk"
+.\tools\build-firmware.ps1            # variant defaults to "final"
+# raw:    build\waveshare\ds5-bridge.uf2
+# staged: firmware\ds5-bridge-1.71-wol-final.uf2
 ```
 
-For a quick one-off/manual configure (e.g. testing a CMake option change in
-isolation) instead of the convenience script:
+Run it from PowerShell. The script always passes `-DENABLE_COMPANION=ON`
+(compiles `companion.cpp` and every `SET_WOL_*` handler) and
+`-DPICO_NO_COPRO_DIS=1`, reconfigures `build/waveshare/` in place, then copies
+the UF2 to `firmware/` named by version + variant. It also re-runs picotool's
+UF2 conversion itself if CMake's post-link step crashes on it (the compile+link
+already succeeded if you saw "Verifying complete firmware hot paths..." before
+the crash). See "Build output locations" above for the three variants
+(`final` / `debug` / `smoke`).
 
-```bash
-cmake -S . -B build/waveshare -G Ninja \
-  -DWAVESHARE_RP2350B_PLUS_W_BUILD=ON -DENABLE_COMPANION=ON \
-  -DPICO_NO_COPRO_DIS=1 -DPICO_SDK_PATH="C:/auto/arduino/build/pico-sdk"
-cmake --build build/waveshare --target ds5-bridge
-```
+There is **no non-Waveshare sanity build** in this fork — see "Build output
+locations". Don't add a `build/default` back.
 
-`-DENABLE_COMPANION=ON` is required for a real build (it's what compiles
-`companion.cpp`, including all the WOL command handlers) — the CMake default
-is off. See "Local build environment notes" below if the final link/UF2 step
-crashes; the actual compile+link already succeeded if you see "Verified
-complete live firmware hot paths..." before the crash.
-
-To also sanity-check the default (non-Waveshare) board still builds after a
-change to shared firmware code (anything outside `wolwifi.h/.cpp`,
-`boards/headers/lwipopts.h`):
-
-```bash
-cmake -S . -B build/default -G Ninja -DENABLE_COMPANION=ON \
-  -DPICO_NO_COPRO_DIS=1 -DPICO_SDK_PATH="C:/auto/arduino/build/pico-sdk"
-cmake --build build/default --target ds5-bridge
-```
-
-Flashing: hold BOOTSEL, plug in, drag the UF2 onto the mounted drive — or
-use the companion app's Firmware > Mount + Flash buttons once it's running
-against the currently-flashed firmware.
+Flashing: hold BOOTSEL, plug in, drag the UF2 from `firmware/` onto the
+mounted drive — or use the companion app's Firmware > Mount + Flash buttons
+once it's running against the currently-flashed firmware.
 
 ### Companion-app-only changes (anything under `companion/`)
 
@@ -175,30 +194,24 @@ npx vitest run src  # full test suite
 npm run dev          # build + launch electron for interactive testing
 ```
 
-To produce a distributable build:
+To rebuild the app you actually run:
 
 ```bash
-npm run installer:win   # NSIS installer -> companion/artifacts/installer/
-# or, for a quick portable folder without building a full installer:
-npm run package:win     # -> companion/artifacts/DS5 Bridge-win32-x64-<timestamp>/
-# or, to rebuild the fixed local copy used by the tray auto-start task:
-npm run package:win:local   # -> C:\game\DS5 Bridge App
+npm run package:win:local   # -> C:\game\DS5 Bridge App  (wiped + rebuilt)
 ```
 
-The desktop shortcut points at `companion/artifacts/installer/win-unpacked/DS5 Bridge.exe`
-directly (not a separate installed copy), so `npm run installer:win` is what
-actually needs to run to make the shortcut launch fresh code -- rebuilding
-only `companion/artifacts/DS5 Bridge-win32-x64-<timestamp>/` via
-`package:win` does NOT update what the shortcut launches. Likewise, if
-`C:\game\DS5 Bridge App` is what a scheduled task/shortcut launches, that
-copy only gets updated by explicitly running `npm run package:win:local`.
+That fixed unpacked build at `C:\game\DS5 Bridge App` is the only companion
+build this fork uses — a scheduled task / shortcut launches
+`"C:\game\DS5 Bridge App\DS5 Bridge.exe" --start-in-tray` directly, and only
+`package:win:local` updates it. **Don't** run `installer:win` (NSIS) or
+`package:win` (timestamped `artifacts/` folder); nothing here needs them.
 
 If the app is currently running, close it first (it locks `DS5 Bridge.exe`
 and the rebuild will fail) -- always OK to close and rebuild without asking
 first, per explicit standing permission:
 
 ```powershell
-Get-Process | Where-Object { $_.Path -like '*win-unpacked*' } | Stop-Process -Force -Confirm:$false
+Get-Process | Where-Object { $_.Path -like '*DS5 Bridge App*' } | Stop-Process -Force -Confirm:$false
 ```
 
 ### Changes touching both (e.g. a new companion protocol command, like WOL's
@@ -233,25 +246,21 @@ different logging paths.
 
 `DS5_LOG(...)` calls (including every `[WOL]`-prefixed message in
 `wolwifi.cpp`) are **compiled out entirely** unless the firmware is built
-with debug logging enabled — the default release build (what
-`boards/build_waveshare_rp2350b_plus_w.sh` and our earlier smoke-test builds
-produced) has them fully stripped, so nothing will show up no matter what
-you enable in the companion app's UI.
+with debug logging enabled — the `final` and `smoke` variants have them
+fully stripped, so nothing shows up no matter what you enable in the
+companion app's UI.
 
-To get a firmware build that actually emits `[WOL]` logs:
+Build the `debug` variant to get `[WOL]` logs:
 
-```bash
-cmake -S . -B build/waveshare-debug -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release -DWAVESHARE_RP2350B_PLUS_W_BUILD=ON \
-  -DENABLE_COMPANION=ON -DDS5_DIAGNOSTICS_PRESET=custom -DENABLE_DEBUG_LOGS=ON \
-  -DPICO_NO_COPRO_DIS=1 -DPICO_SDK_PATH="C:/auto/arduino/build/pico-sdk"
-cmake --build build/waveshare-debug --target ds5-bridge
+```powershell
+.\tools\build-firmware.ps1 debug
+# staged: firmware\ds5-bridge-1.71-wol-debug.uf2
 ```
 
-Flash `build/waveshare-debug/ds5-bridge.uf2` instead of the release build
-while debugging. `DS5_DIAGNOSTICS_PRESET=custom -DENABLE_DEBUG_LOGS=ON` is
-the minimal combination for just firmware logs, without the extra
-audio/trigger/feedback trace overhead `traces`/`all` presets add.
+Flash that instead of `final` while debugging. It sets
+`DS5_DIAGNOSTICS_PRESET=all`, which turns on the 921600-baud UART/BTstack
+firmware log (`DS5_ENABLE_FIRMWARE_LOGS`); the host-alive gate stays active
+(that's `smoke`'s job, not `debug`'s).
 
 These logs don't come out over a wired UART cable — they're transported
 over the same companion HID channel already used for settings, and the
@@ -316,26 +325,24 @@ companion app writes them to a file on disk:
 - **This crash hits every Pico target built on this machine, not just the
   main `ds5-bridge` firmware** — confirmed 2026-08-15 in
   `tools/build-pico-universal-flash-nuke.ps1` too (invoked by `npm run
-  installer:win`/`package:win`/`package:win:local` via `build:firmware-tools`
-  before it does anything companion-app-specific). That script builds
+  package:win:local` via `build:firmware-tools` before it does anything
+  companion-app-specific). That script builds
   **two** separate targets (`rp2040` board, `rp2350`/pico2 board) each via
   their own `cmake --build ... --target flash_nuke`, then combines both
   UF2s into `companion/firmware/pico-universal-flash-nuke.uf2` and writes a
   SHA-256 into both a `.sha256` file and
   `companion/src/main/pico-universal-flash-nuke-hash.ts`. If either target's
-  post-link step crashes, the whole `npm run installer:win`/etc. invocation
-  fails before reaching `electron-builder`, and any packaged companion app
-  you already had stays stale (see the next bullet for why that's a trap).
+  post-link step crashes, the whole `npm run package:win:local` invocation
+  fails before reaching the packaging step, and the `C:\game\DS5 Bridge App`
+  copy you already had stays stale (see the next bullet for why that's a trap).
   Workaround: build+workaround each target's `.uf2` individually as above,
-  then either retry the full `npm run installer:win` (Ninja may no-op the
-  already-built targets and get further this time — it did once and crashed
-  again on a fresh relink attempt, so this isn't guaranteed), or reproduce
-  the script's final combine+hash step by hand (`companion/firmware/pico-
-  universal-flash-nuke.uf2` = `rp2040/flash_nuke.uf2` bytes followed by
-  `rp2350/flash_nuke.uf2` bytes, then SHA-256 the combined file into both
-  destinations) and run `npm run build && npx electron-builder --win nsis
-  --x64` (installer) / `npm run build && node scripts/package-win.mjs
-  "<out dir>"` (portable/local copy) directly, skipping
+  then either retry the full `npm run package:win:local` (Ninja may no-op the
+  already-built targets and get further this time — not guaranteed), or
+  reproduce the script's final combine+hash step by hand
+  (`companion/firmware/pico-universal-flash-nuke.uf2` = `rp2040/flash_nuke.uf2`
+  bytes followed by `rp2350/flash_nuke.uf2` bytes, then SHA-256 the combined
+  file into both destinations) and run `npm run build && node
+  scripts/package-win.mjs "C:\game\DS5 Bridge App"` directly, skipping
   `build:firmware-tools` since its output is already in place.
 - `PICO_NO_COPRO_DIS=1` avoids a separate, reproducible `picotool coprodis`
   segfault when it processes `bs2_default.dis` in-place; pass it when
@@ -345,24 +352,24 @@ companion app writes them to a file on disk:
   CMakeCache.txt directory ... is different than the directory ... where
   CMakeCache.txt was created") — this repo has lived at more than one local
   path (e.g. `c:/game/DS5_Bridge` before `c:/auto/arduino/DS5_Bridge`), and
-  every gitignored build directory (`build/waveshare`, `build/default`,
-  `build/pico-universal-flash-nuke/*`, `build-firmware-tests`, etc.) can
-  independently carry this stale-path cache. Safe fix: `rm -rf` just that
-  one build directory and reconfigure — these are pure build output, never
-  source.
+  every gitignored build directory (`build/waveshare`, `build/waveshare-tests`,
+  `build/pico-universal-flash-nuke/*`, etc.) can independently carry this
+  stale-path cache. Safe fix: `rm -rf` just that one build directory and
+  reconfigure — these are pure build output, never source. The build scripts
+  reconfigure in place, so a stale cache surfaces as a configure error on the
+  next run rather than silently.
 - **After a `PROTOCOL_MAJOR`/`PROTOCOL_MINOR` bump (own work or an upstream
   merge), reflashing the firmware is only half the fix.** The companion app
   checks the flashed firmware's protocol version against its own compiled-in
   `PROTOCOL_MINOR` and shows "Update required: Bridge Settings > Firmware"
-  on any mismatch — so an *installed/packaged* companion `.exe`
-  (`companion/artifacts/installer/win-unpacked/DS5 Bridge.exe`, an NSIS
-  install, or a `package:win:local` copy) built before the bump will show
-  this error even though the newly-flashed firmware is completely correct.
-  Rebuilding firmware and rebuilding/repackaging the companion app are two
+  on any mismatch — so the `C:\game\DS5 Bridge App` copy, if built before the
+  bump, will show this error even though the newly-flashed firmware is
+  completely correct. Rebuilding firmware (`.\tools\build-firmware.ps1`)
+  and rebuilding the companion app (`npm run package:win:local`) are two
   separate steps — always do both after a protocol version change, not just
-  whichever one you happened to be editing. `npm run dev` (unpacked,
-  runs from source) doesn't have this trap since it's never stale by
-  construction; only pre-built/packaged `.exe` copies can drift.
+  whichever one you happened to be editing. `npm run dev` (runs from source)
+  doesn't have this trap since it's never stale by construction; only the
+  packaged `C:\game\DS5 Bridge App` copy can drift.
 
 ## Rebase/backport workflow
 
@@ -391,13 +398,13 @@ v1.7.0):
    `constexpr uint8_t kProtocolMinor = N;` string match in
    `tests/firmware/usb_descriptor_migration_test.cpp` to the new value —
    that test will fail (correctly) if you forget.
-5. Rebuild and test both the firmware (all build targets, including the
-   default non-WOL board) and the companion app (`npm run test:companion`,
-   `npm run test:firmware`) — see "Quick reference: do I need to rebuild
-   firmware, companion, or both?" above. Reflash real hardware and rebuild/
-   repackage whichever companion `.exe` you actually run before calling it
-   done (see "Local build environment notes" — a protocol bump needs both
-   sides rebuilt, not just the one you were editing).
+5. Rebuild and test both sides: firmware via `.\tools\build-firmware.ps1`
+   (PowerShell) + host-side tests via `./boards/run_firmware_tests.sh`,
+   companion via `npm run typecheck` + `npx vitest run src`. (No non-Waveshare
+   board build in this fork — upstream CI covers that on PR.) Reflash real
+   hardware and rebuild the `C:\game\DS5 Bridge App` copy
+   (`npm run package:win:local`) before calling it done — a protocol bump needs
+   both sides rebuilt, not just the one you were editing.
 6. If updating the existing upstream PR rather than opening a new one:
    force-push is expected (the PR history gets rebuilt on the new base) —
    confirm with the user first since it rewrites already-published history.

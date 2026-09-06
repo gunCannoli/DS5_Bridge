@@ -8,6 +8,51 @@ Architecture/known-issue knowledge that should inform future work lives in
 
 ---
 
+## 2026-09-06 — Consolidated the build layout: one Waveshare build, versioned UF2 names, PowerShell build script
+
+Cleaned up an accumulation of parallel build trees and stale companion
+artifacts, and made the firmware build produce self-identifying UF2s.
+
+**Firmware:**
+- Deleted the leftover `build/default`, `build/default-wolwifi`, `build/fwtests`
+  dirs. The only firmware build trees now are `build/waveshare/` (real build)
+  and `build/waveshare-tests/` (host-side tests) — the pattern `build/wave*`.
+- New `tools/build-firmware.ps1 [final|debug|smoke]` is the single build path,
+  launched from a **native PowerShell session** (picotool's post-link UF2
+  conversion segfaults inside any Git Bash process tree on this machine,
+  including `powershell.exe` spawned from Git Bash — the broken env is
+  inherited; only a natively-started PowerShell session works). It always
+  passes `-DENABLE_COMPANION=ON -DPICO_NO_COPRO_DIS=1`, reconfigures
+  `build/waveshare/` in place, and stages the UF2 to `firmware/` (gitignored)
+  as `ds5-bridge-<version>-wol-<variant>.uf2`, e.g.
+  `ds5-bridge-1.71-wol-final.uf2` (version from `firmware-version.txt`,
+  `1.7.1` → `1.71`).
+  - `final` — Release, no diagnostics, host-alive gate active. Shippable.
+  - `debug` — `+ DS5_DIAGNOSTICS_PRESET=all` (921600-baud UART trace). Gate still active.
+  - `smoke` — `+ -DWOL_ALWAYS=ON`: skips the host-alive gate. Bring-up only.
+- `boards/build_waveshare_rp2350b_plus_w.sh` left exactly as upstream ships it
+  (reverted a brief local edit) — it's upstream's generic convenience script;
+  diverging just adds rebase friction. Use the `.ps1` locally.
+- New `boards/run_firmware_tests.sh` builds + runs the three host-side suites
+  from `build/waveshare-tests/`, running the exes directly (Git Bash's spawn
+  context hits a `0xc0000139` DLL-loader error on the MinGW test exes under
+  `ctest`; the script prepends the compiler bin dir to PATH). This one is fine
+  from Git Bash.
+- **No non-Waveshare sanity build anymore** — this fork ships only Waveshare
+  firmware; upstream CI covers the stock board on PR.
+- `.gitignore`: added `firmware/*.uf2`.
+
+**Companion:**
+- Removed the stale `companion/artifacts/` tree (`installer/` with a 144 MB
+  NSIS `.exe` + `win-unpacked/`, and an empty `ui/`). The only companion build
+  this fork uses is the unpacked `C:\game\DS5 Bridge App`
+  (`npm run package:win:local`); `installer:win` / `package:win` are not used.
+- `package.json` untouched (upstream-owned; its `package:win:local` line is
+  this fork's one local-dev addition and stays).
+
+AGENTS.md's "Build output locations", "Rebuild rules", diagnostics, and
+"Local build environment notes" sections rewritten to match.
+
 ## 2026-09-06 — Merged upstream v1.7.1 into `feature/wol-wifi`
 
 Merged `upstream/main` at `v1.7.1` (the `v1.7.0..v1.7.1` range: USB

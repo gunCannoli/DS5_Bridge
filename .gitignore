@@ -1,6 +1,8 @@
 build
 build-*
 !tools/build-pico-universal-flash-nuke.ps1
+!tools/build-firmware.ps1
+firmware/*.uf2
 artifacts
 .vscode
 .idea
