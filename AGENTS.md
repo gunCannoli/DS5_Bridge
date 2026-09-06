@@ -95,7 +95,7 @@ build. Don't spin up parallel `build/<name>` dirs or build the NSIS installer
 | `build/waveshare-tests/` | Host-side **unit tests** (`firmware_logic_tests.exe` etc.) — plain PC executables, the firmware equivalent of the companion's vitest. Not firmware. | no | `boards/run_firmware_tests.sh` |
 | `companion/firmware/` | `pico-universal-flash-nuke.uf2` — an **unrelated** bundled utility (wipes a Pico's flash), a build *input* the companion packager copies into the app. Upstream-owned; nothing to do with WOL. Leave it. | no (not ours) | `tools/build-pico-universal-flash-nuke.ps1` |
 | `build/pico-universal-flash-nuke/` | CMake work dir for that flash-nuke utility. | no | same |
-| **`C:\game\DS5 Bridge App\`** | **The unpacked companion app you run.** A scheduled task / shortcut launches `"C:\game\DS5 Bridge App\DS5 Bridge.exe" --start-in-tray`. Outside the repo. | n/a | `npm run package:win:local` |
+| **`C:\game\DS5 Bridge App\`** | **The unpacked companion app you run.** A scheduled task / shortcut launches `"C:\game\DS5 Bridge App\DS5 Bridge.exe" --start-in-tray`. Outside the repo. | n/a | `tools/rebuild-companion.ps1` (kill → `npm run package:win:local` → relaunch) |
 | `build-firmware-tests/` (root) | **Stale — should not exist.** The dir name upstream's unused `npm test` → `test:firmware` script would create. If it reappears, delete it; use `build/waveshare-tests/` instead. | — | (nothing, ideally) |
 
 So: **smoke-test firmware = `firmware/ds5-bridge-<version>-wol-<variant>.uf2`.**
@@ -153,12 +153,15 @@ don't run it, use the boards script.)
 
 ### Companion — unpacked local build only
 
-- **`npm run package:win:local`** (inside `companion/`) → `C:\game\DS5 Bridge App`
-  (fixed path, wiped and rebuilt each time, outside the repo). This is the only
-  companion build this fork uses — a scheduled task / shortcut launches
-  `"C:\game\DS5 Bridge App\DS5 Bridge.exe" --start-in-tray` directly.
+- **`.\tools\rebuild-companion.ps1`** (from PowerShell) is the rebuild path:
+  kill the running app → `npm run package:win:local` (wipes + rebuilds
+  `C:\game\DS5 Bridge App`, a fixed path outside the repo) → relaunch it
+  `--start-in-tray`. `-NoRelaunch` skips the relaunch. This is the only
+  companion build this fork uses.
 - **Do not** run `npm run installer:win` (NSIS installer) or `npm run package:win`
-  (timestamped `artifacts/` folder). Nothing here needs them.
+  (timestamped `artifacts/` folder). Nothing here needs them. Bare
+  `npm run package:win:local` also works but won't kill a running instance
+  first (the wipe then fails on the file lock) — use the wrapper.
 - `companion/artifacts` is gitignored; this fork doesn't populate it at all.
 
 If a future version genuinely needs a new output location (e.g. bundling the
@@ -210,25 +213,30 @@ npx vitest run src  # full test suite
 npm run dev          # build + launch electron for interactive testing
 ```
 
-To rebuild the app you actually run:
+To rebuild the app you actually run, from a **native PowerShell session**:
 
-```bash
-npm run package:win:local   # -> C:\game\DS5 Bridge App  (wiped + rebuilt)
+```powershell
+.\tools\rebuild-companion.ps1
 ```
 
+That does the whole cycle: **kill** any running
+`C:\game\DS5 Bridge App\DS5 Bridge.exe` (it locks the exe and the wipe-rebuild
+would fail — closing/relaunching without asking is covered by standing
+permission), **`npm run package:win:local`** (wipes + rebuilds
+`C:\game\DS5 Bridge App`), then **relaunch** `"...\DS5 Bridge.exe"
+--start-in-tray`. Pass `-NoRelaunch` to skip the last step. Run it from
+PowerShell — `package:win:local` invokes the flash-nuke build, which hits the
+same picotool crash as the firmware build under a Git Bash tree.
+
 That fixed unpacked build at `C:\game\DS5 Bridge App` is the only companion
-build this fork uses — a scheduled task / shortcut launches
+build this fork uses; a scheduled task / shortcut launches
 `"C:\game\DS5 Bridge App\DS5 Bridge.exe" --start-in-tray` directly, and only
 `package:win:local` updates it. **Don't** run `installer:win` (NSIS) or
 `package:win` (timestamped `artifacts/` folder); nothing here needs them.
 
-If the app is currently running, close it first (it locks `DS5 Bridge.exe`
-and the rebuild will fail) -- always OK to close and rebuild without asking
-first, per explicit standing permission:
-
-```powershell
-Get-Process | Where-Object { $_.Path -like '*DS5 Bridge App*' } | Stop-Process -Force -Confirm:$false
-```
+`npm run dev` (runs from source, no packaging) is the exception — use it for
+quick interactive iteration when you're not about to smoke-test the packaged
+build.
 
 ### Changes touching both (e.g. a new companion protocol command, like WOL's
 ### SET_WOL_* commands and their `src/companion.cpp` handlers)
@@ -237,10 +245,37 @@ Rebuild both, in either order, but test them together before considering the
 change done — a protocol change is only correct if both sides agree on wire
 format (`COMMAND_ID` values, payload layout, `PROTOCOL_MAJOR`/`MINOR`).
 
-1. Rebuild firmware (above), flash it to the board.
-2. Rebuild/run the companion app (above) against that flashed firmware.
+1. `.\tools\build-firmware.ps1 <variant> -WithCompanion` — builds the
+   firmware, stages `firmware/ds5-bridge-<version>-wol-<variant>.uf2`, then
+   kills + rebuilds `C:\game\DS5 Bridge App` and relaunches it in the tray. No
+   manual `npm run package:win:local` / kill / relaunch.
+2. Flash the staged UF2 (BOOTSEL).
 3. Exercise the actual feature through the UI, not just typecheck/build
    success — protocol mismatches don't show up at compile time.
+
+### Smoke-test setup in one place
+
+From a **native PowerShell session**:
+
+```powershell
+$env:PICO_SDK_PATH = "C:\auto\arduino\build\pico-sdk"
+
+# Firmware only (companion already running, no companion/protocol change):
+.\tools\build-firmware.ps1 final          # or `debug` for the UART trace
+
+# Firmware + matching companion build in one go (companion/ or protocol changed):
+.\tools\build-firmware.ps1 final -WithCompanion
+```
+
+`-WithCompanion` runs `tools/rebuild-companion.ps1` after the firmware build:
+kill the running app → `npm run package:win:local` → relaunch
+`--start-in-tray`. You don't build the companion by hand. Then flash
+`firmware/ds5-bridge-<version>-wol-<variant>.uf2` (BOOTSEL) and smoke-test.
+
+The companion only needs rebuilding when you changed something under
+`companion/` or bumped the protocol version (see the quick-reference table
+below) — a firmware-only change talks to whatever companion is already
+running, so the bare `build-firmware.ps1` is enough there.
 
 ### Quick reference: do I need to rebuild firmware, companion, or both?
 
@@ -381,11 +416,20 @@ companion app writes them to a file on disk:
   on any mismatch — so the `C:\game\DS5 Bridge App` copy, if built before the
   bump, will show this error even though the newly-flashed firmware is
   completely correct. Rebuilding firmware (`.\tools\build-firmware.ps1`)
-  and rebuilding the companion app (`npm run package:win:local`) are two
+  and rebuilding the companion app (`.\tools\rebuild-companion.ps1`) are two
   separate steps — always do both after a protocol version change, not just
   whichever one you happened to be editing. `npm run dev` (runs from source)
   doesn't have this trap since it's never stale by construction; only the
   packaged `C:\game\DS5 Bridge App` copy can drift.
+- **`ELECTRON_RUN_AS_NODE=1` in the environment makes the companion app exit
+  instantly.** With that env var set, every Electron binary runs as plain
+  Node — no `app` object, no window, no tray — so `C:\game\DS5 Bridge App\DS5
+  Bridge.exe` either exits silently (code 0) or prints `bad option:
+  --start-in-tray` (code 9), and `main.js` throws `Cannot read properties of
+  undefined (reading 'requestSingleInstanceLock')` if you run it directly.
+  Some tool/CI shells export it. `tools/rebuild-companion.ps1` clears it for
+  its own scope; if you launch the app another way and it won't stay up,
+  check `echo $env:ELECTRON_RUN_AS_NODE` first — this is not a build bug.
 
 ## Rebase/backport workflow
 
@@ -418,9 +462,9 @@ v1.7.0):
    (PowerShell) + host-side tests via `./boards/run_firmware_tests.sh`,
    companion via `npm run typecheck` + `npx vitest run src`. (No non-Waveshare
    board build in this fork — upstream CI covers that on PR.) Reflash real
-   hardware and rebuild the `C:\game\DS5 Bridge App` copy
-   (`npm run package:win:local`) before calling it done — a protocol bump needs
-   both sides rebuilt, not just the one you were editing.
+   hardware and rebuild the companion app (`.\tools\rebuild-companion.ps1`)
+   before calling it done — a protocol bump needs both sides rebuilt, not just
+   the one you were editing.
 6. If updating the existing upstream PR rather than opening a new one:
    force-push is expected (the PR history gets rebuilt on the new base) —
    confirm with the user first since it rewrites already-published history.

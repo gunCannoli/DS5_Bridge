@@ -8,6 +8,37 @@ Architecture/known-issue knowledge that should inform future work lives in
 
 ---
 
+## 2026-09-06 — One-command smoke-test setup: `build-firmware.ps1 -WithCompanion`
+
+The companion rebuild is now automated so it doesn't have to be done by hand
+before a smoke test.
+
+- New `tools/rebuild-companion.ps1`: kill the running app (taskkill `/T /F` in
+  a retry loop — the Electron process tree relaunches its own children, so a
+  single kill loses the race with the wipe) → `npm run package:win:local`
+  (wipes + rebuilds `C:\game\DS5 Bridge App`) → relaunch `--start-in-tray`.
+  `-NoRelaunch` skips the last step.
+- `tools/build-firmware.ps1` gains `-WithCompanion`: after the firmware build
+  it runs `rebuild-companion.ps1`, so
+  `.\tools\build-firmware.ps1 final -WithCompanion` is the whole smoke-test
+  setup in one command. Renamed its final banner to make the flash step
+  explicit.
+- Both scripts clear `ELECTRON_RUN_AS_NODE` for their own scope. That env var
+  (exported by some tool/CI shells) makes every Electron binary run as plain
+  Node — no `app`, no window, no tray — so the packaged app exits instantly
+  (silent code 0, or `bad option: --start-in-tray` code 9) and `main.js`
+  throws `Cannot read properties of undefined (reading
+  'requestSingleInstanceLock')`. Cost most of a debugging session to trace;
+  now documented in AGENTS.md "Local build environment notes" and defended
+  against in the scripts.
+- `.gitignore`: un-ignore `tools/rebuild-companion.ps1` (the `build-*` rule
+  was catching it, same as `build-firmware.ps1`).
+
+Verified end to end with `ELECTRON_RUN_AS_NODE=1` deliberately set:
+`build-firmware.ps1 final -WithCompanion` builds + stages the UF2, kills the
+running app, rebuilds it, relaunches it, and the app stays up (5-process
+Electron tree).
+
 ## 2026-09-06 — Consolidated the build layout: one Waveshare build, versioned UF2 names, PowerShell build script
 
 Cleaned up an accumulation of parallel build trees and stale companion

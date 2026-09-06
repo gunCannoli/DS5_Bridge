@@ -40,14 +40,24 @@
   Overrides $env:PICO_SDK_PATH. Must be pico-sdk 2.3.0 with TinyUSB at
   2d56dc533e45e4e91b15e93fdab5e22e964f328d.
 
+.PARAMETER WithCompanion
+  After the firmware build, also run tools/rebuild-companion.ps1 (kill the
+  running app -> npm run package:win:local -> relaunch --start-in-tray), so a
+  smoke test that needs a matching companion build is fully set up in one
+  command. Only needed when you changed something under companion/ or bumped
+  the protocol version; a firmware-only change talks to whatever companion is
+  already running.
+
 .EXAMPLE
   .\tools\build-firmware.ps1
   .\tools\build-firmware.ps1 debug
+  .\tools\build-firmware.ps1 final -WithCompanion
 #>
 param(
   [ValidateSet('final', 'debug', 'smoke')]
   [string] $Variant = 'final',
-  [string] $PicoSdkPath
+  [string] $PicoSdkPath,
+  [switch] $WithCompanion
 )
 
 $ErrorActionPreference = 'Stop'
@@ -140,6 +150,16 @@ $stagedUf2 = Join-Path $stageDir "ds5-bridge-$fileVersion-wol-$Variant.uf2"
 Copy-Item -LiteralPath $rawUf2 -Destination $stagedUf2 -Force
 
 Write-Host ""
-Write-Host "Build complete."
+Write-Host "Firmware build complete."
 Write-Host "  raw output : $rawUf2"
 Write-Host "  staged     : $stagedUf2"
+
+if ($WithCompanion) {
+  Write-Host ""
+  Write-Host "== -WithCompanion: rebuilding + relaunching the companion app =="
+  & (Join-Path $PSScriptRoot 'rebuild-companion.ps1')
+  if ($LASTEXITCODE -ne 0) { throw "rebuild-companion.ps1 failed (exit $LASTEXITCODE)." }
+}
+
+Write-Host ""
+Write-Host "Done. Flash $stagedUf2 (BOOTSEL) to the board."
