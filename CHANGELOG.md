@@ -8,6 +8,42 @@ Architecture/known-issue knowledge that should inform future work lives in
 
 ---
 
+## 2026-09-06 — Merged upstream v1.7.1 into `feature/wol-wifi`
+
+Merged `upstream/main` at `v1.7.1` (the `v1.7.0..v1.7.1` range: USB
+descriptor-mode rework in `src/usb_descriptors.c` + new
+`src/usb_descriptor_mode.h`, audio-haptics session protocol reusing
+`PROTOCOL_MINOR` 23, per-persona polling-interval fixes, the companion
+wake receiver staying online while the bridge is offline, Electron
+binary-install fix, Kitsune Input promotion refinements). PR #120 is
+still open upstream against `port-dev` and unmerged, so this keeps the
+fork current on top of it.
+
+Three conflicts, all "keep both" — no `COMMAND_ID` renumbering this time
+(unlike the v1.7.0 merge):
+
+- `src/usb.cpp` includes — kept both `#include "wolwifi.h"` (ours) and
+  `#include "usb_descriptor_mode.h"` (v1.7.1).
+- `src/usb.cpp` — kept our `usb_host_active()` (host enumerated **and**
+  awake; `wolwifi.cpp`'s host-alive gate calls it) next to v1.7.1's new
+  `usb_mounted_active()`. `src/usb.h` auto-merged cleanly with both
+  declarations.
+- `tests/firmware/usb_descriptor_migration_test.cpp` — took v1.7.1's
+  added `kAudioHapticsSessionProtocolMinor` / `buffer[17]` assertions
+  verbatim; our side had only removed those lines.
+
+`PROTOCOL_MAJOR.MINOR` stays `1.23` (v1.7.1 reuses minor 23, no bump).
+WOL command IDs stay `0x46`-`0x49`, no collision with any v1.7.1
+addition. `firmware-version.txt` and `companion/package.json` now read
+`1.7.1`.
+
+Verified: companion `typecheck` clean, **325/325** vitest tests pass (up
+from 320 at v1.7.0 — v1.7.1 adds 5), all three firmware host-side suites
+pass (`firmware_logic_tests` 49/49, `usb_descriptor_migration_test`,
+`diagnostics_config_test`). Firmware board build and real-hardware smoke
+test not re-run — no WOL code paths changed, only the merge resolutions
+above.
+
 ## 2026-08-15 — Merged upstream v1.7.0, resolved the WOL/radial-deadzone `COMMAND_ID` collision, rebuilt PR #120 as a clean 2-commit history
 
 Merged `upstream/main` (v1.7.0: Edge persona, radial deadzones, Kitsune

@@ -4,6 +4,10 @@ Current + next task only. Completed work is purged from here into
 `CHANGELOG.md` as it finishes — this file should stay short. Architecture
 knowledge and known issues belong in `DECISIONS.md`, not here.
 
+> Upstream sync: fork is current on **v1.7.1** as of 2026-09-06 (three
+> "keep both" conflicts, no `COMMAND_ID` renumbering) — see `CHANGELOG.md`.
+> PR #120 still open upstream against `port-dev`.
+
 ## Current task
 
 **Release-prep strip-down done.** All debug/diagnostic scaffolding built
