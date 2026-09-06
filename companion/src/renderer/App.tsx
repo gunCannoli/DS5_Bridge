@@ -1349,30 +1349,28 @@ function KitsuneInputPromotionDialog({
         <div className="kitsune-promotion-feature-grid">
           <article className="kitsune-promotion-feature-card">
             <div className="kitsune-promotion-feature-kicker">
-              <span>01</span>
-              <strong>Advanced Inputs</strong>
+              <strong>Tuning &amp; Compatibility</strong>
             </div>
             <ul>
               <li>Advanced Stick Tuning</li>
               <li>Advanced Trigger Tuning</li>
+              <li>More Personas: XSX + Impulse Triggers</li>
+              <li>NS Pro Support · DS4 in v1.1.1</li>
               <li>Gyro Aim</li>
               <li>Touchpad Gestures</li>
-              <li>Kitsune Cursor</li>
-              <li>Kitsune Keyboard</li>
             </ul>
           </article>
 
           <article className="kitsune-promotion-feature-card">
             <div className="kitsune-promotion-feature-kicker">
-              <span>02</span>
-              <strong>Game-Aware Tools</strong>
+              <strong>Profiles &amp; Tools</strong>
             </div>
             <ul>
               <li>Per-game Profiles</li>
               <li>Multi-Actions</li>
               <li>Automatic Game Library</li>
               <li>Kitsune Game Bar</li>
-              <li>More Personas &amp; Xbox Impulse Triggers</li>
+              <li>Kitsune Cursor &amp; Keyboard</li>
               <li>Mod API</li>
             </ul>
           </article>
@@ -1996,7 +1994,25 @@ function healthLabel(snapshot: BridgeSnapshot | null | undefined): string {
   if (snapshot.diagnostics.firmwareUpdateAvailable) {
     return `Firmware ${snapshot.diagnostics.firmwareUpdateAvailable.availableVersion} available`;
   }
+  if (!snapshot.status?.controllerConnected && snapshot.settings.wakeOnConnectEnabled) {
+    return 'Wake with controller enabled';
+  }
+  if (!snapshot.status?.controllerConnected) return 'Bridge online';
   return 'All systems normal';
+}
+
+function healthTitle(snapshot: BridgeSnapshot | null | undefined): string | undefined {
+  if (
+    snapshot?.state !== 'connected'
+    || snapshot.diagnostics.lastError
+    || snapshot.diagnostics.firmwareUpdateAvailable
+    || snapshot.status?.controllerConnected
+  ) {
+    return undefined;
+  }
+  return snapshot.settings.wakeOnConnectEnabled
+    ? 'The Pico bridge is online. Controller wake is enabled, but no controller is connected.'
+    : 'The Pico bridge is online and waiting for a controller.';
 }
 
 function hexByte(value: number): string {
@@ -4141,6 +4157,7 @@ export function App() {
     ?? '--';
   const firmwareUpdateAvailable = Boolean(snapshot?.diagnostics.firmwareUpdateAvailable);
   const overviewHealthLabel = healthLabel(snapshot);
+  const overviewHealthTitle = healthTitle(snapshot);
   const overviewHealthTone = personaTransitionActive
     ? 'warn'
     : snapshot?.diagnostics.lastError
@@ -4150,7 +4167,7 @@ export function App() {
     : connected && controllerConnected
       ? 'good'
       : connected
-        ? 'warn'
+        ? 'info'
         : 'idle';
   const systemHealthTone = personaTransitionActive
     ? 'warn'
@@ -4158,7 +4175,9 @@ export function App() {
       ? 'bad'
       : firmwareUpdateAvailable
         ? 'warn'
-        : 'good';
+        : connected && !controllerConnected
+          ? 'info'
+          : 'good';
   const overviewConnectionStatus = personaTransitionActive
     ? 'Switching'
     : connected && controllerConnected
@@ -7082,7 +7101,7 @@ export function App() {
                 <h2>Overview</h2>
                 <p>At-a-glance status of your controller and active settings.</p>
               </div>
-              <span className={`overview-health health-label ${overviewHealthTone}`}>
+              <span className={`overview-health health-label ${overviewHealthTone}`} title={overviewHealthTitle}>
                 <span className={`dot ${overviewHealthTone}`} />
                 {overviewHealthLabel}
               </span>
@@ -9862,7 +9881,7 @@ export function App() {
                       </div>
                       <div className="device-row device-status-row">
                         <span>Status</span>
-                        <strong className={`health-label ${systemHealthTone}`}>
+                        <strong className={`health-label ${systemHealthTone}`} title={healthTitle(snapshot)}>
                           <span className={`dot ${systemHealthTone === 'good' ? statusTone : systemHealthTone}`} />
                           {healthLabel(snapshot)}
                         </strong>
