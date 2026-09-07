@@ -1233,6 +1233,21 @@ void assert_bluetooth_pairing_and_reconnect_policy(std::filesystem::path const &
         "// Inactivity detection.",
         input_activity
     );
+    // The idle-disconnect path must not fire while audio is actively routed
+    // to the controller (a movie or music through the headset jack) -- same
+    // guard the RSSI idle gate uses. It sits after the mic-mute carve-out and
+    // before the timeout comparison, and resets the idle clock so the full
+    // timeout restarts once playback stops.
+    const std::string idle_block = idle_disconnect == std::string::npos
+        ? std::string()
+        : bt_cpp.substr(
+            idle_disconnect,
+            bt_cpp.find("BtControllerDisconnectIntentIdleTimeout", idle_disconnect)
+                - idle_disconnect
+        );
+    const auto idle_mic_mute = idle_block.find("if (mute[1])");
+    const auto idle_audio_guard = idle_block.find("if (audio_output_route_protected())");
+    const auto idle_timeout_cmp = idle_block.find("now_us - inactive_time > idle_disconnect_timeout_us()");
     if (
         bt_cpp.find("RSSI_POLL_INTERVAL_US") != std::string::npos
         || bt_cpp.find("#define RSSI_INPUT_IDLE_GRACE_US 5000000ull")
@@ -1253,9 +1268,17 @@ void assert_bluetooth_pairing_and_reconnect_policy(std::filesystem::path const &
             == std::string::npos
         || bt_cpp.find("uint64_t inactive_time = 0;")
             == std::string::npos
+        || idle_mic_mute == std::string::npos
+        || idle_audio_guard == std::string::npos
+        || idle_timeout_cmp == std::string::npos
+        || !(idle_mic_mute < idle_audio_guard && idle_audio_guard < idle_timeout_cmp)
+        || idle_block.find(
+            "if (audio_output_route_protected()) {\n                inactive_time = now_us;\n                return;\n            }"
+        ) == std::string::npos
     ) {
         throw std::runtime_error(
-            "RSSI sampling must remain input-idle, audio-safe, and bounded per idle epoch"
+            "RSSI sampling must remain input-idle, audio-safe, and bounded per idle epoch; "
+            "idle disconnect must skip while audio is routed to the controller"
         );
     }
 

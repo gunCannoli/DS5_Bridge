@@ -4062,6 +4062,16 @@ static __attribute__((noinline)) void l2cap_packet_handler_cold(
             if (mute[1]) { // Microphone mute is enabled.
                 return;
             }
+            // Audio actively routed to the controller (a movie or music
+            // through the 3.5 mm headset jack) means the device is in use
+            // even with no button input -- don't idle-disconnect and cut the
+            // audio. Reset the idle clock so the full timeout starts fresh
+            // once playback stops, matching how a button press resets it.
+            // Same signal the RSSI idle gate and output-route protection use.
+            if (audio_output_route_protected()) {
+                inactive_time = now_us;
+                return;
+            }
             if (!meaningful_input_activity && now_us - inactive_time > idle_disconnect_timeout_us()) {
                 DS5_LOG("disconnect when inactive\n");
                 inactive_time = now_us;
