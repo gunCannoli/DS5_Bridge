@@ -214,6 +214,10 @@ export const DEFAULT_SETTINGS: CompanionSettings = {
   notifyLowBattery: false,
   duplexMicEnabled: DEFAULT_CONTROLLER_PROFILE_SETTINGS.duplexMicEnabled,
   controllerPowerSavingEnabled: DEFAULT_CONTROLLER_PROFILE_SETTINGS.controllerPowerSavingEnabled,
+  // "Auto Switch Audio" off by default; empty fallback device = "use the only
+  // non-controller output" when there is exactly one.
+  headsetAudioAutoSwitchEnabled: false,
+  headsetAudioFallbackDevice: '',
   selectedControllerProfileId: DEFAULT_CONTROLLER_PROFILE_ID,
   controllerProfiles: [DEFAULT_CONTROLLER_PROFILE],
   selectedButtonRemappingProfileId: DEFAULT_BUTTON_REMAP_PROFILE_ID,
@@ -1077,6 +1081,12 @@ function normalizeSettings(value: Partial<CompanionSettings> | null | undefined)
     controllerPowerSavingEnabled: typeof value?.controllerPowerSavingEnabled === 'boolean'
       ? value.controllerPowerSavingEnabled
       : DEFAULT_SETTINGS.controllerPowerSavingEnabled,
+    headsetAudioAutoSwitchEnabled: typeof value?.headsetAudioAutoSwitchEnabled === 'boolean'
+      ? value.headsetAudioAutoSwitchEnabled
+      : DEFAULT_SETTINGS.headsetAudioAutoSwitchEnabled,
+    headsetAudioFallbackDevice: typeof value?.headsetAudioFallbackDevice === 'string'
+      ? value.headsetAudioFallbackDevice.trim()
+      : DEFAULT_SETTINGS.headsetAudioFallbackDevice,
     selectedControllerProfileId,
     controllerProfiles,
     selectedButtonRemappingProfileId,

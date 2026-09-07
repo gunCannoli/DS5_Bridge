@@ -94,6 +94,12 @@ export interface CompanionSettings {
   notifyLowBattery: boolean;
   duplexMicEnabled: boolean;
   controllerPowerSavingEnabled: boolean;
+  // "Auto Switch Audio": when on, a headset in the controller's 3.5 mm jack
+  // makes the controller the Windows default output; jack empty routes back to
+  // `headsetAudioFallbackDevice`. When that name is empty and exactly one
+  // non-controller output exists, that one is used automatically.
+  headsetAudioAutoSwitchEnabled: boolean;
+  headsetAudioFallbackDevice: string;
   selectedControllerProfileId: string;
   controllerProfiles: ControllerProfile[];
   selectedButtonRemappingProfileId: string;

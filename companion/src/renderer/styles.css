@@ -2482,6 +2482,47 @@ button {
   flex: 0 0 86px;
 }
 
+/* "Auto Switch Audio on Jack": when there are 2+ real outputs to choose
+   between, the controls are [ fallback select ] + [ toggle ] as a flex group
+   flush to the right edge (same shape as Idle Disconnect). When there's 0 or
+   1 other output the select isn't rendered at all and the bare toggle sits
+   flush right like every other toggle row. The select's dropdown menu opens
+   wider than the button (floatingMenu + floatingMenuMinWidth) so long Windows
+   endpoint names are fully legible. */
+.headset-audio-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.headset-audio-fallback-select {
+  flex: 0 1 200px;
+  min-width: 0;
+}
+
+.headset-audio-fallback-select .custom-select-button {
+  height: 26px;
+  padding: 0 7px 0 9px;
+  grid-template-columns: minmax(0, 1fr) 16px;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.headset-audio-fallback-select .custom-select-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.headset-audio-fallback-select .custom-select-menu button {
+  min-height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
 .settings-scale-select .custom-select-button {
   height: 26px;
   padding: 0 7px 0 9px;

@@ -1159,6 +1159,15 @@ function registerIpc(service: BridgeService): void {
   ipcMain.handle('bridge:setControllerPowerSavingEnabled', (_event, value: boolean) => (
     service.setControllerPowerSavingEnabled(value)
   ));
+  ipcMain.handle('bridge:setHeadsetAudioAutoSwitchEnabled', (_event, value: boolean) => (
+    service.setHeadsetAudioAutoSwitchEnabled(value)
+  ));
+  ipcMain.handle('bridge:setHeadsetAudioFallbackDevice', (_event, value: string) => (
+    service.setHeadsetAudioFallbackDevice(value)
+  ));
+  ipcMain.handle('bridge:listRenderEndpointNames', () => (
+    service.listRenderEndpointNames()
+  ));
   ipcMain.handle('bridge:setUiScalePercent', (_event, value: UiScalePercent) => {
     const snapshot = service.setUiScalePercent(value);
     applySnapshotWindowScale(snapshot);

@@ -3053,6 +3053,7 @@ export function App() {
   const [controllerDeviceForgetDialog, setControllerDeviceForgetDialog] = useState<ControllerDeviceForgetDialog | null>(null);
   const [controllerDeviceActionError, setControllerDeviceActionError] = useState<string | null>(null);
   const [showBridgeSettings, setShowBridgeSettings] = useState(false);
+  const [renderEndpoints, setRenderEndpoints] = useState<Array<{ name: string; isBridge: boolean }>>([]);
   const [settingsFocusTarget, setSettingsFocusTarget] = useState<SettingsFocusTarget | null>(null);
   const [notificationFocusTarget, setNotificationFocusTarget] = useState<NotificationFocusTarget | null>(null);
   const [showNotificationsMenu, setShowNotificationsMenu] = useState(false);
@@ -3657,6 +3658,30 @@ export function App() {
     };
   }, [showBridgeSettings, showNotificationsMenu]);
 
+  // Refresh the "Auto Switch Audio" fallback-device options whenever Bridge
+  // Settings opens -- the set of active Windows render endpoints changes as
+  // devices come and go.
+  useEffect(() => {
+    if (!showBridgeSettings) {
+      return;
+    }
+    let cancelled = false;
+    void window.bridge.listRenderEndpointNames()
+      .then((endpoints) => {
+        if (!cancelled) {
+          setRenderEndpoints(endpoints);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setRenderEndpoints([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showBridgeSettings]);
+
   useEffect(() => {
     setSpeakerOutputAvailable(true);
   }, []);
@@ -3896,6 +3921,33 @@ export function App() {
   const adaptiveTriggerOutputActive = Boolean(snapshot?.status?.adaptiveTriggerOutputRecent);
   const audioStatus = snapshot?.diagnostics.audioStatus;
   const headsetOutputDetected = Boolean(audioStatus?.headsetPlugged);
+  const headsetAudioAutoSwitchEnabled = Boolean(snapshot?.settings.headsetAudioAutoSwitchEnabled);
+  const headsetAudioFallbackDevice = snapshot?.settings.headsetAudioFallbackDevice ?? '';
+  // Real output devices = everything except the controller's own endpoint.
+  const headsetAudioOutputChoices = useMemo(
+    () => renderEndpoints.filter((endpoint) => !endpoint.isBridge).map((endpoint) => endpoint.name),
+    [renderEndpoints]
+  );
+  // Show the fallback dropdown only when the choice is ambiguous (2+ real
+  // outputs). With exactly one, the firmware auto-uses it; with none detected
+  // yet, there's nothing to pick.
+  const headsetAudioShowFallbackSelect = headsetAudioOutputChoices.length >= 2
+    || (headsetAudioFallbackDevice !== '' && !headsetAudioOutputChoices.includes(headsetAudioFallbackDevice));
+  const headsetAudioFallbackOptions = useMemo<Array<[string, string]>>(() => {
+    const options: Array<[string, string]> = [['Auto (only other output)', '']];
+    for (const name of headsetAudioOutputChoices) {
+      options.push([name, name]);
+    }
+    // Keep a previously-saved device selectable even when it isn't currently
+    // present (its device is off), so the choice survives a power cycle.
+    if (
+      headsetAudioFallbackDevice !== ''
+      && !headsetAudioOutputChoices.includes(headsetAudioFallbackDevice)
+    ) {
+      options.push([`${headsetAudioFallbackDevice} (not connected)`, headsetAudioFallbackDevice]);
+    }
+    return options;
+  }, [headsetAudioOutputChoices, headsetAudioFallbackDevice]);
   const controllerPowerSavingActive = controllerPowerSavingActiveFromSnapshot(snapshot);
   const feedbackBoostEnabled = Boolean(snapshot?.settings.feedbackBoostEnabled);
   const hapticsSliderMax = feedbackSliderMaxFromSnapshot(snapshot);
@@ -10640,6 +10692,56 @@ export function App() {
                   >
                     <span />
                   </button>
+                </div>
+                <div className="settings-menu-row">
+                  <div className="settings-menu-copy">
+                    <strong>Auto Switch Audio on Jack</strong>
+                    <span>Switches Windows output to the controller when a headset is plugged in, and back on disconnect.</span>
+                  </div>
+                  {headsetAudioShowFallbackSelect ? (
+                    <div className="settings-menu-controls headset-audio-controls">
+                      <CustomSelect
+                        value={headsetAudioFallbackDevice}
+                        options={headsetAudioFallbackOptions}
+                        className="headset-audio-fallback-select"
+                        showSelectedCheck={false}
+                        floatingMenu
+                        floatingMenuMinWidth={320}
+                        ariaLabel="Return audio to this device when the headset is unplugged"
+                        disabled={pendingAction !== null || !headsetAudioAutoSwitchEnabled}
+                        onChange={(value) => {
+                          void runAction('headset-audio-fallback', () => (
+                            window.bridge.setHeadsetAudioFallbackDevice(value)
+                          ));
+                        }}
+                      />
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={headsetAudioAutoSwitchEnabled}
+                        className={`switch ${headsetAudioAutoSwitchEnabled ? 'on' : ''}`}
+                        disabled={pendingAction !== null}
+                        onClick={() => void runAction('headset-audio-auto-switch', () => (
+                          window.bridge.setHeadsetAudioAutoSwitchEnabled(!headsetAudioAutoSwitchEnabled)
+                        ))}
+                      >
+                        <span />
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={headsetAudioAutoSwitchEnabled}
+                      className={`switch ${headsetAudioAutoSwitchEnabled ? 'on' : ''}`}
+                      disabled={pendingAction !== null}
+                      onClick={() => void runAction('headset-audio-auto-switch', () => (
+                        window.bridge.setHeadsetAudioAutoSwitchEnabled(!headsetAudioAutoSwitchEnabled)
+                      ))}
+                    >
+                      <span />
+                    </button>
+                  )}
                 </div>
                 <div className="settings-menu-row">
                   <div className="settings-menu-copy">

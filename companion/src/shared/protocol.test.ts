@@ -372,6 +372,7 @@ describe('companion protocol', () => {
     });
   });
 
+
   it('parses a trigger trace report', () => {
     const report = baseReport(REPORT_ID.TRIGGER_TRACE);
     report[7] = 1;

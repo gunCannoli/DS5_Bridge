@@ -80,6 +80,16 @@ if (options.SetDefaultRenderBridge)
     EndpointManager.SetDefaultRenderBridgeEndpoint(options.BridgePersona);
     return;
 }
+if (options.SetDefaultRender)
+{
+    EndpointManager.SetDefaultRenderEndpointByName(options.DeviceName ?? string.Empty);
+    return;
+}
+if (options.ListRenderEndpoints)
+{
+    EndpointManager.ListRenderEndpoints();
+    return;
+}
 
 using var helper = new AudioHelper(options);
 await helper.RunAsync();
@@ -2751,6 +2761,8 @@ sealed record HelperOptions(
     bool PlayTestHaptics,
     bool DefaultRenderStatus,
     bool SetDefaultRenderBridge,
+    bool SetDefaultRender,
+    bool ListRenderEndpoints,
     string? BridgePersona,
     bool HapticsOnly,
     bool StdoutOnly,
@@ -2815,6 +2827,8 @@ sealed record HelperOptions(
         var playTestHaptics = false;
         var defaultRenderStatus = false;
         var setDefaultRenderBridge = false;
+        var setDefaultRender = false;
+        var listRenderEndpoints = false;
         string? bridgePersona = null;
         var captureDumpOnly = false;
         var hapticsOnly = false;
@@ -2971,6 +2985,12 @@ sealed record HelperOptions(
                 case "--set-default-render-bridge":
                     setDefaultRenderBridge = true;
                     break;
+                case "--set-default-render":
+                    setDefaultRender = true;
+                    break;
+                case "--list-render-endpoints":
+                    listRenderEndpoints = true;
+                    break;
                 case "--bridge-persona" when index + 1 < args.Length:
                     bridgePersona = args[++index];
                     break;
@@ -3005,6 +3025,8 @@ sealed record HelperOptions(
             playTestHaptics,
             defaultRenderStatus,
             setDefaultRenderBridge,
+            setDefaultRender,
+            listRenderEndpoints,
             bridgePersona,
             hapticsOnly,
             stdoutOnly,
