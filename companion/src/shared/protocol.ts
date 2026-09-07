@@ -596,6 +596,7 @@ export interface AudioDebugStatsPayload {
   criticalStarvingAudioCount: number;
 }
 
+
 export interface TriggerTraceEventPayload {
   sequence: number;
   timeMs: number;
@@ -1123,6 +1124,7 @@ export function parseAudioStatsReport(report: ArrayLike<number>): AudioDebugStat
     criticalStarvingAudioCount: readU32(report, 60)
   };
 }
+
 
 export function parseTriggerTraceReport(report: ArrayLike<number>): TriggerTracePayload {
   assertReport(report, REPORT_ID.TRIGGER_TRACE);
