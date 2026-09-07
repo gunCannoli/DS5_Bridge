@@ -60,6 +60,11 @@ if (options.MonitorAudioSessions)
     await monitor.RunAsync();
     return;
 }
+if (options.MonitorDisplayState)
+{
+    new DisplayStateMonitor().Run();
+    return;
+}
 if (options.ListDevices)
 {
     EndpointManager.ListDevices();
@@ -2748,6 +2753,7 @@ sealed record HelperOptions(
     AudioHelperSource Source,
     bool ListDevices,
     bool MonitorAudioSessions,
+    bool MonitorDisplayState,
     string? ResolveIconDataUrlPath,
     bool CompanionTransportServer,
     bool MicKeepaliveOnly,
@@ -2814,6 +2820,7 @@ sealed record HelperOptions(
         );
         var listDevices = false;
         var monitorAudioSessions = false;
+        var monitorDisplayState = false;
         string? resolveIconDataUrlPath = null;
         var companionTransportServer = false;
         var listBridges = false;
@@ -2952,6 +2959,9 @@ sealed record HelperOptions(
                 case "--monitor-audio-sessions":
                     monitorAudioSessions = true;
                     break;
+                case "--monitor-display-state":
+                    monitorDisplayState = true;
+                    break;
                 case "--resolve-icon-data-url" when index + 1 < args.Length:
                     resolveIconDataUrlPath = args[++index];
                     break;
@@ -3012,6 +3022,7 @@ sealed record HelperOptions(
             source,
             listDevices,
             monitorAudioSessions,
+            monitorDisplayState,
             resolveIconDataUrlPath,
             companionTransportServer,
             micKeepaliveOnly,

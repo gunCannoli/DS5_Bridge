@@ -491,6 +491,115 @@ export class AudioHapticsSessionMonitor extends EventEmitter {
   }
 }
 
+export type DisplayPowerState = 'on' | 'off' | 'dimmed' | 'unknown';
+
+function parseDisplayStateLine(line: string): DisplayPowerState | null {
+  const match = /^display:\s*(on|off|dimmed|unknown)\s*$/.exec(line.trim());
+  return match ? (match[1] as DisplayPowerState) : null;
+}
+
+// Streams the Windows console display power state from a long-lived AudioHelper
+// process (--monitor-display-state). Emits 'state' with a DisplayPowerState on
+// every change, plus an initial 'unknown' before Windows delivers the first
+// notification. Used by the display-aware Idle Disconnect override in
+// bridge-service.ts. Deliberately minimal -- there is no snapshot to wait for,
+// unlike the audio-session monitor.
+export class DisplayStateMonitor extends EventEmitter {
+  private process: ChildProcessWithoutNullStreams | null = null;
+  private readonly stoppingHelpers = new WeakSet<ChildProcessWithoutNullStreams>();
+  private stdoutBuffer = '';
+  private state: DisplayPowerState = 'unknown';
+
+  currentState(): DisplayPowerState {
+    return this.state;
+  }
+
+  isActive(): boolean {
+    return this.process !== null;
+  }
+
+  start(): void {
+    if (this.process) {
+      return;
+    }
+    const helperPath = resolveHelperPath();
+    const helper = spawn(helperPath, ['--monitor-display-state'], {
+      env: buildSystemAudioHapticsHelperEnv(),
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    this.process = helper;
+    this.stdoutBuffer = '';
+
+    helper.stdin.on('error', (error) => {
+      if (!isExpectedHelperPipeError(error)) {
+        this.emit('error', error);
+      }
+    });
+    helper.on('error', (error) => this.emit('error', error));
+    helper.stdout.on('data', (chunk: Buffer) => {
+      this.stdoutBuffer += chunk.toString('utf8');
+      const lines = this.stdoutBuffer.split(/\r?\n/);
+      this.stdoutBuffer = lines.pop() ?? '';
+      for (const line of lines) {
+        const next = parseDisplayStateLine(line);
+        if (next && next !== this.state) {
+          this.state = next;
+          this.emit('state', next);
+        }
+      }
+    });
+    helper.stderr.on('data', () => {
+      // status lines are diagnostic; ignore.
+    });
+    helper.on('exit', (code, signal) => {
+      const stoppedByUs = this.stoppingHelpers.has(helper);
+      this.stoppingHelpers.delete(helper);
+      if (this.process === helper) {
+        this.process = null;
+        this.stdoutBuffer = '';
+        this.state = 'unknown';
+      }
+      if (!stoppedByUs) {
+        this.emit('status', `display state monitor exited (${signal ?? code ?? 'unknown'})`);
+      }
+    });
+  }
+
+  async stop(): Promise<void> {
+    const helper = this.process;
+    this.process = null;
+    this.stdoutBuffer = '';
+    this.state = 'unknown';
+    if (!helper) {
+      return;
+    }
+    this.stoppingHelpers.add(helper);
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(() => {
+        if (!helper.killed) {
+          helper.kill('SIGKILL');
+        }
+        resolve();
+      }, HELPER_SESSION_MONITOR_STOP_TIMEOUT_MS);
+      helper.once('exit', () => {
+        clearTimeout(timeout);
+        this.stoppingHelpers.delete(helper);
+        resolve();
+      });
+      try {
+        if (helper.stdin.writable) {
+          helper.stdin.write('stop\n');
+        }
+        helper.stdin.end();
+      } catch {
+        // pipe already gone
+      }
+      helper.kill();
+    });
+  }
+}
+
 function normalizeSpeakerVolumePercent(percent: number): number {
   return Math.max(0, Math.min(100, Math.round(percent)));
 }

@@ -85,8 +85,24 @@ vi.mock('./winusb-companion-transport', () => ({
 
 vi.mock('./audio-helper', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./audio-helper')>();
+  const { EventEmitter } = await import('node:events');
+  // Inert stand-in: never spawns a process. Tests drive display state by
+  // emitting 'state' directly on the instance the service holds.
+  class DisplayStateMonitorStub extends EventEmitter {
+    private state: 'on' | 'off' | 'dimmed' | 'unknown' = 'unknown';
+    private active = false;
+    currentState(): 'on' | 'off' | 'dimmed' | 'unknown' { return this.state; }
+    isActive(): boolean { return this.active; }
+    start(): void { this.active = true; }
+    async stop(): Promise<void> { this.active = false; this.state = 'unknown'; }
+    emitState(next: 'on' | 'off' | 'dimmed' | 'unknown'): void {
+      this.state = next;
+      this.emit('state', next);
+    }
+  }
   return {
     ...actual,
+    DisplayStateMonitor: DisplayStateMonitorStub,
     playBridgeHapticsTestPattern: audioHelperMock.playBridgeHapticsTestPattern,
     playBridgeSpeakerTestTone: audioHelperMock.playBridgeSpeakerTestTone,
     listBridges: audioHelperMock.listBridges,
@@ -544,7 +560,10 @@ function firmwareLogReport(bytes: number[], options: {
   return report;
 }
 
-function createService(initialSettings?: Parameters<SettingsStore['update']>[0]): { service: BridgeService; tempDir: string } {
+function createService(
+  initialSettings?: Parameters<SettingsStore['update']>[0],
+  options?: { getSystemIdleTimeSeconds?: () => number }
+): { service: BridgeService; tempDir: string } {
   const tempDir = mkdtempSync(path.join(tmpdir(), 'ds5-bridge-companion-'));
   const settingsStore = new SettingsStore(tempDir);
   // "Auto Switch Audio" is off by default. Keep it explicit here so a future
@@ -552,9 +571,20 @@ function createService(initialSettings?: Parameters<SettingsStore['update']>[0])
   // AudioHelper; the dedicated tests opt in.
   settingsStore.update({ headsetAudioAutoSwitchEnabled: false, ...initialSettings });
   return {
-    service: new BridgeService(settingsStore),
+    service: new BridgeService(settingsStore, options),
     tempDir
   };
+}
+
+// The mocked DisplayStateMonitor the service instance holds.
+function displayStateMonitor(service: BridgeService): {
+  emitState(next: 'on' | 'off' | 'dimmed' | 'unknown'): void;
+  isActive(): boolean;
+} {
+  return (service as unknown as { displayStateMonitor: {
+    emitState(next: 'on' | 'off' | 'dimmed' | 'unknown'): void;
+    isActive(): boolean;
+  } }).displayStateMonitor;
 }
 
 async function poll(service: BridgeService): Promise<void> {
@@ -611,8 +641,11 @@ describe('BridgeService', () => {
     }
   });
 
-  function serviceFixture(initialSettings?: Parameters<SettingsStore['update']>[0]): BridgeService {
-    const fixture = createService(initialSettings);
+  function serviceFixture(
+    initialSettings?: Parameters<SettingsStore['update']>[0],
+    options?: { getSystemIdleTimeSeconds?: () => number }
+  ): BridgeService {
+    const fixture = createService(initialSettings, options);
     tempDirs.push(fixture.tempDir);
     services.push(fixture.service);
     return fixture.service;
@@ -2054,6 +2087,107 @@ describe('BridgeService', () => {
 
     expect(device.sentReports.at(-1)?.[7]).toBe(COMMAND_ID.SLEEP_CONTROLLER);
     expect(device.sentReports.at(-1)?.[9]).toBe(0);
+  });
+
+  describe('display-aware idle disconnect override', () => {
+    let clockOffsetMs = 0;
+    const realNow = Date.now;
+    beforeEach(() => { clockOffsetMs = 0; Date.now = () => realNow() + clockOffsetMs; });
+    afterEach(() => { Date.now = realNow; });
+
+    async function connectedService(idleTimeSeconds: number) {
+      const service = serviceFixture(
+        { idleDisconnectEnabled: true },
+        { getSystemIdleTimeSeconds: () => idleTimeSeconds }
+      );
+      const device = new MockHidDevice();
+      device.fixedAckRevision = 4;
+      device.settingsRevision = 4;
+      // The override keys off the firmware-reported idle timeout (what the
+      // firmware itself uses), so set it on the status report, not settings.
+      device.status = statusReport({
+        controllerConnected: true,
+        settingsRevision: 4,
+        statusFlags: 0x80,
+        idleDisconnectTimeoutMinutes: 1
+      });
+      hidMock.state.devicesList = [companionDeviceInfo()];
+      hidMock.state.openDevices.set('companion-path', device);
+      await poll(service);
+      // let the post-connect settings reapply drain so it doesn't keep
+      // reapplyActive true (which gates the override).
+      await flushReapply();
+      await flushReapply();
+      await poll(service);
+      device.sentReports = [];
+      return { service, device };
+    }
+
+    function sentSleep(device: MockHidDevice): number {
+      return device.sentReports.filter((r) => r[7] === COMMAND_ID.SLEEP_CONTROLLER).length;
+    }
+
+    it('starts the display monitor only while idle disconnect is on and a controller is connected', async () => {
+      const { service } = await connectedService(0);
+      expect(displayStateMonitor(service).isActive()).toBe(true);
+
+      (service as unknown as { settingsStore: SettingsStore }).settingsStore.update({ idleDisconnectEnabled: false });
+      await poll(service);
+      expect(displayStateMonitor(service).isActive()).toBe(false);
+    });
+
+    it('sleeps the controller when the screen is off and there has been no input past the timeout', async () => {
+      const { service, device } = await connectedService(120); // 2 min idle, timeout is 1 min
+      displayStateMonitor(service).emitState('off');
+      clockOffsetMs = 90_000; // 90s past the screen-off timestamp, > 60s threshold
+      await poll(service);
+      await flushImmediate();
+      expect(sentSleep(device)).toBe(1);
+    });
+
+    it('does not sleep the controller while the screen is on (firmware keeps it alive)', async () => {
+      const { service, device } = await connectedService(120);
+      displayStateMonitor(service).emitState('on');
+      clockOffsetMs = 90_000;
+      await poll(service);
+      await flushImmediate();
+      expect(sentSleep(device)).toBe(0);
+    });
+
+    it('does not sleep the controller while display state is unknown', async () => {
+      const { service, device } = await connectedService(120);
+      clockOffsetMs = 90_000;
+      await poll(service);
+      await flushImmediate();
+      expect(sentSleep(device)).toBe(0);
+    });
+
+    it('does not sleep the controller when the screen is off but there was recent input', async () => {
+      const { service, device } = await connectedService(5); // only 5s system idle
+      displayStateMonitor(service).emitState('off');
+      clockOffsetMs = 90_000;
+      await poll(service);
+      await flushImmediate();
+      expect(sentSleep(device)).toBe(0);
+    });
+
+    it('fires once per screen-off episode and re-arms when the screen comes back on', async () => {
+      const { service, device } = await connectedService(120);
+      displayStateMonitor(service).emitState('off');
+      clockOffsetMs = 90_000;
+      await poll(service);
+      await flushImmediate();
+      await poll(service); // still off -> no repeat
+      await flushImmediate();
+      expect(sentSleep(device)).toBe(1);
+
+      displayStateMonitor(service).emitState('on');   // clears latch + displayOffSince
+      displayStateMonitor(service).emitState('off');  // new episode, timestamp = now (offset 90s)
+      clockOffsetMs = 200_000;                        // 110s into the new episode
+      await poll(service);
+      await flushImmediate();
+      expect(sentSleep(device)).toBe(2);
+    });
   });
 
   it('sends and stores speaker volume shortcut settings', async () => {

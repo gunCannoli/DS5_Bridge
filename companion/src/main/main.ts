@@ -1307,7 +1307,9 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   const settingsStore = new SettingsStore(app.getPath('userData'));
   applyLaunchAtStartup(settingsStore.get().launchAtStartupEnabled);
-  bridgeService = new BridgeService(settingsStore);
+  bridgeService = new BridgeService(settingsStore, {
+    getSystemIdleTimeSeconds: () => powerMonitor.getSystemIdleTime()
+  });
   registerIpc(bridgeService);
 
   mainWindow = createWindow(settingsStore.get().uiScalePercent);
