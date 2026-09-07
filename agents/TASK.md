@@ -15,8 +15,8 @@ Four fork features, all documented in `CUSTOM.md`:
 | # | Feature | State |
 |---|---|---|
 | 1 | Wake-on-LAN over Wi-Fi (firmware + companion) | shipped in DS5_Bridge PR 120, open upstream |
-| 2 | Auto Switch Audio on Jack (companion only) | implemented, PR drafted, **blocked on a 3+ output-device test** |
-| 3 | Audio-aware Idle Disconnect (firmware) | implemented, PR drafted, **pending hardware smoke test** |
+| 2 | Auto Switch Audio on Jack (companion only) | **DS5_Bridge PR 147 open** (branch `pr/auto-switch-audio-on-jack` off upstream/main). Multi-output dropdown still untested on 3+ devices -- noted in the PR body. |
+| 3 | Audio-aware Idle Disconnect (firmware) | **DS5_Bridge PR 146 open** (branch `pr/idle-disconnect-audio-aware` off upstream/main). Hardware smoke test still pending -- noted in the PR body. |
 | 4 | Speaker-audio stutter | investigated and **reverted** — see `PLAN-audio-stutter.md`; nothing shipped |
 
 Repo hygiene work completed 2026-09-07:
@@ -36,19 +36,23 @@ Repo hygiene work completed 2026-09-07:
 - [ ] **Push the scrubbed history.** `git push --force-with-lease origin
       feature/wol-wifi`. `origin/feature/wol-wifi` (the clean PR 120 branch)
       needs the same scrub before PR 120 is next updated.
-- [ ] **Feature 2 blocker:** smoke test with **3+ Windows render outputs** to
+- [ ] **PR 147 follow-up:** smoke test with **3+ Windows render outputs** to
       exercise the fallback dropdown (it only renders with ≥2 non-controller
       outputs): all outputs listed, menu wide enough for long names, selection
       persists, a saved-but-absent device shows "(not connected)", and
-      auto-resolve is *not* used once a device is explicitly picked.
-- [ ] **Feature 3 smoke test:** flash `firmware/ds5-bridge-1.71-wol-final.uf2`.
+      auto-resolve is *not* used once a device is explicitly picked. Post the
+      result on the PR.
+- [ ] **PR 146 follow-up:** hardware smoke test. Flash a `final`-variant UF2.
       (1) headset in jack + long video, Idle Disconnect at 1 min, no input →
       stays connected, audio uninterrupted; (2) stop playback, no input →
       disconnects ~1 min later; (3) no audio + no input → disconnects as
       before; (4) mic-mute still independently suppresses idle disconnect.
-- [ ] Then open both PRs from `.github/pr-drafts/` per
-      `CONTRIBUTING-FORK.md` §5. Local-only items (full-window settings
-      modal, the `:disabled` flicker fix) must **not** be in either diff.
+      Post the result on the PR.
+- [ ] If either PR needs revision: the branches are `pr/idle-disconnect-audio-aware`
+      and `pr/auto-switch-audio-on-jack`, each one clean commit off
+      `upstream/main`. Amend + force-push; do not merge fork-branch history in.
+- Local-only items (full-window settings modal, the `:disabled` flicker fix)
+  stay on `feature/wol-wifi` only and are NOT in either PR.
 
 ## Known, deliberately not fixed
 
