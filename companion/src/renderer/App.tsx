@@ -10365,7 +10365,7 @@ export function App() {
 
       {showBridgeSettings && (
         <div
-          className="modal-backdrop"
+          className="modal-backdrop bridge-settings-backdrop"
           role="presentation"
           onMouseDown={() => setShowBridgeSettings(false)}
         >

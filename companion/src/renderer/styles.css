@@ -1452,14 +1452,72 @@ button {
   animation: modal-panel-in 160ms ease-out;
 }
 
-/* Wake-on-LAN adds a text-input section (SSID/password/target MAC) to the
-   preferences modal's left column: taller than the other modal variants
-   need (extra rows), and wider (side-by-side label + text input rows need
-   more horizontal room than the toggle/select rows the column was sized
-   for, or the input gets squeezed to the point of overflowing the column). */
+/* LOCAL-ONLY (not for the upstream PR): a fork preference, orthogonal to any
+   feature. The preferences modal carries the most rows of any variant
+   (Wake-on-LAN's SSID/password/MAC inputs, Auto Switch Audio, power, LEDs,
+   shortcuts, firmware...). It fills the entire app window -- the backdrop
+   drops its usual centering padding for this one modal
+   (.bridge-settings-backdrop) --
+   so the two columns get maximum room and everything fits without an internal
+   scrollbar. */
+.bridge-settings-backdrop {
+  padding: 0;
+}
+
 .bridge-settings-preferences-modal {
-  width: min(880px, calc(100vw - 48px));
-  max-height: min(740px, calc(100vh - 48px));
+  width: 100vw;
+  height: 100vh;
+  max-width: 100vw;
+  max-height: 100vh;
+  border: 0;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.bridge-settings-preferences-modal .bridge-settings-modal-heading {
+  flex: 0 0 auto;
+}
+
+/* Body takes the remaining height. It should fit without scrolling at the
+   full window size; overflow: auto is only a safety net for very short
+   windows. */
+.bridge-settings-preferences-modal .bridge-settings-columns {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  align-items: start;
+}
+
+/* LOCAL-ONLY (not for the upstream PR): while any setting write is in flight,
+   runAction() sets pendingAction, which disables every control in this modal
+   for the round-trip. Several rules then restyle the disabled state -- a
+   global opacity dim on button/input/select/.switch, a muted text color on
+   .wol-settings-input, and border/background swaps on .switch.on:disabled --
+   barely noticeable on the old centred panel, a full-window strobe here.
+   Keep the disable (it prevents double-submits) but freeze the *appearance*
+   so toggling a setting doesn't flash the whole screen. Scoped entirely to
+   this modal. */
+.bridge-settings-preferences-modal button:disabled,
+.bridge-settings-preferences-modal input:disabled,
+.bridge-settings-preferences-modal select:disabled,
+.bridge-settings-preferences-modal .switch:disabled,
+.bridge-settings-preferences-modal .switch.on:disabled {
+  opacity: 1;
+}
+
+.bridge-settings-preferences-modal .wol-settings-input:disabled {
+  color: var(--text-primary);
+}
+
+.bridge-settings-preferences-modal .switch.on:disabled {
+  border-color: var(--accent-border-strong);
+  background: var(--accent-selected);
+}
+
+.bridge-settings-preferences-modal .switch:disabled {
+  border-color: var(--surface-border-strong);
+  background: var(--surface-control-muted);
 }
 
 .bridge-settings-modal-heading {
