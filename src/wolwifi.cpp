@@ -50,9 +50,8 @@ constexpr uint32_t WIFI_RETRY_BACKOFF_MS = 10000;
 // a Wi-Fi STA association + DHCP handshake right at controller-connect
 // does contend with the still-fresh BT session. An earlier fix delayed
 // the Wi-Fi connect start by 2s to let BT settle first, but per-user
-// requirement WOL must fire the instant the controller connects (matching
-// awalol/DS5Dongle#207, which starts its Wi-Fi connect immediately with
-// no pre-delay) -- a delayed, best-effort wake isn't acceptable even if
+// requirement WOL must fire the instant the controller connects, with no
+// pre-delay -- a delayed, best-effort wake isn't acceptable even if
 // it's occasionally more radio-contention-safe. The controller is instead
 // protected from the resulting contention by wolwifi_wake_in_progress()
 // (bug 6: suppresses the USB-suspend controller power-off for the whole
@@ -95,8 +94,8 @@ constexpr uint32_t WOL_DISCONNECT_DELAY_MS = 3000;
 //
 // Fixed per explicit design correction: event-driven, not a timer
 // heuristic, and defaults to firing WOL unless the host is positively
-// observed -- matching both awalol/DS5Dongle#207 and
-// DevFreezing/DS5Dongle-WoL's Observe state (their Observe: HOST_OBSERVE_US
+// observed -- the same shape as other WOL implementations' observe state
+// (theirs: HOST_OBSERVE_US
 // 3s window, HOST_ACTIVE_SUSTAIN_US 300ms debounce). Their design assumes
 // a USB persona that's always enumerated (confirmed via source review --
 // neither PR's diff touches tud_connect()/tud_disconnect()), which doesn't
@@ -118,7 +117,7 @@ constexpr uint32_t WOL_OBSERVE_HOST_SUSTAIN_MS = 100;
 // activity, re-contending with BT each time for no benefit -- one magic
 // packet getting through is enough. Debounced by when a packet was last
 // actually *sent* (not merely triggered), matching
-// DevFreezing/DS5Dongle-WoL's wol.cpp DEBOUNCE_US design: an aborted/failed
+// A debounce-style design: an aborted/failed
 // attempt shouldn't consume the window, so a fresh connect can still retry
 // soon if nothing went out last time.
 constexpr uint32_t WOL_TRIGGER_DEBOUNCE_MS = 90000;
@@ -127,7 +126,7 @@ constexpr uint32_t WOL_TRIGGER_DEBOUNCE_MS = 90000;
 // from a transient "AP briefly unreachable" failure and gets the same
 // infinite WIFI_RETRY_BACKOFF_MS retry loop, needless radio activity/BT
 // contention for a connect that will never work. Matches
-// DevFreezing/DS5Dongle-WoL's wol.cpp MAX_RETRIES (2), which also gives a
+// A small retry budget (2), which also gives a
 // first BADAUTH one retry (covers a genuine transient PSK handshake
 // glitch) before giving up.
 constexpr uint8_t MAX_WIFI_CONNECT_RETRIES = 2;
@@ -710,7 +709,7 @@ void proceed_with_wol_trigger() {
         // online, and let the Idle case start the Wi-Fi connect on its very
         // next tick -- no artificial delay beyond the observation window
         // above. WOL must fire promptly once the controller connects
-        // (matching awalol/DS5Dongle#207's behavior), not some seconds
+        // (the established behavior for this trigger), not some seconds
         // later.
         g_send_pending = true;
         DS5_LOG("[WOL] Wi-Fi not ready; queuing magic packet, starting connect now\n");

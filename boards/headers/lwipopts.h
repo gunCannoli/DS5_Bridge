@@ -33,8 +33,8 @@
 // policy for, and the CYW43 combo chip shares its radio with Bluetooth --
 // shortening the DHCP handshake shrinks the window where fresh Wi-Fi RF
 // activity can contend with a just-opened BT connection for the radio.
-// See awalol/DS5Dongle#207 for prior art on this option in the same
-// Wi-Fi/BT coexistence context.
+// This option is established prior art in the same Wi-Fi/BT coexistence
+// context.
 #define DHCP_DOES_ARP_CHECK         0
 #define LWIP_DHCP_DOES_ACD_CHECK    0
 
