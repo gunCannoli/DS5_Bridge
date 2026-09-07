@@ -248,7 +248,7 @@ trace event: the controller-type handshake (the thing that makes
 radio contention. Used that to design and implement the actual fix, per
 the user's explicit design correction ("proper signals... events not
 timers... proper investigation before coding a solution") and deep re-read
-of both `awalol/DS5Dongle#207` and `DevFreezing/DS5Dongle-WoL`'s `Observe`
+of both `DS5Dongle PR 207 (upstream-of-upstream)` and `DevFreezing/DS5Dongle-WoL`'s `Observe`
 state pattern. Replaced the buggy instant `usb_host_active()` check with a
 new `ObserveHost` mini-state-machine (`begin_observe_host()`/
 `drive_observe_host()` in `wolwifi.cpp`, driven every `wolwifi_task()`
@@ -279,7 +279,7 @@ gate was structurally checking a signal that cannot be true yet, regardless
 of PC power state — not an environment issue, a real logic bug in last
 session's design. User's correction: *"we need proper signals... events
 not timers... proper investigation before coding a solution."* Re-read
-`awalol/DS5Dongle#207` and `DevFreezing/DS5Dongle-WoL` in depth
+`DS5Dongle PR 207 (upstream-of-upstream)` and `DevFreezing/DS5Dongle-WoL` in depth
 specifically on this question — both use a bounded, event-driven `Observe`
 state (watch live `tud_mounted() && !tud_suspended()` every tick for up to
 3s, confirm only after 300ms sustained-active) rather than a point-in-time
@@ -325,7 +325,7 @@ wasn't actually needed. Added a gate at the top of
 `wolwifi_on_controller_connect()`: if `usb_host_active()` (new accessor in
 `usb.cpp`, `usb_mounted && !usb_host_suspended_active()`) reports the
 target PC already on, skip the whole WOL pipeline — no Wi-Fi connect, no
-resend cycle, no lightbar pulse. Researched `awalol/DS5Dongle#207` per user
+resend cycle, no lightbar pulse. Researched `DS5Dongle PR 207 (upstream-of-upstream)` per user
 request and adopted its `WOL_ALWAYS` escape hatch design exactly (same
 name, same compile-time-option mechanism) for boards/BIOS settings where
 USB stays active even with the PC nominally off. New
@@ -417,7 +417,7 @@ directly, so `package:win`'s separate output doesn't update it (only
 ## 2026-08-10 — Twelfth bug: removed the 2s connect-start delay entirely
 
 Per explicit user requirement ("fire the instant the controller connects,
-like `awalol/DS5Dongle#207`"), removed `WIFI_CONNECT_START_DELAY_MS`
+like `DS5Dongle PR 207 (upstream-of-upstream)`"), removed `WIFI_CONNECT_START_DELAY_MS`
 (added for the fourth bug). Verified via an isolated git-worktree build of
 a pre-fix commit that the underlying "WOL never wakes the PC" symptom
 predated this session's whole disconnect-fix arc — not a regression.
@@ -519,7 +519,7 @@ see `DECISIONS.md`'s CYW43 radio-contention entry for the durable
 knowledge. This fix (later removed, twelfth bug): delayed the Wi-Fi connect
 start by 2s after a controller-connect edge. Also added
 `DHCP_DOES_ARP_CHECK=0`/`LWIP_DHCP_DOES_ACD_CHECK=0` to `lwipopts.h`
-(found via `awalol/DS5Dongle#207` research) to shorten the DHCP handshake.
+(found via `DS5Dongle PR 207 (upstream-of-upstream)` research) to shorten the DHCP handshake.
 
 ## 2026-08-09/10 — Three real Wi-Fi bugs found via the debug tooling
 

@@ -117,7 +117,7 @@ fundamental design error.
 
 **Corrected design: an `ObserveHost` mini-state-machine
 (`begin_observe_host()`/`drive_observe_host()` in `wolwifi.cpp`), matching
-`awalol/DS5Dongle#207` and `DevFreezing/DS5Dongle-WoL`'s validated
+`DS5Dongle PR 207 (upstream-of-upstream)` and `DevFreezing/DS5Dongle-WoL`'s validated
 `Observe` state pattern** (re-read both in depth specifically on this
 question — `gh pr diff 207 --repo awalol/DS5Dongle`; local clone of
 `DevFreezing/DS5Dongle-WoL`'s `wake-on-lan` branch, removed after reading).
@@ -176,7 +176,7 @@ trade-off for the same reason. `g_observe_host_active` is included in
 suppression covers this window too, same reasoning as every other WOL
 in-progress window.
 
-**Known limitation, with an escape hatch (matches `awalol/DS5Dongle#207`'s
+**Known limitation, with an escape hatch (matches `DS5Dongle PR 207 (upstream-of-upstream)`'s
 `WOL_ALWAYS` exactly — same name, same mechanism):** some motherboards/BIOS
 settings ("power on by USB keyboard/mouse", always-on charging ports) or
 Modern Standby (S0ix) keep the USB bus enumerated and active even with the
@@ -465,7 +465,7 @@ minimal, clean addition suitable for an upstream PR or a patch onto a
 future release; debug-only surface area works against that "touch the
 least number of things" goal once the feature it was built to debug is
 confirmed working. The reference implementations this feature was modeled
-on (`awalol/DS5Dongle#207`, `DevFreezing/DS5Dongle-WoL`) also ship without
+on (`DS5Dongle PR 207 (upstream-of-upstream)`, `DevFreezing/DS5Dongle-WoL`) also ship without
 equivalent tooling.
 
 **What two genuinely shared code paths needed instead of deletion:**

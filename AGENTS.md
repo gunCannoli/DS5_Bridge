@@ -22,23 +22,32 @@ Treat this fork's changes as **our own patch**, not a divergent product:
 - Follow existing project conventions (naming, error handling, logging style,
   companion app patterns) rather than introducing new ones.
 
-## Tracking files (repo root)
+## Tracking files (`agents/`)
 
-All-caps filenames (`TASK.md`, `CHANGELOG.md`, `DECISIONS.md`,
-`AGENTS.md`) — keep them that way; this filesystem is case-insensitive so a
-lowercase variant can silently coexist, but git tracks the all-caps name.
+**All of this fork's own tracking docs live in `agents/`.** The repo root
+keeps only this file (`AGENTS.md`) plus upstream's own `README.md` and
+`CONTRIBUTING.md`, so a diff against upstream stays readable and our docs
+never collide with theirs.
 
-- **TASK.md** — **current + next task only, kept lean.** As soon as a task
+All-caps filenames (`agents/TASK.md`, `agents/CHANGELOG.md`,
+`agents/DECISIONS.md`, `AGENTS.md`, `agents/CUSTOM.md`) — keep them that way;
+this filesystem is case-insensitive so a lowercase variant can silently
+coexist, but git tracks the all-caps name.
+
+None of `agents/` is ever part of an upstream PR — it is fork-local by
+definition. See `agents/CONTRIBUTING-FORK.md`.
+
+- **agents/TASK.md** — **current + next task only, kept lean.** As soon as a task
   is done, its outcome is purged from here: a one-line pointer stays if
   useful ("see CHANGELOG.md's Nth-bug entry"), but the narrative goes to
   CHANGELOG.md, not this file. This file should be short enough to read in
   full every session, not an accumulating log — if it's growing long,
   something that finished wasn't purged yet.
-- **CHANGELOG.md** — durable record of completed work, newest first. This
+- **agents/CHANGELOG.md** — durable record of completed work, newest first. This
   is where bug-fix narratives, phase completions, and "what happened and
   when" belong once done. Fine for this to be long; it's a history, not
   something read in full every session.
-- **DECISIONS.md** — **only** genuine architecture decisions and
+- **agents/DECISIONS.md** — **only** genuine architecture decisions and
   known-issue/root-cause discoveries that should inform *future* work —
   not a log of every bug fixed (that's CHANGELOG.md). The test: would a
   future agent hitting a similar symptom, or a PR reviewer asking "why does
@@ -48,6 +57,22 @@ lowercase variant can silently coexist, but git tracks the all-caps name.
   again," it's a decision. Keep this short enough to actually serve as a
   knowledge base — bloat defeats the purpose.
 - **AGENTS.md** — this file.
+- **agents/CUSTOM.md** — the port guide for **both** custom features (WOL over
+  Wi-Fi; Auto Switch Audio on Jack). Every new file, every hook point into
+  existing files with exact call-site locations, the build/protocol wiring,
+  and (for WOL) the command-ID collision check — enough to re-apply either
+  feature onto a future DS5_Bridge release by hand if its PR is never merged.
+  Where DECISIONS.md says *why* a hook is shaped the way it is, CUSTOM.md
+  says *where* it goes. Keep it in sync when a hook point moves.
+- **agents/PLAN-headset-audio-switch.md** — feature #2's full design history +
+  smoke-test log. Working doc, not a spec; CUSTOM.md §10 is the durable
+  version.
+- **agents/CONTRIBUTING-FORK.md** — **read before any commit or PR.** The two
+  non-negotiables: (1) never write `owner/repo#N`, bare `#N`, or issue/pull
+  URLs anywhere (they post backlink comments on other projects' trackers —
+  this fork has already done this once); (2) every change is either an
+  upstream PR or a `LOCAL-ONLY`-marked local patch, never mixed. Also covers
+  authorship rules and the pre-PR checklist.
 
 ## SDK / library install location
 
@@ -165,7 +190,7 @@ don't run it, use the boards script.)
 - `companion/artifacts` is gitignored; this fork doesn't populate it at all.
 
 If a future version genuinely needs a new output location (e.g. bundling the
-Waveshare UF2 into a companion build), record that decision in `DECISIONS.md`
+Waveshare UF2 into a companion build), record that decision in `agents/DECISIONS.md`
 with the reasoning so it's clearly intentional, not drift.
 
 ## Rebuild rules — what to rebuild after a change
@@ -347,7 +372,7 @@ companion app writes them to a file on disk:
   Settings Revision) are useful for confirming the companion app and
   firmware are actually talking and agreeing on protocol version — relevant
   if `wolControl`/other WOL UI controls appear disabled unexpectedly (see
-  the protocol-minor gate decision in `DECISIONS.md`).
+  the protocol-minor gate decision in `agents/DECISIONS.md`).
 
 ## Local build environment notes
 
@@ -440,17 +465,17 @@ v1.7.0):
    — as of the v1.7.0 merge they'd converged to the same tip, but that's not
    guaranteed to stay true).
 2. Merge (this fork has used merge, not rebase, for the v1.7.0 sync — see
-   `CHANGELOG.md`'s 2026-08-15 entry) our feature branch onto the new tip.
+   `agents/CHANGELOG.md`'s 2026-08-15 entry) our feature branch onto the new tip.
 3. Because WOL lives mostly in `wolwifi.h/.cpp` (firmware) and isolated
    companion-app additions, conflicts should be limited to the few hook
-   points documented in `DECISIONS.md` (e.g. the `bt.cpp` connect-event call
+   points documented in `agents/DECISIONS.md` (e.g. the `bt.cpp` connect-event call
    site, `CMakeLists.txt` option block, `protocol.ts`/`companion.cpp`
    COMMAND_ID lists).
 4. **Always check the `COMMAND_ID` lists for numeric collisions, even if
    the merge reports no conflict on those lines.** Git can't detect two
    independently-added enum values landing on the same number — this
    happened for real at v1.7.0 (`SET_WOL_ENABLED` vs upstream's
-   `SET_RADIAL_DEADZONES`, both at `0x37`; see `DECISIONS.md`). Grep both
+   `SET_RADIAL_DEADZONES`, both at `0x37`; see `agents/DECISIONS.md`). Grep both
    `protocol.ts`'s `COMMAND_ID` and `companion.cpp`'s `CommandId` for every
    hex value in use, take the max across both, and renumber this fork's WOL
    IDs above it if there's any overlap. Bump `PROTOCOL_MINOR`/

@@ -20,3 +20,5 @@ companion/native/**/obj
 tools/**/bin
 tools/**/obj
 *DS5 Bridge.lnk
+# Local debug capture (audio stats logs, etc.) -- never committed.
+log/
