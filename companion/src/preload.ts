@@ -149,6 +149,15 @@ const api = {
   setControllerPowerSavingEnabled: (value: boolean): Promise<BridgeSnapshot> => (
     ipcRenderer.invoke('bridge:setControllerPowerSavingEnabled', value)
   ),
+  setHeadsetAudioAutoSwitchEnabled: (value: boolean): Promise<BridgeSnapshot> => (
+    ipcRenderer.invoke('bridge:setHeadsetAudioAutoSwitchEnabled', value)
+  ),
+  setHeadsetAudioFallbackDevice: (value: string): Promise<BridgeSnapshot> => (
+    ipcRenderer.invoke('bridge:setHeadsetAudioFallbackDevice', value)
+  ),
+  listRenderEndpointNames: (): Promise<Array<{ name: string; isBridge: boolean }>> => (
+    ipcRenderer.invoke('bridge:listRenderEndpointNames')
+  ),
   setLaunchAtStartupEnabled: (value: boolean): Promise<BridgeSnapshot> => (
     ipcRenderer.invoke('bridge:setLaunchAtStartupEnabled', value)
   ),

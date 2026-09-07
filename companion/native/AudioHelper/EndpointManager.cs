@@ -93,6 +93,46 @@ sealed class EndpointManager
         Console.Error.WriteLine($"status: default-render-set device='{device.FriendlyName}' persona='{hostPersonaMode ?? "auto"}'");
     }
 
+    // Set the default render endpoint to the first active device whose
+    // FriendlyName matches one of the supplied candidate substrings, tried in
+    // order. Used by the companion's headset-audio auto-switch feature for the
+    // "nothing in the controller jack" target (a fixed fallback device such as
+    // the TV / HDMI endpoint), which --set-default-render-bridge can't express.
+    // Throws (non-zero exit) if none of the candidates matches an active
+    // endpoint, so the caller's retry logic can react.
+    public static void SetDefaultRenderEndpointByName(string candidates)
+    {
+        var wanted = candidates
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (wanted.Length == 0)
+        {
+            throw new ArgumentException("No candidate device name supplied.", nameof(candidates));
+        }
+
+        using var enumerator = new MMDeviceEnumerator();
+        var devices = enumerator
+            .EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)
+            .ToArray();
+
+        foreach (var name in wanted)
+        {
+            var match = devices.FirstOrDefault(device =>
+                    string.Equals(device.FriendlyName, name, StringComparison.OrdinalIgnoreCase))
+                ?? devices.FirstOrDefault(device =>
+                    device.FriendlyName.Contains(name, StringComparison.OrdinalIgnoreCase));
+            if (match is not null)
+            {
+                SetDefaultRenderEndpoint(match);
+                Console.Error.WriteLine($"status: default-render-set device='{match.FriendlyName}' matched='{name}'");
+                return;
+            }
+        }
+
+        var available = string.Join(", ", devices.Select(device => $"'{device.FriendlyName}'"));
+        throw new InvalidOperationException(
+            $"No active render endpoint matched any of [{string.Join(", ", wanted.Select(n => $"'{n}'"))}]. Available endpoints: {available}");
+    }
+
     public static MMDevice SelectCaptureEndpoint(MMDeviceEnumerator enumerator, string? deviceName)
     {
         var devices = enumerator
@@ -201,6 +241,24 @@ sealed class EndpointManager
         }
 
         return null;
+    }
+
+    // Emit the active render endpoints as JSON on stdout, for the companion's
+    // "Auto Switch Audio" fallback-device dropdown:
+    //   [ { "name": "<FriendlyName>", "isBridge": true|false }, ... ]
+    // `isBridge` flags the DS5 Bridge / controller endpoint so the companion
+    // can tell it apart from real output devices (and auto-pick the fallback
+    // when there's exactly one non-bridge endpoint). Selection is still
+    // matched back by name substring, same as SetDefaultRenderEndpointByName.
+    public static void ListRenderEndpoints()
+    {
+        using var enumerator = new MMDeviceEnumerator();
+        var entries = enumerator
+            .EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)
+            .Select(device => new { name = device.FriendlyName, isBridge = IsKnownBridgeEndpoint(device) })
+            .OrderBy(entry => entry.name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        Console.WriteLine(JsonSerializer.Serialize(entries));
     }
 
     public static void ListDevices()

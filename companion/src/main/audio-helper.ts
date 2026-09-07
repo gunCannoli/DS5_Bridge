@@ -961,6 +961,57 @@ export async function setDefaultRenderBridgeEndpoint(mode: HostPersonaMode): Pro
   ], HELPER_ENDPOINT_ENUMERATION_TIMEOUT_MS);
 }
 
+// Set the Windows default render endpoint to the first active device whose
+// name matches one of `candidateNames` (tried in order). Used by the
+// "Auto Route Audio" feature for the "nothing plugged into the controller
+// jack" target -- the user's chosen fallback device, which
+// --set-default-render-bridge can't express. Rejects if none of the
+// candidates matches an active endpoint.
+export async function setDefaultRenderEndpointByName(candidateNames: string[]): Promise<void> {
+  const candidates = candidateNames.map((name) => name.trim()).filter((name) => name.length > 0);
+  if (candidates.length === 0) {
+    throw new Error('setDefaultRenderEndpointByName: no candidate device name supplied.');
+  }
+  await runAudioHelperCommand([
+    '--set-default-render',
+    '--device-name',
+    candidates.join(';'),
+    ...bridgeTargetArgs()
+  ], HELPER_ENDPOINT_ENUMERATION_TIMEOUT_MS);
+}
+
+export interface RenderEndpointInfo {
+  name: string;
+  isBridge: boolean;
+}
+
+// Active Windows render endpoints, for the "Auto Switch Audio" fallback-device
+// dropdown. `isBridge` flags the controller's own endpoint. Returns [] on any
+// helper failure so the settings menu still renders (with just the saved
+// value, if any).
+export async function listRenderEndpoints(): Promise<RenderEndpointInfo[]> {
+  try {
+    const result = await runAudioHelperCommand(
+      ['--list-render-endpoints'],
+      HELPER_ENDPOINT_ENUMERATION_TIMEOUT_MS
+    );
+    const parsed: unknown = JSON.parse(result.stdout.trim() || '[]');
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .filter((entry): entry is { name: unknown; isBridge?: unknown } => (
+        typeof entry === 'object' && entry !== null && typeof (entry as { name?: unknown }).name === 'string'
+      ))
+      .map((entry) => ({
+        name: entry.name as string,
+        isBridge: (entry as { isBridge?: unknown }).isBridge === true
+      }));
+  } catch {
+    return [];
+  }
+}
+
 export class MicKeepaliveEngine extends EventEmitter {
   private process: ChildProcess | null = null;
   private starting: Promise<void> | null = null;

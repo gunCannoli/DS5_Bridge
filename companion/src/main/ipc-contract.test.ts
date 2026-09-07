@@ -139,4 +139,16 @@ describe('IPC contract', () => {
     expect(mainSource).toContain("ipcMain.handle('bridge:setWakeOnConnectEnabled'");
     expect(bridgeServiceSource).toContain('setWakeOnConnectEnabled(enabled: boolean): Promise<BridgeSnapshot>');
   });
+
+  it('exposes the Auto Switch Audio on Jack preferences', () => {
+    expect(preloadSource).toContain("ipcRenderer.invoke('bridge:setHeadsetAudioAutoSwitchEnabled', value)");
+    expect(preloadSource).toContain("ipcRenderer.invoke('bridge:setHeadsetAudioFallbackDevice', value)");
+    expect(preloadSource).toContain("ipcRenderer.invoke('bridge:listRenderEndpointNames')");
+    expect(mainSource).toContain("ipcMain.handle('bridge:setHeadsetAudioAutoSwitchEnabled'");
+    expect(mainSource).toContain("ipcMain.handle('bridge:setHeadsetAudioFallbackDevice'");
+    expect(mainSource).toContain("ipcMain.handle('bridge:listRenderEndpointNames'");
+    expect(bridgeServiceSource).toContain('async setHeadsetAudioAutoSwitchEnabled(enabled: boolean): Promise<BridgeSnapshot>');
+    expect(bridgeServiceSource).toContain('async setHeadsetAudioFallbackDevice(deviceName: string): Promise<BridgeSnapshot>');
+    expect(bridgeServiceSource).toContain('async listRenderEndpointNames(): Promise<RenderEndpointInfo[]>');
+  });
 });

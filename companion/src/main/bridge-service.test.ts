@@ -546,9 +546,10 @@ function firmwareLogReport(bytes: number[], options: {
 function createService(initialSettings?: Parameters<SettingsStore['update']>[0]): { service: BridgeService; tempDir: string } {
   const tempDir = mkdtempSync(path.join(tmpdir(), 'ds5-bridge-companion-'));
   const settingsStore = new SettingsStore(tempDir);
-  if (initialSettings) {
-    settingsStore.update(initialSettings);
-  }
+  // "Auto Switch Audio" is off by default. Keep it explicit here so a future
+  // default change can't make unrelated polling tests spawn the real
+  // AudioHelper; the dedicated tests opt in.
+  settingsStore.update({ headsetAudioAutoSwitchEnabled: false, ...initialSettings });
   return {
     service: new BridgeService(settingsStore),
     tempDir
@@ -1427,6 +1428,186 @@ describe('BridgeService', () => {
       [COMMAND_ID.SET_LIGHTBAR_COLOR, 90],
       [COMMAND_ID.SET_LIGHTBAR_OVERRIDE, 0]
     ]);
+  });
+
+  describe('Auto Switch Audio on Jack', () => {
+    const FALLBACK = '4 - Beyo TV (2- AMD High Definition Audio Device)';
+
+    function attachRenderMocks(
+      service: BridgeService,
+      endpoints: Array<{ name: string; isBridge: boolean }> = [
+        { name: FALLBACK, isBridge: false },
+        { name: 'Speakers (4- DualSense Wireless Controller)', isBridge: true }
+      ]
+    ) {
+      const setDefaultRenderBridgeEndpoint = vi.fn(async () => undefined);
+      const setDefaultRenderEndpointByName = vi.fn(async () => undefined);
+      const getDefaultRenderEndpointStatus = vi.fn(async () => ({
+        deviceName: 'Speakers (4- DualSense Wireless Controller)',
+        isBridgeEndpoint: true
+      }));
+      const internals = service as unknown as {
+        setDefaultRenderBridgeEndpoint: typeof setDefaultRenderBridgeEndpoint;
+        setDefaultRenderEndpointByName: typeof setDefaultRenderEndpointByName;
+        getDefaultRenderEndpointStatus: typeof getDefaultRenderEndpointStatus;
+        cachedRenderEndpoints: Array<{ name: string; isBridge: boolean }>;
+      };
+      internals.setDefaultRenderBridgeEndpoint = setDefaultRenderBridgeEndpoint;
+      internals.setDefaultRenderEndpointByName = setDefaultRenderEndpointByName;
+      internals.getDefaultRenderEndpointStatus = getDefaultRenderEndpointStatus;
+      internals.cachedRenderEndpoints = endpoints;
+      return { setDefaultRenderBridgeEndpoint, setDefaultRenderEndpointByName, getDefaultRenderEndpointStatus };
+    }
+
+    it('routes to the chosen fallback when the jack is empty and to the controller when a headset is plugged in', async () => {
+      const service = serviceFixture({
+        headsetAudioAutoSwitchEnabled: true,
+        headsetAudioFallbackDevice: FALLBACK
+      });
+      const device = new MockHidDevice();
+      device.status = statusReport({ controllerConnected: true, hostPersonaMode: 'dualsense' });
+      device.audioStatusReports = [audioStatusReport({ headsetPlugged: false })];
+      hidMock.state.devicesList = [companionDeviceInfo()];
+      hidMock.state.openDevices.set('companion-path', device);
+      const mocks = attachRenderMocks(service);
+
+      // First poll: empty jack, adopted immediately (no prior acted state).
+      await poll(service);
+      expect(mocks.setDefaultRenderEndpointByName).toHaveBeenCalledOnce();
+      expect(mocks.setDefaultRenderEndpointByName).toHaveBeenCalledWith([FALLBACK]);
+      expect(mocks.setDefaultRenderBridgeEndpoint).not.toHaveBeenCalled();
+
+      // Headset plugged in: needs to hold for the debounce window before acting.
+      device.audioStatusReports = [audioStatusReport({ headsetPlugged: true })];
+      await poll(service);
+      expect(mocks.setDefaultRenderBridgeEndpoint).not.toHaveBeenCalled();
+
+      device.audioStatusReports = [audioStatusReport({ headsetPlugged: true })];
+      await poll(service);
+      expect(mocks.setDefaultRenderBridgeEndpoint).toHaveBeenCalledOnce();
+      expect(mocks.setDefaultRenderBridgeEndpoint).toHaveBeenCalledWith('dualsense');
+
+      // Unplug: again debounced, then routes back to the fallback.
+      mocks.setDefaultRenderEndpointByName.mockClear();
+      device.audioStatusReports = [audioStatusReport({ headsetPlugged: false })];
+      await poll(service);
+      expect(mocks.setDefaultRenderEndpointByName).not.toHaveBeenCalled();
+      device.audioStatusReports = [audioStatusReport({ headsetPlugged: false })];
+      await poll(service);
+      expect(mocks.setDefaultRenderEndpointByName).toHaveBeenCalledOnce();
+    });
+
+    it('does nothing when the toggle is off', async () => {
+      const service = serviceFixture({ headsetAudioAutoSwitchEnabled: false });
+      const device = new MockHidDevice();
+      device.status = statusReport({ controllerConnected: true });
+      device.audioStatusReports = [
+        audioStatusReport({ headsetPlugged: false }),
+        audioStatusReport({ headsetPlugged: true }),
+        audioStatusReport({ headsetPlugged: true })
+      ];
+      hidMock.state.devicesList = [companionDeviceInfo()];
+      hidMock.state.openDevices.set('companion-path', device);
+      const mocks = attachRenderMocks(service);
+
+      await poll(service);
+      await poll(service);
+      await poll(service);
+      expect(mocks.setDefaultRenderEndpointByName).not.toHaveBeenCalled();
+      expect(mocks.setDefaultRenderBridgeEndpoint).not.toHaveBeenCalled();
+    });
+
+    it('auto-resolves the fallback to the only non-controller output when none is chosen', async () => {
+      const service = serviceFixture({
+        headsetAudioAutoSwitchEnabled: true,
+        headsetAudioFallbackDevice: ''
+      });
+      const device = new MockHidDevice();
+      device.status = statusReport({ controllerConnected: true, hostPersonaMode: 'dualsense' });
+      device.audioStatusReports = [audioStatusReport({ headsetPlugged: false })];
+      hidMock.state.devicesList = [companionDeviceInfo()];
+      hidMock.state.openDevices.set('companion-path', device);
+      const mocks = attachRenderMocks(service);
+
+      await poll(service);
+      expect(mocks.setDefaultRenderEndpointByName).toHaveBeenCalledWith([FALLBACK]);
+    });
+
+    it('stays idle when the toggle is on but two non-controller outputs exist and none is chosen', async () => {
+      const service = serviceFixture({
+        headsetAudioAutoSwitchEnabled: true,
+        headsetAudioFallbackDevice: ''
+      });
+      const device = new MockHidDevice();
+      device.status = statusReport({ controllerConnected: true, hostPersonaMode: 'dualsense' });
+      device.audioStatusReports = [
+        audioStatusReport({ headsetPlugged: false }),
+        audioStatusReport({ headsetPlugged: false })
+      ];
+      hidMock.state.devicesList = [companionDeviceInfo()];
+      hidMock.state.openDevices.set('companion-path', device);
+      const mocks = attachRenderMocks(service, [
+        { name: 'Speakers (Realtek)', isBridge: false },
+        { name: FALLBACK, isBridge: false },
+        { name: 'Speakers (4- DualSense Wireless Controller)', isBridge: true }
+      ]);
+
+      await poll(service);
+      await poll(service);
+      expect(mocks.setDefaultRenderEndpointByName).not.toHaveBeenCalled();
+      expect(mocks.setDefaultRenderBridgeEndpoint).not.toHaveBeenCalled();
+    });
+
+    it('pulls the default off the controller when the jack stays empty', async () => {
+      const service = serviceFixture({
+        headsetAudioAutoSwitchEnabled: true,
+        headsetAudioFallbackDevice: FALLBACK
+      });
+      const device = new MockHidDevice();
+      device.status = statusReport({ controllerConnected: true, hostPersonaMode: 'dualsense' });
+      device.audioStatusReports = [audioStatusReport({ headsetPlugged: false })];
+      hidMock.state.devicesList = [companionDeviceInfo()];
+      hidMock.state.openDevices.set('companion-path', device);
+      const mocks = attachRenderMocks(service);
+
+      await poll(service); // adopts empty-jack, routes to fallback once
+      mocks.setDefaultRenderEndpointByName.mockClear();
+
+      // Windows promoted the controller again; the empty-jack correction path
+      // (getDefaultRenderEndpointStatus -> isBridgeEndpoint -> re-route) fires.
+      device.audioStatusReports = [audioStatusReport({ headsetPlugged: false })];
+      await poll(service);
+      expect(mocks.getDefaultRenderEndpointStatus).toHaveBeenCalled();
+      expect(mocks.setDefaultRenderEndpointByName).toHaveBeenCalledOnce();
+      expect(mocks.setDefaultRenderEndpointByName).toHaveBeenCalledWith([FALLBACK]);
+    });
+
+    it('stays dormant during an RDP session', async () => {
+      const service = serviceFixture({
+        headsetAudioAutoSwitchEnabled: true,
+        headsetAudioFallbackDevice: FALLBACK
+      });
+      const device = new MockHidDevice();
+      device.status = statusReport({ controllerConnected: true });
+      device.audioStatusReports = [audioStatusReport({ headsetPlugged: false })];
+      hidMock.state.devicesList = [companionDeviceInfo()];
+      hidMock.state.openDevices.set('companion-path', device);
+      const mocks = attachRenderMocks(service);
+
+      const previousSessionName = process.env.SESSIONNAME;
+      process.env.SESSIONNAME = 'RDP-Tcp#3';
+      try {
+        await poll(service);
+        expect(mocks.setDefaultRenderEndpointByName).not.toHaveBeenCalled();
+        expect(mocks.setDefaultRenderBridgeEndpoint).not.toHaveBeenCalled();
+      } finally {
+        if (previousSessionName === undefined) {
+          delete process.env.SESSIONNAME;
+        } else {
+          process.env.SESSIONNAME = previousSessionName;
+        }
+      }
+    });
   });
 
   it('sends speaker volume as firmware gain', async () => {
