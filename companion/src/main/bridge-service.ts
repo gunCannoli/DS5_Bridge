@@ -94,6 +94,8 @@ import {
   AudioHapticsSessionMonitor,
   MicKeepaliveEngine,
   SystemAudioHapticsEngine,
+  DisplayStateMonitor,
+  type DisplayPowerState,
   playBridgeHapticsTestPattern,
   playBridgeSpeakerTestTone,
   getDefaultRenderEndpointStatus,
@@ -1331,6 +1333,15 @@ export class BridgeService extends EventEmitter {
   private readonly systemAudioHapticsEngine = new SystemAudioHapticsEngine();
   private readonly audioHapticsSessionMonitor = new AudioHapticsSessionMonitor();
   private readonly micKeepaliveEngine = new MicKeepaliveEngine();
+  // Display-aware Idle Disconnect: while Idle Disconnect is on and a
+  // controller is connected, a display-off + input-idle state past the
+  // configured timeout disconnects the controller even if audio is routed to
+  // it (firmware would otherwise hold the link -- see the firmware idle-audio
+  // guard). Falls back to firmware behavior when display state is unknown.
+  private readonly displayStateMonitor = new DisplayStateMonitor();
+  private displayState: DisplayPowerState = 'unknown';
+  private displayOffSince: number | null = null;
+  private idleDisconnectDisplayLatched = false;
   private readonly hidDiscovery = new HidDiscoveryClient();
   private unavailableDiscoveryRequested = false;
   private unavailableDevices: HidDeviceSummary[] = [];
@@ -1435,14 +1446,20 @@ export class BridgeService extends EventEmitter {
 
   private readonly wakeOnLan: WakeOnLanService;
   private readonly wakeOnLanReadiness = new WakeOnLanReadinessService();
+  // Injected so bridge-service stays free of an electron import (unit-tested
+  // in isolation). main.ts passes powerMonitor.getSystemIdleTime; tests pass
+  // a stub. Returns seconds since the last system-wide keyboard/mouse input.
+  private readonly getSystemIdleTimeSeconds: () => number;
   private readonly keyboardInput: KeyboardInputPort = new KeyboardInputHelper();
 
   constructor(
     private readonly settingsStore: SettingsStore,
     private readonly bootloaderAuthorizationStore?: BootloaderAuthorizationStorePort,
-    wakeOnLanTargets: WakeOnLanTargetsPort = new WindowsWakeOnLanTargets()
+    wakeOnLanTargets: WakeOnLanTargetsPort = new WindowsWakeOnLanTargets(),
+    options?: { getSystemIdleTimeSeconds?: () => number }
   ) {
     super();
+    this.getSystemIdleTimeSeconds = options?.getSystemIdleTimeSeconds ?? (() => 0);
     this.wakeOnLan = new WakeOnLanService({
       session: () => this.wakeOnLanSession(),
       read: () => this.readWakeOnLanStatus(),
@@ -1496,6 +1513,23 @@ export class BridgeService extends EventEmitter {
         this.appendAudioDebugLines([`[MicKeepalive] ${line}`]);
       }
       this.emitSnapshot();
+    });
+    this.displayStateMonitor.on('state', (state: DisplayPowerState) => {
+      this.displayState = state;
+      if (state === 'off' || state === 'dimmed') {
+        this.displayOffSince ??= Date.now();
+      } else {
+        this.displayOffSince = null;
+        this.idleDisconnectDisplayLatched = false;
+      }
+    });
+    this.displayStateMonitor.on('error', (error: Error) => {
+      this.appendAudioDebugLines([`[DisplayState] error: ${error.message}`]);
+    });
+    this.displayStateMonitor.on('status', (line: string) => {
+      if (line) {
+        this.appendAudioDebugLines([`[DisplayState] ${line}`]);
+      }
     });
   }
 
@@ -1609,6 +1643,7 @@ export class BridgeService extends EventEmitter {
     this.keyboardInput.stop();
     this.bridgeCensusSource.stop();
     await this.stopControllerAudioPolling();
+    await this.displayStateMonitor.stop();
     this.hidDiscovery.stop();
     this.closeDevice();
   }
@@ -2739,6 +2774,66 @@ export class BridgeService extends EventEmitter {
 
   async listRenderEndpointNames(): Promise<RenderEndpointInfo[]> {
     return this.refreshRenderEndpointCache();
+  }
+
+  // Runs the display-state helper only while it can matter: Idle Disconnect
+  // on and a controller connected. Cheap to start/stop; kept out of the way
+  // otherwise.
+  private syncDisplayStateMonitorLifecycle(settings: CompanionSettings): void {
+    const wanted = settings.idleDisconnectEnabled && this.snapshot.state === 'connected'
+      && Boolean(this.snapshot.status?.controllerConnected);
+    if (wanted && !this.displayStateMonitor.isActive()) {
+      this.displayStateMonitor.start();
+    } else if (!wanted && this.displayStateMonitor.isActive()) {
+      void this.displayStateMonitor.stop();
+      this.displayState = 'unknown';
+      this.displayOffSince = null;
+      this.idleDisconnectDisplayLatched = false;
+    }
+  }
+
+  // Display-aware Idle Disconnect override (see the field comment). When the
+  // screen has been off/dimmed AND there has been no system-wide input for
+  // longer than the configured idle timeout, disconnect the controller even
+  // though audio is keeping it alive at the firmware level. One-shot per
+  // screen-off episode; releases when the screen comes back on.
+  private async syncIdleDisconnectDisplayOverride(settings: CompanionSettings): Promise<void> {
+    if (
+      !settings.idleDisconnectEnabled
+      || this.snapshot.state !== 'connected'
+      || !this.snapshot.status?.controllerConnected
+      || this.idleDisconnectDisplayLatched
+      || this.reapplyActive
+      || this.isHostPersonaTransitionActive()
+      || this.hostPersonaDefaultRenderRestore !== null
+    ) {
+      return;
+    }
+    // Screen on, or state not yet known -> defer to firmware behavior.
+    if (this.displayState !== 'off' && this.displayState !== 'dimmed') {
+      return;
+    }
+    if (this.displayOffSince === null) {
+      return;
+    }
+    const thresholdMs = Math.max(1, this.snapshot.settings.idleDisconnectTimeoutMinutes) * 60_000;
+    if (Date.now() - this.displayOffSince <= thresholdMs) {
+      return;
+    }
+    if (this.getSystemIdleTimeSeconds() * 1000 <= thresholdMs) {
+      return;
+    }
+    this.idleDisconnectDisplayLatched = true;
+    this.appendAudioDebugLines([
+      `[DisplayIdle] screen ${this.displayState} + no input past ${settings.idleDisconnectTimeoutMinutes}m -> sleeping controller`
+    ]);
+    try {
+      await this.sleepController();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.appendAudioDebugLines([`[DisplayIdle] sleepController failed: ${message}`]);
+      this.idleDisconnectDisplayLatched = false;
+    }
   }
 
   async setHapticsGain(percent: number): Promise<BridgeSnapshot> {
@@ -4605,6 +4700,8 @@ export class BridgeService extends EventEmitter {
     await this.updateMicKeepaliveEngine(status.controllerConnected);
     await this.syncControllerPowerSavingState(settings);
     await this.syncHeadsetAudioAutoSwitch(settings);
+    this.syncDisplayStateMonitorLifecycle(settings);
+    await this.syncIdleDisconnectDisplayOverride(settings);
 
     if (status.controllerConnected) {
       this.controllerConnected = true;

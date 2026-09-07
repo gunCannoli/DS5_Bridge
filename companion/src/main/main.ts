@@ -1331,7 +1331,9 @@ app.whenReady().then(async () => {
   applyLaunchAtStartup(settingsStore.get().launchAtStartupEnabled);
   bridgeService = new BridgeService(
     settingsStore,
-    new BootloaderAuthorizationStore(app.getPath('userData'), safeStorage)
+    new BootloaderAuthorizationStore(app.getPath('userData'), safeStorage),
+    undefined,
+    { getSystemIdleTimeSeconds: () => powerMonitor.getSystemIdleTime() }
   );
   registerIpc(bridgeService);
 
