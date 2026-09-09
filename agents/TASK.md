@@ -83,41 +83,44 @@ timing most likely to expose an un-suppressed power-off), read
 `<Electron logs>/ds5bridge-wol-debug.log`. Otherwise the debug branch can
 be retired (don't merge it).
 
-## NEXT: audio-output stutter debug branch
+## ACTIVE: audio-output hiccup — `debug/audio-output-trace` branch built
 
-User reports audio hiccups on playback to the controller even at haptics
-buffer 120 (≈40 ms). New branch `debug/audio-output-trace` off
-`feature/wol-wifi` (NOT stacked on `debug/wol-boot-trace`). Full plan:
+User reports audible hiccups on audio played to the controller even at
+haptics buffer 120 (≈40 ms). Diagnostic branch off `feature/wol-wifi`
+(NOT stacked on `debug/wol-boot-trace`). **3 commits, built + tested,
+ready to flash** — see `DECISIONS.md` for the full writeup:
 
-- **Build:** new `audiodebug` variant in `tools/build-firmware.ps1` =
-  `final` + `-DDS5_DIAGNOSTICS_PRESET=audio` (existing 96-slot
-  `DS5_AUDIO_DEBUG_ENABLED` ring + `audio_debug_stats`; NO UART logs, NO
-  trigger/feedback traces). Uses the SRAM budget for audio, not WOL.
-  Confirm it links (audio ring alone ~1.3 KB; `final` had headroom).
-- **Firmware (all behind `DS5_AUDIO_DEBUG_ENABLED`, zero cost otherwise):**
-  the existing ring is thin on the BT *send* cadence, which is where a
-  40 ms-buffer hiccup lands. Add:
-  - `AudioDebugBtSendGap` at the `bt_write_audio_stream()` call in
-    `try_send_pending_audio_batch()`: Δt since last successful send,
-    return value, `speaker_opus_fifo` + `audio_fifo` levels,
-    `pending_audio_haptics_count`.
-  - `AudioDebugBtSendBlocked` when the batch can't assemble
-    (`speaker_opus_batch_ready()` false / `pending < AUDIO_BATCH_FRAMES`)
-    — opus-starved vs haptics-starved vs BT backpressure.
-  - Ring-log the generation-drop (stats-only today) with stale-vs-current
-    generation, so a mid-stream persona/route-toggle flush is visible.
-  - Emit `AudioDebugCpuLoad` (23) each drain with
-    `audio_loop_runtime_max_us` / `audio_loop_gap_max_us`.
-  - Add a periodic (~250 ms) unconditional entry to
-    `audio_debug_packet_log_budget` so a hiccup 10 s into playback is
-    still captured, not just the first 4 packets after stream start.
-- **Companion:** dedicated `<logs>/ds5bridge-audio-debug.log` file drain
-  (today audio-debug lines only go to the in-memory Diagnostics-tab ring,
-  capped 300, lost on disconnect). Same `wolDebugLogDirectory`-style
-  plumbing. Per-poll `stats` timeline line + one line per ring event,
-  fields decoded.
-- Env: `DS5_BRIDGE_AUDIO_DEBUG_DIAGNOSTICS=1` (or `DS5_BRIDGE_DIAGNOSTICS=audio`).
-- Commits `diag(audio): ...`; DECISIONS.md entry mirroring the WOL one.
+1. `diag(build): add audiodebug firmware variant` — `final` +
+   `-DDS5_DIAGNOSTICS_PRESET=audio`. Links clean.
+2. `diag(audio): trace the BT send-batch assembly path` — new ring events
+   `AudioDebugBatchBlocked` (24), `AudioDebugBatchSent` (25),
+   `AudioDebugGenerationFlush` (26), all behind `DS5_AUDIO_DEBUG_ENABLED`
+   so `final`/`smoke` are byte-identical.
+3. `diag(audio): dedicated ds5bridge-audio-debug.log file drain` — no
+   protocol bump; companion writes every audio-debug line + the per-poll
+   `[AudioStats]` line to a file.
+
+### NEXT: capture an audio hiccup trace
+- `git checkout debug/audio-output-trace`
+- `$env:PICO_SDK_PATH="C:\auto\arduino\build\pico-sdk"; .\tools\build-firmware.ps1 audiodebug -WithCompanion`
+- Flash `firmware/ds5-bridge-1.71-wol-audiodebug.uf2`.
+- Companion needs `DS5_BRIDGE_AUDIO_DEBUG_DIAGNOSTICS=1` (or
+  `DS5_BRIDGE_DIAGNOSTICS=audio`) in its environment — `rebuild-companion.ps1`
+  does NOT set this, so either export it before launching the packaged app,
+  or run `npm run dev` with it set.
+- Play audio through the controller (speaker + headset in the jack, a
+  movie or music), reproduce the hiccup, then read
+  `<Electron logs>/ds5bridge-audio-debug.log` (on Windows
+  `%APPDATA%\DS5 Bridge\logs\`).
+- Reading it: `[BatchSent] ... HICCUP` = a >30 ms gap on the audio.cpp
+  send side; `[BatchBlocked] reason=opus-not-ready` = opus encoder on
+  core 1 behind; `[GenFlush]` = pipeline flushed (persona/route toggle);
+  `[BtEvent]` late-audio = BT transport itself late. `[AudioStats]` line
+  each poll has the running max/count timeline.
+
+### THEN: fix on `feature/wol-wifi`, then retire this branch
+Depends on what dominates the trace. Once fixed, revert the 3 commits
+(or don't merge).
 
 ## Other next tasks (unchanged)
 

@@ -35,7 +35,63 @@ bad state into thousands of process crashes.
 
 ---
 
-## Known issue: merging/rebasing onto a new upstream release can collide `COMMAND_ID` values — always check for gaps, don't just append
+## Debug branch: `debug/audio-output-trace` — audio-hiccup diagnostic (NOT for the PR)
+
+**Why:** user reports audible hiccups on audio played to the controller
+(speaker + haptics over BT) even at haptics buffer 120 (≈40 ms). The
+existing `DS5_AUDIO_DEBUG_ENABLED` ring covers USB-read gaps, the opus
+encode budget, FIFO drops, and `bt.cpp`'s `BtAudioDebugLateAudio` (fires
+once the BT scheduler drains a late/gappy packet) — but it is **blind to
+`audio.cpp`'s `try_send_pending_audio_batch()`**, the point where a batch
+either assembles or stalls waiting on opus / haptics / a generation flush.
+And it has no log file — lines only reach the in-memory Diagnostics-tab
+ring (300 lines, lost on disconnect).
+
+**Branch layout (3 commits off `feature/wol-wifi`, NOT stacked on
+`debug/wol-boot-trace`):**
+1. `diag(build): add audiodebug firmware variant` — `tools/build-firmware.ps1`
+   gains `audiodebug` = `final` + `-DDS5_DIAGNOSTICS_PRESET=audio` (audio
+   ring + `audio_debug_stats` HID reports only; no UART logs, no
+   trigger/feedback traces). Host-alive gate stays active. Links clean —
+   the audio ring fits `final`'s SRAM budget (unlike the WOL trace rings,
+   which is why this is a separate branch/variant).
+2. `diag(audio): trace the BT send-batch assembly path` — behind
+   `DS5_AUDIO_DEBUG_ENABLED`, so `final`/`smoke` are byte-identical. New
+   ring events: `AudioDebugBatchBlocked` (24 — `try_send_pending_audio_batch()`
+   returned false, arg0 = reason 1..4, rate-limited ~1/40ms),
+   `AudioDebugBatchSent` (25 — a batch went to `bt_write_audio_stream()`,
+   arg0 = ms since the previous batch, logged 1/250ms or always on a
+   >30 ms gap), `AudioDebugGenerationFlush` (26 — `drain_audio_queues()`
+   bumped the stream generation mid-playback, flushing the whole
+   pipeline).
+3. `diag(audio): dedicated ds5bridge-audio-debug.log file drain` — no
+   protocol bump (event codes ride the existing 14-byte AUDIO_DEBUG
+   record). `appendAudioDebugLines()` also appends to
+   `<app logs>/ds5bridge-audio-debug.log`; `formatAudioDebugEvent()`
+   decodes the three new codes. The per-poll `[AudioStats]` line already
+   carries the BT-side cadence stats (send-gap-max, enqueue-age-max,
+   queue-depth-max, drop-oldest) and flows to the file too.
+
+**How to use it:** `git checkout debug/audio-output-trace`,
+`.\tools\build-firmware.ps1 audiodebug -WithCompanion`, flash
+`firmware/ds5-bridge-1.71-wol-audiodebug.uf2`, set
+`DS5_BRIDGE_AUDIO_DEBUG_DIAGNOSTICS=1` (or `DS5_BRIDGE_DIAGNOSTICS=audio`)
+for the companion, play audio, reproduce the hiccup, read
+`ds5bridge-audio-debug.log`. `[BatchSent] ... HICCUP` marks a >30 ms
+audio.cpp-side gap; `[BatchBlocked] reason=opus-not-ready` means the opus
+encoder on core 1 is behind; `[GenFlush]` means something flushed the
+pipeline; `[BtEvent]`/`BtAudioDebugLateAudio` means the BT transport
+itself was late. Δ between `[BatchSent]` and the BT-side late event
+separates batch-assembly jitter from transport jitter.
+
+**Dropping it:** revert the 3 commits as a range (or don't merge). Nothing
+on `feature/wol-wifi` depends on it; the `audiodebug` variant is inert
+without `DS5_AUDIO_DEBUG_ENABLED` code, so even the build-script commit is
+harmless to keep if wanted.
+
+---
+
+## Known issue: merging## Debug branch: `debug/wol-boot-trace` — reusable board-trace patch (NOT for the PR)rebasing onto a new upstream release can collide `COMMAND_ID` values — always check for gaps, don't just append
 
 **What happened (2026-08-15, merging upstream v1.7.0):** upstream added
 `SET_RADIAL_DEADZONES` and `SET_EDGE_PROFILE_SWITCHING_BLOCKED` at `0x37`/
