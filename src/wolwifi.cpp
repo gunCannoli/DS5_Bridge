@@ -46,6 +46,18 @@ constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;
 // below picks it back up.
 constexpr uint32_t DHCP_WAIT_TIMEOUT_MS = 3000;
 constexpr uint32_t WIFI_RETRY_BACKOFF_MS = 10000;
+// A first CYW43_LINK_BADAUTH is frequently NOT a wrong password -- board
+// traces of a cold WOL boot repeatedly showed attempt #1 returning BADAUTH
+// (join_state kind 0x4) with a correct passphrase, then attempt #3
+// associating fine. The pattern matches an AP that rejects the first
+// association from a STA it hasn't seen in a while (stale PMKSA / the STA
+// joining on top of leftover driver join-state -- see decisions.md's
+// "cyw43_arch_wifi_connect_async() doesn't clean up a prior association"
+// gotcha). The generic 10s backoff for that first retry means WOL takes
+// ~35s to get a link on every cold boot. Give the first BADAUTH a fast
+// leave-and-retry instead; the existing one-retry-then-give-up logic still
+// caps a genuinely wrong password at two attempts.
+constexpr uint32_t WIFI_BADAUTH_FAST_RETRY_BACKOFF_MS = 1500;
 // CYW43439 is a combo Wi-Fi/Bluetooth chip that time-shares one radio, so
 // a Wi-Fi STA association + DHCP handshake right at controller-connect
 // does contend with the still-fresh BT session. An earlier fix delayed
@@ -198,6 +210,12 @@ bool g_badauth_seen = false;
 // guard shape as g_wifi_intentionally_idle, cleared by the same legitimate
 // reconnect triggers (fresh controller-connect edge, new SSID/password).
 bool g_wifi_retries_exhausted = false;
+// Backoff WifiState::Failed waits before re-entering Idle. Normally
+// WIFI_RETRY_BACKOFF_MS; the branch that enters Failed after a first
+// recoverable BADAUTH sets it to WIFI_BADAUTH_FAST_RETRY_BACKOFF_MS for
+// that one retry (see WIFI_BADAUTH_FAST_RETRY_BACKOFF_MS). Reset to the
+// normal value on every Failed exit so it never sticks.
+uint32_t g_next_retry_backoff_ms = WIFI_RETRY_BACKOFF_MS;
 
 // See WOL_OBSERVE_HOST_WINDOW_MS/WOL_OBSERVE_HOST_SUSTAIN_MS. Armed by
 // wolwifi_on_controller_connect() instead of proceeding immediately;
@@ -995,15 +1013,25 @@ void wolwifi_task(void) {
                 DS5_LOG("[WOL] Wi-Fi link up; waiting for IP lease\n");
                 enter_state(WifiState::WaitingForIp);
             } else if (status == CYW43_LINK_BADAUTH) {
-                // Usually a wrong password (can never succeed no matter how
-                // many times it's retried), but the driver can also report a
-                // transient BADAUTH from a PSK handshake glitch on marginal
-                // signal, which a rejoin does fix -- give it exactly one
-                // retry before treating it as a real auth failure and
-                // stopping. See MAX_WIFI_CONNECT_RETRIES.
+                // A first BADAUTH is often an AP rejecting the initial
+                // association from a STA it hasn't seen recently, or a join
+                // on top of leftover driver state -- not a wrong password.
+                // Explicitly leave (clear the stale join state -- see
+                // decisions.md) and retry after only
+                // WIFI_BADAUTH_FAST_RETRY_BACKOFF_MS instead of the full
+                // 10s, so a cold WOL boot doesn't cost ~35s to get a link.
+                // A genuinely wrong password just BADAUTHs again on the
+                // retry and is capped at two attempts by g_badauth_seen.
                 if (!g_badauth_seen) {
                     g_badauth_seen = true;
-                    DS5_LOG("[WOL] Wi-Fi BADAUTH (may be transient); retrying once\n");
+                    const int leave_err = cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
+                    DS5_LOG(
+                        "[WOL] Wi-Fi BADAUTH (likely first-association reject); "
+                        "leave (err=%d) + fast retry in %lu ms\n",
+                        leave_err,
+                        static_cast<unsigned long>(WIFI_BADAUTH_FAST_RETRY_BACKOFF_MS)
+                    );
+                    g_next_retry_backoff_ms = WIFI_BADAUTH_FAST_RETRY_BACKOFF_MS;
                     enter_state(WifiState::Failed);
                 } else {
                     DS5_LOG("[WOL] Wi-Fi BADAUTH again; wrong credentials, giving up\n");
@@ -1112,8 +1140,11 @@ void wolwifi_task(void) {
         }
 
         case WifiState::Failed:
-            if (now_ms() - g_state_entered_ms > WIFI_RETRY_BACKOFF_MS) {
+            if (now_ms() - g_state_entered_ms > g_next_retry_backoff_ms) {
                 bt_append_wol_trace_event(WolTraceStage::WolWifiBackoffElapsed);
+                // One-shot: the fast-BADAUTH backoff applies to a single
+                // retry only, never sticks for later failures this cycle.
+                g_next_retry_backoff_ms = WIFI_RETRY_BACKOFF_MS;
                 enter_state(WifiState::Idle);
             }
             return;
