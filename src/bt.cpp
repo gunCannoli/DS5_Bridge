@@ -426,6 +426,48 @@ static uint8_t hid_channel_recovery_attempts = 0;
 static BtConnectionPhase connection_phase = BtConnectionPhase::Listening;
 static uint32_t connection_generation = 0;
 static uint32_t connection_phase_started_us = 0;
+// DEBUG-ONLY (debug/wol-boot-trace): set once at the Ready transition and
+// left alone afterward (unlike connection_phase_started_us, reset per-phase)
+// -- a stable reference for ConnControllerTypeIdentified's elapsed-ms detail.
+static uint32_t connection_ready_at_us = 0;
+
+// ==========================================================================
+// DEBUG-ONLY: board-level WOL/connection trace ring  (debug/wol-boot-trace)
+// ==========================================================================
+// See bt.h for the full rationale. RAM-only, survives a BT disconnect (does
+// NOT need to survive a power cycle -- only bridges the gap until the
+// companion app next polls). Two rings: 8-byte events, and wide periodic
+// snapshots.
+struct WolTraceEvent {
+    uint32_t sequence;
+    uint32_t timestamp_ms;
+    WolTraceStage stage;
+    uint8_t detail;
+};
+constexpr uint8_t kWolTraceRingSize = 64;   // bumped from 48 for a noisy boot
+constexpr uint8_t kWolTraceRecordSize = 8;  // seq_lo16(2)+ts_ms(4)+stage(1)+detail(1)
+static WolTraceEvent wol_trace_ring[kWolTraceRingSize]{};
+static uint32_t wol_trace_next_sequence = 1;
+static uint32_t wol_trace_read_sequence = 1;
+static uint16_t wol_trace_dropped_count = 0;
+static uint8_t wol_trace_count = 0;
+static uint8_t wol_trace_head = 0;
+
+// Framed wide snapshot: 2-byte seq prefix + the packed WolSnapshot payload.
+struct WolTraceSnapshotSlot {
+    uint32_t sequence;
+    WolSnapshot snap;
+};
+constexpr uint8_t kWolSnapshotRingSize = 24;
+// Wire record = seq_lo16(2) + sizeof(WolSnapshot) packed payload.
+constexpr uint8_t kWolSnapshotRecordSize = 2 + sizeof(WolSnapshot);
+static WolTraceSnapshotSlot wol_snapshot_ring[kWolSnapshotRingSize]{};
+static uint32_t wol_snapshot_next_sequence = 1;
+static uint32_t wol_snapshot_read_sequence = 1;
+static uint16_t wol_snapshot_dropped_count = 0;
+static uint8_t wol_snapshot_count = 0;
+static uint8_t wol_snapshot_head = 0;
+
 static bool encryption_completion_pending = false;
 static hci_con_handle_t encryption_command_handle = HCI_CON_HANDLE_INVALID;
 static uint32_t encryption_command_generation = 0;
@@ -650,6 +692,7 @@ static bool begin_connection_attempt() {
     pairing_link_key_required = false;
     current_link_key_persisted = false;
     connection_phase = BtConnectionPhase::Connecting;
+    bt_append_wol_trace_event(WolTraceStage::ConnPhaseConnecting);
     connection_generation++;
     if (connection_generation == 0) {
         connection_generation++;
@@ -673,6 +716,7 @@ static bool note_acl_connected(hci_con_handle_t handle) {
     }
     acl_handle = handle;
     connection_phase = BtConnectionPhase::Securing;
+    bt_append_wol_trace_event(WolTraceStage::ConnPhaseSecuring);
     note_connection_phase_started();
     clear_encryption_completion();
     return true;
@@ -704,6 +748,7 @@ static bool begin_hid_opening(hci_con_handle_t handle) {
         return false;
     }
     connection_phase = BtConnectionPhase::HidOpening;
+    bt_append_wol_trace_event(WolTraceStage::ConnPhaseHidOpening);
     note_connection_phase_started();
     clear_encryption_completion();
     return true;
@@ -717,6 +762,7 @@ static bool begin_connection_disconnect() {
         return true;
     }
     connection_phase = BtConnectionPhase::Disconnecting;
+    bt_append_wol_trace_event(WolTraceStage::ConnPhaseDisconnecting);
     note_connection_phase_started();
     clear_encryption_completion();
     clear_authentication_retry();
@@ -2255,6 +2301,124 @@ void bt_rearm_speaker_output_route(bool headset_plugged) {
     send_speaker_output_state(true, headset_plugged);
 }
 
+// ==========================================================================
+// DEBUG-ONLY: WOL trace ring implementation  (debug/wol-boot-trace)
+// ==========================================================================
+void bt_append_wol_trace_event(WolTraceStage stage, uint8_t detail) {
+    WolTraceEvent &slot = wol_trace_ring[wol_trace_head];
+    slot.sequence = wol_trace_next_sequence++;
+    slot.timestamp_ms = time_us_32() / 1000;
+    slot.stage = stage;
+    slot.detail = detail;
+    wol_trace_head = static_cast<uint8_t>((wol_trace_head + 1) % kWolTraceRingSize);
+    if (wol_trace_count < kWolTraceRingSize) {
+        wol_trace_count++;
+    } else {
+        if (wol_trace_dropped_count != 0xffff) {
+            wol_trace_dropped_count++;
+        }
+        const uint32_t oldest_sequence = wol_trace_next_sequence - wol_trace_count;
+        if (wol_trace_read_sequence < oldest_sequence) {
+            wol_trace_read_sequence = oldest_sequence;
+        }
+    }
+}
+
+void bt_append_wol_snapshot(const WolSnapshot &snap) {
+    WolTraceSnapshotSlot &slot = wol_snapshot_ring[wol_snapshot_head];
+    slot.sequence = wol_snapshot_next_sequence++;
+    slot.snap = snap;
+    wol_snapshot_head = static_cast<uint8_t>((wol_snapshot_head + 1) % kWolSnapshotRingSize);
+    if (wol_snapshot_count < kWolSnapshotRingSize) {
+        wol_snapshot_count++;
+    } else {
+        if (wol_snapshot_dropped_count != 0xffff) {
+            wol_snapshot_dropped_count++;
+        }
+        const uint32_t oldest_sequence = wol_snapshot_next_sequence - wol_snapshot_count;
+        if (wol_snapshot_read_sequence < oldest_sequence) {
+            wol_snapshot_read_sequence = oldest_sequence;
+        }
+    }
+}
+
+WolTraceReadResult bt_read_wol_trace(uint8_t *buffer, uint16_t capacity) {
+    WolTraceReadResult result{};
+    result.record_size = kWolTraceRecordSize;
+    result.is_snapshot = 0;
+    result.latest_sequence = wol_trace_next_sequence > 1 ? wol_trace_next_sequence - 1 : 0;
+    result.dropped_count = wol_trace_dropped_count;
+
+    const uint8_t max_records = static_cast<uint8_t>(capacity / kWolTraceRecordSize);
+    const uint32_t oldest_sequence = wol_trace_next_sequence - wol_trace_count;
+    if (wol_trace_read_sequence < oldest_sequence) {
+        wol_trace_read_sequence = oldest_sequence;
+    }
+    const uint32_t available_records = wol_trace_next_sequence > wol_trace_read_sequence
+        ? wol_trace_next_sequence - wol_trace_read_sequence
+        : 0;
+    const uint8_t record_count = static_cast<uint8_t>(std::min<uint32_t>(max_records, available_records));
+    result.record_count = record_count;
+
+    const uint8_t oldest_index = static_cast<uint8_t>(
+        (wol_trace_head + kWolTraceRingSize - wol_trace_count) % kWolTraceRingSize
+    );
+    for (uint8_t i = 0; i < record_count; i++) {
+        const uint32_t sequence = wol_trace_read_sequence + i;
+        const uint8_t ring_index = static_cast<uint8_t>(
+            (oldest_index + (sequence - oldest_sequence)) % kWolTraceRingSize
+        );
+        const WolTraceEvent &event = wol_trace_ring[ring_index];
+        uint8_t *record = buffer + (i * kWolTraceRecordSize);
+        record[0] = static_cast<uint8_t>(sequence & 0xff);
+        record[1] = static_cast<uint8_t>((sequence >> 8) & 0xff);
+        record[2] = static_cast<uint8_t>(event.timestamp_ms & 0xff);
+        record[3] = static_cast<uint8_t>((event.timestamp_ms >> 8) & 0xff);
+        record[4] = static_cast<uint8_t>((event.timestamp_ms >> 16) & 0xff);
+        record[5] = static_cast<uint8_t>((event.timestamp_ms >> 24) & 0xff);
+        record[6] = static_cast<uint8_t>(event.stage);
+        record[7] = event.detail;
+    }
+    wol_trace_read_sequence += record_count;
+    return result;
+}
+
+WolTraceReadResult bt_read_wol_snapshots(uint8_t *buffer, uint16_t capacity) {
+    WolTraceReadResult result{};
+    result.record_size = kWolSnapshotRecordSize;
+    result.is_snapshot = 1;
+    result.latest_sequence = wol_snapshot_next_sequence > 1 ? wol_snapshot_next_sequence - 1 : 0;
+    result.dropped_count = wol_snapshot_dropped_count;
+
+    const uint8_t max_records = static_cast<uint8_t>(capacity / kWolSnapshotRecordSize);
+    const uint32_t oldest_sequence = wol_snapshot_next_sequence - wol_snapshot_count;
+    if (wol_snapshot_read_sequence < oldest_sequence) {
+        wol_snapshot_read_sequence = oldest_sequence;
+    }
+    const uint32_t available_records = wol_snapshot_next_sequence > wol_snapshot_read_sequence
+        ? wol_snapshot_next_sequence - wol_snapshot_read_sequence
+        : 0;
+    const uint8_t record_count = static_cast<uint8_t>(std::min<uint32_t>(max_records, available_records));
+    result.record_count = record_count;
+
+    const uint8_t oldest_index = static_cast<uint8_t>(
+        (wol_snapshot_head + kWolSnapshotRingSize - wol_snapshot_count) % kWolSnapshotRingSize
+    );
+    for (uint8_t i = 0; i < record_count; i++) {
+        const uint32_t sequence = wol_snapshot_read_sequence + i;
+        const uint8_t ring_index = static_cast<uint8_t>(
+            (oldest_index + (sequence - oldest_sequence)) % kWolSnapshotRingSize
+        );
+        const WolTraceSnapshotSlot &slot = wol_snapshot_ring[ring_index];
+        uint8_t *record = buffer + (i * kWolSnapshotRecordSize);
+        record[0] = static_cast<uint8_t>(sequence & 0xff);
+        record[1] = static_cast<uint8_t>((sequence >> 8) & 0xff);
+        std::memcpy(record + 2, &slot.snap, sizeof(WolSnapshot));
+    }
+    wol_snapshot_read_sequence += record_count;
+    return result;
+}
+
 void bt_refresh_speaker_output() {
     if (hid_interrupt_cid == 0) {
         speaker_output_enabled = false;
@@ -2740,6 +2904,7 @@ static void service_disconnect_recovery(uint32_t now) {
     if (disconnect_retry_attempts >= DISCONNECT_RETRY_MAX_ATTEMPTS) {
         disconnect_retry_requested = false;
         DS5_LOG("[HCI] Disconnect retry exhausted; reboot for bounded transport recovery\n");
+        bt_append_wol_trace_event(WolTraceStage::BoardTransportRecoveryReboot, 0);
         watchdog_reboot(0, 0, CONTROLLER_DISCONNECT_REBOOT_DELAY_MS);
         return;
     }
@@ -2754,6 +2919,7 @@ static void service_disconnect_recovery(uint32_t now) {
         disconnect_retry_waiting = true;
         disconnect_retry_at_us = now + DISCONNECT_RETRY_EVENT_TIMEOUT_US;
         DS5_LOG("[HCI] Disconnect retry sent attempt=%u\n", disconnect_retry_attempts);
+        bt_append_wol_trace_event(WolTraceStage::ConnDisconnectRetrySent, disconnect_retry_attempts);
     } else {
         disconnect_retry_at_us = now + DISCONNECT_RETRY_DELAY_US;
     }
@@ -2799,6 +2965,10 @@ void bt_connection_recovery_loop() {
             >= SECURITY_PHASE_TIMEOUT_US
     ) {
         DS5_LOG("[HCI] Security phase timed out; recycle ACL and preserve pairing\n");
+        bt_append_wol_trace_event(
+            WolTraceStage::ConnSecurityTimeout,
+            static_cast<uint8_t>(std::min<uint32_t>((now - connection_phase_started_us) / 1000, 255))
+        );
         bt_disconnect();
         return;
     }
@@ -2813,6 +2983,10 @@ void bt_connection_recovery_loop() {
             >= HID_REMOTE_INTERRUPT_FOLLOWUP_TIMEOUT_US
     ) {
         DS5_LOG("[L2CAP] Controller-owned HID Interrupt follow-up timed out; retry ACL\n");
+        bt_append_wol_trace_event(
+            WolTraceStage::ConnHidInterruptFollowupTimeout,
+            static_cast<uint8_t>(std::min<uint32_t>((now - hid_control_opened_at_us) / 1000, 255))
+        );
         bt_disconnect();
         return;
     }
@@ -2824,6 +2998,10 @@ void bt_connection_recovery_loop() {
             >= current_hid_opening_timeout_us()
     ) {
         DS5_LOG("[L2CAP] HID opening phase timed out; recycle ACL\n");
+        bt_append_wol_trace_event(
+            WolTraceStage::ConnHidOpeningTimeout,
+            static_cast<uint8_t>(std::min<uint32_t>((now - connection_phase_started_us) / 1000, 255))
+        );
         bt_disconnect();
         return;
     }
@@ -2961,9 +3139,11 @@ void bt_inquiry_loop() {
             acl_connection_pending_at_us = now;
         } else if (!acl_connection_outbound) {
             DS5_LOG("[HCI] Incoming ACL pending timed out; reset bounded transport recovery\n");
+            bt_append_wol_trace_event(WolTraceStage::BoardTransportRecoveryReboot, 1);
             watchdog_reboot(0, 0, CONTROLLER_DISCONNECT_REBOOT_DELAY_MS);
         } else if (acl_connection_cancel_sent) {
             DS5_LOG("[HCI] ACL cancellation did not complete; reset bounded transport recovery\n");
+            bt_append_wol_trace_event(WolTraceStage::BoardTransportRecoveryReboot, 2);
             watchdog_reboot(0, 0, CONTROLLER_DISCONNECT_REBOOT_DELAY_MS);
         } else {
             // The cancel command is waiting for HCI command credit. Keep the
@@ -3670,6 +3850,7 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
             usb_handle_controller_transport_disconnect(expected_disconnect);
             reset_controller_input_report_cache();
             const uint8_t reason = hci_event_disconnection_complete_get_reason(packet);
+            bt_append_wol_trace_event(WolTraceStage::ConnDisconnected, reason);
             clear_outbound_inquiry_target();
             clear_acl_connection_pending();
             acl_connection_outbound = false;
@@ -4018,7 +4199,9 @@ static void finish_hid_session_if_ready() {
     }
 
     connection_phase = BtConnectionPhase::Ready;
+    bt_append_wol_trace_event(WolTraceStage::ConnPhaseReady);
     connection_phase_started_us = 0;
+    connection_ready_at_us = time_us_32();  // DEBUG-ONLY (debug/wol-boot-trace)
     cancel_hid_channel_recovery_if_ready();
     // Wake-on-LAN: this function only reaches here once per connection (see
     // the `connection_phase == BtConnectionPhase::Ready` early-return above),
@@ -4183,6 +4366,13 @@ static __attribute__((noinline)) void l2cap_packet_handler_cold(
             }
             if (!meaningful_input_activity && now_us - inactive_time > idle_disconnect_timeout_us()) {
                 DS5_LOG("disconnect when inactive\n");
+                // DEBUG-ONLY (debug/wol-boot-trace): record that the firmware
+                // idle-disconnect path fired -- one of the hypotheses for the
+                // mid-boot controller drop. bit0 = audio route was protected.
+                bt_append_wol_trace_event(
+                    WolTraceStage::BtIdleDisconnectFired,
+                    audio_output_route_protected() ? 0x01 : 0x00
+                );
                 inactive_time = now_us;
                 bt_disconnect_with_intent(BtControllerDisconnectIntentIdleTimeout);
             }
@@ -4203,11 +4393,19 @@ static __attribute__((noinline)) void l2cap_packet_handler_cold(
                         edge_type_response ? "DualSense Edge" : "DualSense"
                     );
                     usb_handle_controller_transport_ready();
+                    bt_append_wol_trace_event(
+                        WolTraceStage::ConnControllerTypeIdentified,
+                        static_cast<uint8_t>(std::min<uint32_t>((time_us_32() - connection_ready_at_us) / 1000, 255))
+                    );
                 } else if (size > 0 && packet[0] == 0x02) {
                     controller_type = ControllerTypeDualSense;
                     controller_type_check_pending = false;
                     DS5_LOG("[L2CAP] Connected controller detected as DualSense\n");
                     usb_handle_controller_transport_ready();
+                    bt_append_wol_trace_event(
+                        WolTraceStage::ConnControllerTypeIdentified,
+                        static_cast<uint8_t>(std::min<uint32_t>((time_us_32() - connection_ready_at_us) / 1000, 255))
+                    );
                 }
             } else if (
                 edge_type_response
@@ -4383,6 +4581,7 @@ static __attribute__((noinline)) void l2cap_packet_handler_cold(
             }
             if (connection_phase == BtConnectionPhase::Ready) {
                 connection_phase = BtConnectionPhase::HidOpening;
+                bt_append_wol_trace_event(WolTraceStage::ConnPhaseHidOpening, 1);
                 note_connection_phase_started();
             }
             if (
