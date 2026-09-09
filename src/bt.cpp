@@ -438,13 +438,18 @@ static uint32_t connection_ready_at_us = 0;
 // NOT need to survive a power cycle -- only bridges the gap until the
 // companion app next polls). Two rings: 8-byte events, and wide periodic
 // snapshots.
+#pragma pack(push, 1)
 struct WolTraceEvent {
     uint32_t sequence;
     uint32_t timestamp_ms;
     WolTraceStage stage;
     uint8_t detail;
 };
-constexpr uint8_t kWolTraceRingSize = 64;   // bumped from 48 for a noisy boot
+#pragma pack(pop)
+// Sized to fit the SRAM heap-headroom guard (verify_core1_sram.cmake) on the
+// tight `debug` variant. A noisy boot can still overflow this -- the
+// dropped-count in the read result makes that visible rather than silent.
+constexpr uint8_t kWolTraceRingSize = 40;
 constexpr uint8_t kWolTraceRecordSize = 8;  // seq_lo16(2)+ts_ms(4)+stage(1)+detail(1)
 static WolTraceEvent wol_trace_ring[kWolTraceRingSize]{};
 static uint32_t wol_trace_next_sequence = 1;
@@ -454,11 +459,13 @@ static uint8_t wol_trace_count = 0;
 static uint8_t wol_trace_head = 0;
 
 // Framed wide snapshot: 2-byte seq prefix + the packed WolSnapshot payload.
+#pragma pack(push, 1)
 struct WolTraceSnapshotSlot {
     uint32_t sequence;
     WolSnapshot snap;
 };
-constexpr uint8_t kWolSnapshotRingSize = 24;
+#pragma pack(pop)
+constexpr uint8_t kWolSnapshotRingSize = 8;
 // Wire record = seq_lo16(2) + sizeof(WolSnapshot) packed payload.
 constexpr uint8_t kWolSnapshotRecordSize = 2 + sizeof(WolSnapshot);
 static WolTraceSnapshotSlot wol_snapshot_ring[kWolSnapshotRingSize]{};
