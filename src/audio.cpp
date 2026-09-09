@@ -109,6 +109,15 @@ enum AudioDebugEventCode : uint8_t {
     AudioDebugHidEvent = 21,
     AudioDebugBtEvent = 22,
     AudioDebugCpuLoad = 23,
+    // DEBUG-ONLY (debug/audio-output-trace): the BT send-batch assembly path
+    // in try_send_pending_audio_batch(). The existing ring is blind here --
+    // AudioDebugSendSpeakerPacket only logs the first 4 packets after a
+    // stream start -- so a stall 10s into playback (opus encoder falling
+    // behind, haptics starved, a mid-stream generation flush) is invisible.
+    // arg meanings are per-code, decoded companion-side.
+    AudioDebugBatchBlocked = 24,      // batch could not assemble this call
+    AudioDebugBatchSent = 25,        // a batch went to bt_write_audio_stream()
+    AudioDebugGenerationFlush = 26,  // drain_audio_queues() bumped the generation mid-stream
 };
 
 struct mic_packet_element {
@@ -188,6 +197,11 @@ static uint16_t audio_debug_dropped_count = 0;
 static uint8_t audio_debug_count = 0;
 static uint8_t audio_debug_head = 0;
 static uint8_t audio_debug_packet_log_budget = 0;
+// DEBUG-ONLY (debug/audio-output-trace): send-cadence tracking for the
+// AudioDebugBatchSent / AudioDebugBatchBlocked ring events.
+static uint32_t audio_dbg_last_batch_sent_us = 0;
+static uint32_t audio_dbg_last_batch_sent_log_us = 0;
+static uint32_t audio_dbg_last_batch_blocked_log_us = 0;
 static audio_debug_stats audio_stats{};
 static volatile uint32_t audio_loop_runtime_max_us = 0;
 static volatile uint32_t audio_loop_gap_max_us = 0;
@@ -852,11 +866,29 @@ static void clear_pending_audio_batch() {
 }
 
 static void drain_audio_queues() {
+    const uint32_t prev_generation = audio_stream_generation;
     uint32_t next_generation = audio_stream_generation + 1;
     if (next_generation == 0) {
         next_generation = 1;
     }
     audio_stream_generation = next_generation;
+#if DS5_AUDIO_DEBUG_ENABLED
+    // DEBUG-ONLY (debug/audio-output-trace): a mid-stream generation bump
+    // flushes the whole audio pipeline (fifo + opus + pending batch + BT
+    // queue) -- an audible gap. Triggered by persona switches, speaker-route
+    // toggles, controller disconnects. arg0/arg1 = old/new generation low
+    // byte, arg2 = opus level, arg3 = audio_fifo level just before the drain.
+    audio_debug_log(
+        AudioDebugGenerationFlush,
+        static_cast<uint8_t>(prev_generation & 0xFF),
+        static_cast<uint8_t>(next_generation & 0xFF),
+        opus_debug_level(),
+        clamp_debug_u8(queue_get_level(&audio_fifo)),
+        0
+    );
+#else
+    (void)prev_generation;
+#endif
     drain_queue(&audio_fifo);
     clear_opus_buffer();
     clear_pending_audio_batch();
@@ -1065,11 +1097,40 @@ static void update_persistent_speaker_route() {
     }
 }
 
+// DEBUG-ONLY (debug/audio-output-trace): rate-limited "batch couldn't
+// assemble" trace. reason: 1=haptics<2, 2=opus-not-ready, 3=opus-dequeue-
+// fail, 4=stale-generation. Rate-limited to ~1 per 40ms so a sustained
+// stall marks the ring without flooding it.
+static void audio_dbg_note_batch_blocked(uint8_t reason) {
+#if DS5_AUDIO_DEBUG_ENABLED
+    const uint32_t now = time_us_32();
+    if (
+        audio_dbg_last_batch_blocked_log_us != 0
+        && static_cast<uint32_t>(now - audio_dbg_last_batch_blocked_log_us) < 40000u
+    ) {
+        return;
+    }
+    audio_dbg_last_batch_blocked_log_us = now;
+    audio_debug_log(
+        AudioDebugBatchBlocked,
+        reason,
+        pending_audio_haptics_count,
+        opus_debug_level(),
+        clamp_debug_u8(queue_get_level(&audio_fifo)),
+        pending_audio_include_speaker ? 1 : 0
+    );
+#else
+    (void)reason;
+#endif
+}
+
 static bool __not_in_flash_func(try_send_pending_audio_batch)() {
     if (pending_audio_haptics_count < AUDIO_BATCH_FRAMES) {
+        audio_dbg_note_batch_blocked(1);
         return false;
     }
     if (pending_audio_include_speaker && !speaker_opus_batch_ready()) {
+        audio_dbg_note_batch_blocked(2);
         return false;
     }
 
@@ -1077,10 +1138,12 @@ static bool __not_in_flash_func(try_send_pending_audio_batch)() {
     if (pending_audio_include_speaker) {
         for (uint8_t frame = 0; frame < AUDIO_BATCH_FRAMES; frame++) {
             if (!queue_try_remove(&speaker_opus_fifo, &speaker_frames[frame])) {
+                audio_dbg_note_batch_blocked(3);
                 clear_pending_audio_batch();
                 return false;
             }
             if (speaker_frames[frame].generation != audio_stream_generation) {
+                audio_dbg_note_batch_blocked(4);
                 clear_pending_audio_batch();
                 return false;
             }
@@ -1148,7 +1211,43 @@ static bool __not_in_flash_func(try_send_pending_audio_batch)() {
 #endif
 
     clear_pending_audio_batch();
-    return bt_write_audio_stream(pkt, sizeof(pkt));
+    const bool sent_ok = bt_write_audio_stream(pkt, sizeof(pkt));
+#if DS5_AUDIO_DEBUG_ENABLED
+    // DEBUG-ONLY (debug/audio-output-trace): audio.cpp-side send cadence.
+    // This is the moment a batch is handed to the BT layer -- distinct from
+    // bt.cpp's BtAudioDebugLateAudio, which fires only once the BT scheduler
+    // actually drains it. Δ between these two shows batch-assembly jitter
+    // (opus/haptics/core-1) vs BT-transport jitter. Logged at most once per
+    // 250ms, but ALWAYS when the gap since the last send exceeds ~30ms
+    // (2 batch frames = ~21ms expected, so >30ms is a real hiccup).
+    {
+        const uint32_t now = time_us_32();
+        const uint32_t gap_us = audio_dbg_last_batch_sent_us != 0
+            ? static_cast<uint32_t>(now - audio_dbg_last_batch_sent_us)
+            : 0;
+        audio_dbg_last_batch_sent_us = now;
+        const bool gap_is_hiccup = gap_us > 30000u;
+        if (
+            gap_is_hiccup
+            || audio_dbg_last_batch_sent_log_us == 0
+            || static_cast<uint32_t>(now - audio_dbg_last_batch_sent_log_us) >= 250000u
+        ) {
+            audio_dbg_last_batch_sent_log_us = now;
+            audio_debug_log(
+                AudioDebugBatchSent,
+                clamp_debug_u8((gap_us + 500u) / 1000u),   // ms since last batch, capped 255
+                sent_ok ? 1 : 0,
+                opus_debug_level(),
+                clamp_debug_u8(queue_get_level(&audio_fifo)),
+                static_cast<uint8_t>(
+                    (speaker_payload_included ? 0x01 : 0)
+                    | (gap_is_hiccup ? 0x02 : 0)
+                )
+            );
+        }
+    }
+#endif
+    return sent_ok;
 }
 
 static bool __not_in_flash_func(send_audio_haptics_packet)(
