@@ -4,7 +4,7 @@ export const REPORT_LENGTH = 64;
 export const PAYLOAD_LENGTH = 63;
 export const MAGIC = 'DS5B';
 export const PROTOCOL_MAJOR = 1;
-export const PROTOCOL_MINOR = 23;
+export const PROTOCOL_MINOR = 24;
 
 export const REPORT_ID = {
   STATUS: 0x01,
@@ -16,6 +16,9 @@ export const REPORT_ID = {
   AUDIO_STATUS: 0x08,
   TRIGGER_TRACE: 0x09,
   FEEDBACK_TRACE: 0x0a,
+  // DEBUG-ONLY (debug/wol-boot-trace): board WOL trace-ring drains.
+  WOL_TRACE: 0x0b,
+  WOL_SNAPSHOT: 0x0c,
   DEVICE_IDENTITY: 0x0d,
   FIRMWARE_LOG: 0x0e
 } as const;
@@ -632,6 +635,332 @@ export interface FeedbackTracePayload {
   latestSequence: number;
   droppedCount: number;
   events: FeedbackTraceEventPayload[];
+}
+
+// ==========================================================================
+// DEBUG-ONLY (debug/wol-boot-trace): board WOL/connection trace-ring drains
+// ==========================================================================
+export const WOL_TRACE_EVENT_RECORD_SIZE = 8; // seq_lo16(2)+ts_ms(4)+stage(1)+detail(1)
+// Wide snapshot wire record = seq_lo16(2) + packed WolSnapshot (25 bytes).
+// Kept in sync by hand with struct WolSnapshot in src/bt.h.
+export const WOL_SNAPSHOT_RECORD_SIZE = 27;
+
+// Mirrors WolTraceStage in src/bt.h. APPEND-ONLY, never renumber.
+export const WOL_TRACE_STAGE = {
+  CONN_PHASE_CONNECTING: 0,
+  CONN_PHASE_SECURING: 1,
+  CONN_PHASE_HID_OPENING: 2,
+  CONN_PHASE_READY: 3,
+  CONN_PHASE_DISCONNECTING: 4,
+  CONN_SECURITY_TIMEOUT: 5,
+  CONN_HID_OPENING_TIMEOUT: 6,
+  CONN_HID_INTERRUPT_FOLLOWUP_TIMEOUT: 7,
+  CONN_DISCONNECTED: 8,
+  WOL_TRIGGER_FIRED: 9,
+  WOL_TRIGGER_SKIPPED: 10,
+  WOL_CONNECT_DELAY_START: 11, // removed in firmware; kept for old records
+  WOL_RESEND_BEGIN: 12,
+  WOL_RESEND_CONFIRMED: 13,
+  WOL_RESEND_GAVE_UP: 14,
+  WOL_WIFI_ASSOC_TIMEOUT: 15,
+  WOL_DHCP_WAIT_TIMEOUT: 16,
+  BOARD_WATCHDOG_REBOOT: 17,
+  BOARD_BOOT: 18,
+  WOL_TRIGGER_DEBOUNCED: 19,
+  WOL_CONNECT_RETRIES_EXHAUSTED: 20,
+  WOL_CONNECT_STARTED: 21,
+  WOL_WIFI_LINK_LOST_AFTER_CONNECT: 22,
+  WOL_WIFI_CONNECTED: 23,
+  WOL_WIFI_BACKOFF_ELAPSED: 24,
+  WOL_TRIGGER_SKIPPED_HOST_ACTIVE: 25,
+  BOARD_TRANSPORT_RECOVERY_REBOOT: 26,
+  CONN_DISCONNECT_RETRY_SENT: 27,
+  CONN_CONTROLLER_TYPE_IDENTIFIED: 28,
+  OBSERVE_HOST_BEGIN: 29,
+  OBSERVE_HOST_SAMPLE_EDGE: 30,
+  OBSERVE_HOST_WINDOW_ELAPSED: 31,
+  // ---- debug/wol-boot-trace additions ----
+  USB_TOPOLOGY_RECONNECT_BEGIN: 32,
+  USB_TRANSPORT_CONNECT: 33,
+  USB_SUSPEND_ARMED: 34,
+  USB_CONTROLLER_POWER_OFF: 35,
+  USB_MOUNT: 36,
+  USB_UMOUNT: 37,
+  BT_IDLE_DISCONNECT_FIRED: 38,
+  WOL_WAKE_IN_PROGRESS_EDGE: 39,
+  WOL_STATE_SNAPSHOT: 40
+} as const;
+
+const WOL_TRACE_STAGE_LABELS: Record<number, string> = {
+  [WOL_TRACE_STAGE.CONN_PHASE_CONNECTING]: 'conn-connecting',
+  [WOL_TRACE_STAGE.CONN_PHASE_SECURING]: 'conn-securing',
+  [WOL_TRACE_STAGE.CONN_PHASE_HID_OPENING]: 'conn-hid-opening',
+  [WOL_TRACE_STAGE.CONN_PHASE_READY]: 'conn-ready',
+  [WOL_TRACE_STAGE.CONN_PHASE_DISCONNECTING]: 'conn-disconnecting',
+  [WOL_TRACE_STAGE.CONN_SECURITY_TIMEOUT]: 'conn-security-timeout',
+  [WOL_TRACE_STAGE.CONN_HID_OPENING_TIMEOUT]: 'conn-hid-opening-timeout',
+  [WOL_TRACE_STAGE.CONN_HID_INTERRUPT_FOLLOWUP_TIMEOUT]: 'conn-hid-interrupt-followup-timeout',
+  [WOL_TRACE_STAGE.CONN_DISCONNECTED]: 'conn-disconnected',
+  [WOL_TRACE_STAGE.WOL_TRIGGER_FIRED]: 'wol-trigger-fired',
+  [WOL_TRACE_STAGE.WOL_TRIGGER_SKIPPED]: 'wol-trigger-skipped',
+  [WOL_TRACE_STAGE.WOL_CONNECT_DELAY_START]: 'wol-connect-delay-start',
+  [WOL_TRACE_STAGE.WOL_RESEND_BEGIN]: 'wol-resend-begin',
+  [WOL_TRACE_STAGE.WOL_RESEND_CONFIRMED]: 'wol-resend-confirmed',
+  [WOL_TRACE_STAGE.WOL_RESEND_GAVE_UP]: 'wol-resend-gave-up',
+  [WOL_TRACE_STAGE.WOL_WIFI_ASSOC_TIMEOUT]: 'wol-wifi-assoc-timeout',
+  [WOL_TRACE_STAGE.WOL_DHCP_WAIT_TIMEOUT]: 'wol-dhcp-wait-timeout',
+  [WOL_TRACE_STAGE.BOARD_WATCHDOG_REBOOT]: 'board-watchdog-reboot',
+  [WOL_TRACE_STAGE.BOARD_BOOT]: 'board-boot',
+  [WOL_TRACE_STAGE.WOL_TRIGGER_DEBOUNCED]: 'wol-trigger-debounced',
+  [WOL_TRACE_STAGE.WOL_CONNECT_RETRIES_EXHAUSTED]: 'wol-connect-retries-exhausted',
+  [WOL_TRACE_STAGE.WOL_CONNECT_STARTED]: 'wol-connect-started',
+  [WOL_TRACE_STAGE.WOL_WIFI_LINK_LOST_AFTER_CONNECT]: 'wol-wifi-link-lost-after-connect',
+  [WOL_TRACE_STAGE.WOL_WIFI_CONNECTED]: 'wol-wifi-connected',
+  [WOL_TRACE_STAGE.WOL_WIFI_BACKOFF_ELAPSED]: 'wol-wifi-backoff-elapsed',
+  [WOL_TRACE_STAGE.WOL_TRIGGER_SKIPPED_HOST_ACTIVE]: 'wol-trigger-skipped-host-active',
+  [WOL_TRACE_STAGE.BOARD_TRANSPORT_RECOVERY_REBOOT]: 'board-transport-recovery-reboot',
+  [WOL_TRACE_STAGE.CONN_DISCONNECT_RETRY_SENT]: 'conn-disconnect-retry-sent',
+  [WOL_TRACE_STAGE.CONN_CONTROLLER_TYPE_IDENTIFIED]: 'conn-controller-type-identified',
+  [WOL_TRACE_STAGE.OBSERVE_HOST_BEGIN]: 'observe-host-begin',
+  [WOL_TRACE_STAGE.OBSERVE_HOST_SAMPLE_EDGE]: 'observe-host-sample-edge',
+  [WOL_TRACE_STAGE.OBSERVE_HOST_WINDOW_ELAPSED]: 'observe-host-window-elapsed',
+  [WOL_TRACE_STAGE.USB_TOPOLOGY_RECONNECT_BEGIN]: 'usb-topology-reconnect-begin',
+  [WOL_TRACE_STAGE.USB_TRANSPORT_CONNECT]: 'usb-transport-connect',
+  [WOL_TRACE_STAGE.USB_SUSPEND_ARMED]: 'usb-suspend-armed',
+  [WOL_TRACE_STAGE.USB_CONTROLLER_POWER_OFF]: 'usb-controller-power-off',
+  [WOL_TRACE_STAGE.USB_MOUNT]: 'usb-mount',
+  [WOL_TRACE_STAGE.USB_UMOUNT]: 'usb-umount',
+  [WOL_TRACE_STAGE.BT_IDLE_DISCONNECT_FIRED]: 'bt-idle-disconnect-fired',
+  [WOL_TRACE_STAGE.WOL_WAKE_IN_PROGRESS_EDGE]: 'wol-wake-in-progress-edge',
+  [WOL_TRACE_STAGE.WOL_STATE_SNAPSHOT]: 'wol-state-snapshot'
+};
+
+export function wolTraceStageLabel(stage: number): string {
+  return WOL_TRACE_STAGE_LABELS[stage] ?? `stage-${stage}`;
+}
+
+// HCI disconnect reason names (BT Core spec 5.x, "Error Codes"). Only the
+// ones this firmware realistically produces are named; others fall through
+// to the raw hex.
+const HCI_DISCONNECT_REASON_NAMES: Record<number, string> = {
+  0x05: 'auth-failure',
+  0x08: 'connection-timeout',
+  0x13: 'remote-user-terminated',
+  0x14: 'remote-low-resources',
+  0x15: 'remote-power-off',
+  0x16: 'local-host-terminated',
+  0x1a: 'unsupported-remote-feature',
+  0x22: 'lmp-ll-response-timeout',
+  0x23: 'lmp-error-transaction-collision',
+  0x28: 'instant-passed',
+  0x3b: 'unacceptable-connection-params',
+  0x3d: 'mic-failure',
+  0x3e: 'connection-failed-to-establish'
+};
+export function hciDisconnectReasonName(reason: number): string {
+  return HCI_DISCONNECT_REASON_NAMES[reason] ?? `0x${reason.toString(16).padStart(2, '0')}`;
+}
+
+// Decode usb_host_active_debug_bits() (src/usb.h) into a compact flag list.
+const USB_DEBUG_BIT_NAMES: [number, string][] = [
+  [0x0001, 'mounted'],
+  [0x0002, 'inited'],
+  [0x0004, 'suspended'],
+  [0x0008, 'host-suspended'],
+  [0x0010, 'transport-ready'],
+  [0x0020, 'transport-attached'],
+  [0x0040, 'bridge-only'],
+  [0x0080, 'reconnect-target-bridge-only'],
+  [0x0100, 'reconnect-connect-pending'],
+  [0x0200, 'reconnect-requested'],
+  [0x0400, 'transition-pending'],
+  [0x0800, 'suspend-poweroff-armed'],
+  [0x1000, 'setting:suspend-disconnect'],
+  [0x2000, 'setting:wake-on-connect'],
+  [0x4000, 'remote-wakeup-armed']
+];
+export function usbHostActiveDebugBitsText(bits: number): string {
+  const on = USB_DEBUG_BIT_NAMES.filter(([mask]) => (bits & mask) !== 0).map(([, name]) => name);
+  return on.length > 0 ? on.join('|') : 'none';
+}
+
+// lwIP DHCP client state (lwip/prot/dhcp.h DHCP_STATE_*).
+const DHCP_STATE_NAMES: Record<number, string> = {
+  0: 'off', 1: 'requesting', 2: 'init', 3: 'rebooting', 4: 'rebinding',
+  5: 'renewing', 6: 'selecting', 7: 'informing', 8: 'checking', 10: 'bound', 12: 'backing-off'
+};
+export function dhcpStateName(state: number): string {
+  return DHCP_STATE_NAMES[state] ?? String(state);
+}
+
+// cyw43_tcpip_link_status() return values.
+const CYW43_LINK_STATUS_NAMES: Record<number, string> = {
+  [-3]: 'badauth', [-2]: 'nonet', [-1]: 'fail', 0: 'down', 1: 'join', 2: 'noip', 3: 'up'
+};
+export function cyw43LinkStatusName(status: number): string {
+  return CYW43_LINK_STATUS_NAMES[status] ?? String(status);
+}
+
+const WIFI_STATE_NAMES = ['unconfigured', 'idle', 'connecting', 'waiting-for-ip', 'connected', 'failed'];
+export function wolWifiStateName(state: number): string {
+  return WIFI_STATE_NAMES[state] ?? String(state);
+}
+
+const BT_CONNECTION_PHASE_NAMES = ['listening', 'connecting', 'securing', 'hid-opening', 'ready', 'disconnecting'];
+export function btConnectionPhaseName(phase: number): string {
+  return BT_CONNECTION_PHASE_NAMES[phase] ?? String(phase);
+}
+
+const WOL_INDICATOR_PHASE_NAMES = ['idle', 'pulsing', 'confirmed'];
+export function wolIndicatorPhaseName(phase: number): string {
+  return WOL_INDICATOR_PHASE_NAMES[phase] ?? String(phase);
+}
+
+export interface WolTraceEventPayload {
+  sequence: number;
+  timeMs: number;
+  stage: number;
+  detail: number;
+}
+
+export interface WolTracePayload {
+  latestSequence: number;
+  droppedCount: number;
+  isSnapshot: boolean;
+  events: WolTraceEventPayload[];
+}
+
+export interface WolSnapshotPayload {
+  sequence: number;
+  wifiState: number;
+  msInWifiState: number;
+  connectAttemptCount: number;
+  rawLinkStatus: number;
+  wifiJoinState: number;
+  dhcpState: number;
+  dhcpTries: number;
+  haveIp: boolean;
+  wolGuardBits: number;
+  usbDebugBits: number;
+  connectionPhase: number;
+  hidLinkUp: boolean;
+  wolIndicatorPhase: number;
+  boardTimeMs: number;
+}
+
+export interface WolSnapshotReportPayload {
+  latestSequence: number;
+  droppedCount: number;
+  snapshots: WolSnapshotPayload[];
+}
+
+// Drains REPORT_ID.WOL_TRACE: the 8-byte event ring. Header:
+//   report[7] record_count  report[8] record_size  report[9..12] latest_seq
+//   report[13..14] dropped_count  report[15] is_snapshot  report[16..] records
+export function parseWolTraceReport(report: ArrayLike<number>): WolTracePayload {
+  assertReport(report, REPORT_ID.WOL_TRACE);
+  assertVersion(report);
+
+  const recordCount = report[7];
+  const recordSize = report[8];
+  const latestSequence = readU32(report, 9);
+  const droppedCount = readU16(report, 13);
+  const isSnapshot = report[15] === 1;
+  if (recordCount === 0) {
+    return { latestSequence, droppedCount, isSnapshot, events: [] };
+  }
+  if (recordSize < WOL_TRACE_EVENT_RECORD_SIZE) {
+    throw new ProtocolError(`WOL trace record size ${recordSize} is too small.`, 'bad-wol-trace-record');
+  }
+
+  const events: WolTraceEventPayload[] = [];
+  for (let index = 0; index < recordCount; index += 1) {
+    const offset = 16 + index * recordSize;
+    if (offset + WOL_TRACE_EVENT_RECORD_SIZE > REPORT_LENGTH) {
+      break;
+    }
+    events.push({
+      sequence: readU16(report, offset),
+      timeMs: readU32(report, offset + 2),
+      stage: report[offset + 6],
+      detail: report[offset + 7]
+    });
+  }
+
+  return { latestSequence, droppedCount, isSnapshot, events };
+}
+
+// Drains REPORT_ID.WOL_SNAPSHOT: the wide periodic-snapshot ring. Same
+// header; each record is seq_lo16(2) + packed WolSnapshot (26 bytes,
+// little-endian, see struct WolSnapshot in src/bt.h).
+export function parseWolSnapshotReport(report: ArrayLike<number>): WolSnapshotReportPayload {
+  assertReport(report, REPORT_ID.WOL_SNAPSHOT);
+  assertVersion(report);
+
+  const recordCount = report[7];
+  const recordSize = report[8];
+  const latestSequence = readU32(report, 9);
+  const droppedCount = readU16(report, 13);
+  if (recordCount === 0) {
+    return { latestSequence, droppedCount, snapshots: [] };
+  }
+  if (recordSize < WOL_SNAPSHOT_RECORD_SIZE) {
+    throw new ProtocolError(`WOL snapshot record size ${recordSize} is too small.`, 'bad-wol-snapshot-record');
+  }
+
+  const snapshots: WolSnapshotPayload[] = [];
+  for (let index = 0; index < recordCount; index += 1) {
+    const o = 16 + index * recordSize;
+    if (o + WOL_SNAPSHOT_RECORD_SIZE > REPORT_LENGTH) {
+      break;
+    }
+    // struct WolSnapshot (#pragma pack(1)) field offsets, past the 2-byte
+    // seq prefix (so payload byte N is at report[o + 2 + N]):
+    //  [0]   wifi_state u8            [1..4]  ms_in_wifi_state u32
+    //  [5..8] connect_attempt_count u32  [9]  raw_link_status i8
+    //  [10..11] wifi_join_state u16    [12]  dhcp_state u8
+    //  [13]  dhcp_tries u8            [14]  have_ip u8
+    //  [15]  wol_guard_bits u8        [16..17] usb_debug_bits u16
+    //  [18]  connection_phase u8      [19]  hid_link_up u8
+    //  [20]  wol_indicator_phase u8   [21..24] board_time_ms u32
+    const p = o + 2;
+    const rawLink = report[p + 9];
+    snapshots.push({
+      sequence: readU16(report, o),
+      wifiState: report[p + 0],
+      msInWifiState: readU32(report, p + 1),
+      connectAttemptCount: readU32(report, p + 5),
+      rawLinkStatus: rawLink > 127 ? rawLink - 256 : rawLink,
+      wifiJoinState: readU16(report, p + 10),
+      dhcpState: report[p + 12],
+      dhcpTries: report[p + 13],
+      haveIp: report[p + 14] === 1,
+      wolGuardBits: report[p + 15],
+      usbDebugBits: readU16(report, p + 16),
+      connectionPhase: report[p + 18],
+      hidLinkUp: report[p + 19] === 1,
+      wolIndicatorPhase: report[p + 20],
+      boardTimeMs: readU32(report, p + 21)
+    });
+  }
+
+  return { latestSequence, droppedCount, snapshots };
+}
+
+// wol_guard_bits (WolSnapshot) -> compact flag list.
+const WOL_GUARD_BIT_NAMES: [number, string][] = [
+  [0x01, 'intentionally-idle'],
+  [0x02, 'retries-exhausted'],
+  [0x04, 'send-pending'],
+  [0x08, 'resend-active'],
+  [0x10, 'wifi-leave-pending'],
+  [0x20, 'observe-host-active'],
+  [0x40, 'wake-in-progress'],
+  [0x80, 'target-confirmed-awake']
+];
+export function wolGuardBitsText(bits: number): string {
+  const on = WOL_GUARD_BIT_NAMES.filter(([mask]) => (bits & mask) !== 0).map(([, name]) => name);
+  return on.length > 0 ? on.join('|') : 'none';
 }
 
 export interface AudioStatusPayload {

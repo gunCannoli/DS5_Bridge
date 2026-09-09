@@ -34,6 +34,18 @@ import {
   parseFirmwareLogReport,
   parseCompanionInputReport,
   parseStatusReport,
+  parseWolTraceReport,
+  parseWolSnapshotReport,
+  wolTraceStageLabel,
+  hciDisconnectReasonName,
+  usbHostActiveDebugBitsText,
+  dhcpStateName,
+  cyw43LinkStatusName,
+  wolWifiStateName,
+  btConnectionPhaseName,
+  wolIndicatorPhaseName,
+  wolGuardBitsText,
+  WOL_TRACE_STAGE,
   readReportProtocolVersion,
   SHORTCUT_EVENT,
   buildButtonRemapPayload,
@@ -63,6 +75,7 @@ import type {
   RemapButtonId,
   HostPersonaMode,
   AudioStatusPayload,
+  WolSnapshotPayload,
   TriggerTraceEventPayload,
   FeedbackTraceEventPayload,
   BridgeStatusPayload,
@@ -120,6 +133,12 @@ const AUDIO_STATUS_READ_INTERVAL_MS = 500;
 const AUDIO_DEBUG_READ_INTERVAL_MS = 500;
 const TRIGGER_TRACE_READ_INTERVAL_MS = 250;
 const FEEDBACK_TRACE_READ_INTERVAL_MS = 250;
+// DEBUG-ONLY (debug/wol-boot-trace): drain the board WOL trace + snapshot
+// rings this often, up to this many reads per drain (each read returns one
+// report's worth). The rings are small; a fast drain keeps the dropped-count
+// low during a noisy boot.
+const WOL_TRACE_READ_INTERVAL_MS = 250;
+const WOL_TRACE_MAX_READS_PER_POLL = 48;
 const BRIDGE_CENSUS_INTERVAL_MS = 10000;
 const AUDIO_DEBUG_DIAGNOSTICS_ENABLED = CompanionDebugConfig.audioDebugDiagnosticsEnabled;
 const TRIGGER_TRACE_DIAGNOSTICS_ENABLED = CompanionDebugConfig.triggerTraceDiagnosticsEnabled;
@@ -1312,6 +1331,12 @@ export class BridgeService extends EventEmitter {
   private lastAudioDebugReadAt = 0;
   private lastTriggerTraceReadAt = 0;
   private lastFeedbackTraceReadAt = 0;
+  // DEBUG-ONLY (debug/wol-boot-trace): board WOL trace-ring drain state.
+  private lastWolTraceReadAt = 0;
+  private wolTraceSupported: boolean | null = null;
+  private lastWolTraceDroppedCount = 0;
+  private lastWolSnapshotDroppedCount = 0;
+  private wolDebugLogLastError: string | null = null;
   private hostPersonaTransition: HostPersonaTransitionState | null = null;
   private completedHostPersonaMode: HostPersonaMode | null = null;
   private hostPersonaDefaultRenderRestore: HostPersonaDefaultRenderRestore | null = null;
@@ -1350,12 +1375,18 @@ export class BridgeService extends EventEmitter {
   // a stub. Returns seconds since the last system-wide keyboard/mouse input.
   private readonly getSystemIdleTimeSeconds: () => number;
 
+  // DEBUG-ONLY (debug/wol-boot-trace): directory the board WOL trace drain
+  // writes ds5bridge-wol-debug.log into. main.ts passes app.getPath('logs');
+  // undefined in tests / when unset -> the drain is a no-op.
+  private readonly wolDebugLogDirectory?: string;
+
   constructor(
     private readonly settingsStore: SettingsStore,
-    options?: { getSystemIdleTimeSeconds?: () => number }
+    options?: { getSystemIdleTimeSeconds?: () => number; wolDebugLogDirectory?: string }
   ) {
     super();
     this.getSystemIdleTimeSeconds = options?.getSystemIdleTimeSeconds ?? (() => 0);
+    this.wolDebugLogDirectory = options?.wolDebugLogDirectory;
     this.snapshot = {
       state: 'no-bridge',
       message: 'No bridge detected',
@@ -2253,6 +2284,182 @@ export class BridgeService extends EventEmitter {
       return;
     }
     await this.readAudioStatus();
+  }
+
+  // ========================================================================
+  // DEBUG-ONLY (debug/wol-boot-trace): board WOL trace-ring drain
+  // ========================================================================
+  // Drains both board rings (8-byte events + wide periodic snapshots) into
+  // ds5bridge-wol-debug.log. Unlike the Firmware UART Log, these rings live
+  // on the board across the gap between an event happening and the companion
+  // reconnecting -- so a WOL attempt / controller drop that occurred while
+  // the target PC (and this app) was off is still recoverable once the PC
+  // comes back. Every `detail` is decoded to names so the log is greppable
+  // without cross-referencing firmware source.
+  private async readWolTraceThrottled(force = false): Promise<void> {
+    if (!this.device || this.wolTraceSupported === false || !this.wolDebugLogDirectory) {
+      return;
+    }
+    const now = Date.now();
+    if (!force && now - this.lastWolTraceReadAt < WOL_TRACE_READ_INTERVAL_MS) {
+      return;
+    }
+    this.lastWolTraceReadAt = now;
+
+    try {
+      const lines: string[] = [];
+
+      // --- events ---
+      let eventDropped = this.lastWolTraceDroppedCount;
+      for (let i = 0; i < WOL_TRACE_MAX_READS_PER_POLL; i += 1) {
+        const trace = parseWolTraceReport(
+          await this.device.getFeatureReport(REPORT_ID.WOL_TRACE, REPORT_LENGTH)
+        );
+        this.wolTraceSupported = true;
+        eventDropped = trace.droppedCount;
+        if (trace.events.length === 0) {
+          break;
+        }
+        for (const ev of trace.events) {
+          lines.push(this.formatWolTraceEventLine(ev));
+        }
+      }
+      if (eventDropped !== this.lastWolTraceDroppedCount) {
+        lines.push(
+          `${new Date().toISOString()} event=board-trace-dropped dropped_count=${eventDropped}`
+        );
+        this.lastWolTraceDroppedCount = eventDropped;
+      }
+
+      // --- snapshots ---
+      let snapDropped = this.lastWolSnapshotDroppedCount;
+      for (let i = 0; i < WOL_TRACE_MAX_READS_PER_POLL; i += 1) {
+        const snap = parseWolSnapshotReport(
+          await this.device.getFeatureReport(REPORT_ID.WOL_SNAPSHOT, REPORT_LENGTH)
+        );
+        snapDropped = snap.droppedCount;
+        if (snap.snapshots.length === 0) {
+          break;
+        }
+        for (const s of snap.snapshots) {
+          lines.push(this.formatWolSnapshotLine(s));
+        }
+      }
+      if (snapDropped !== this.lastWolSnapshotDroppedCount) {
+        lines.push(
+          `${new Date().toISOString()} event=board-snapshot-dropped dropped_count=${snapDropped}`
+        );
+        this.lastWolSnapshotDroppedCount = snapDropped;
+      }
+
+      if (lines.length > 0) {
+        await this.appendWolDebugLog(lines);
+      }
+    } catch {
+      // A firmware without these reports returns an empty/short feature
+      // report -> parse throws -> stop trying for this session.
+      this.wolTraceSupported = false;
+    }
+  }
+
+  private formatWolTraceEventLine(ev: { sequence: number; timeMs: number; stage: number; detail: number }): string {
+    const stage = wolTraceStageLabel(ev.stage);
+    const d = ev.detail;
+    let detailText = `detail=${d}`;
+    switch (ev.stage) {
+      case WOL_TRACE_STAGE.CONN_DISCONNECTED:
+        detailText = `hci_reason=${hciDisconnectReasonName(d)}`;
+        break;
+      case WOL_TRACE_STAGE.WOL_TRIGGER_SKIPPED:
+        detailText = `enabled=${(d & 1) !== 0} have_ssid=${(d & 2) !== 0} have_target_mac=${(d & 4) !== 0}`;
+        break;
+      case WOL_TRACE_STAGE.WOL_TRIGGER_FIRED:
+        detailText = d === 1 ? 'queued=pending' : 'sent=immediate';
+        break;
+      case WOL_TRACE_STAGE.WOL_WIFI_CONNECTED:
+        detailText = d === 1 ? 'resend_started=1' : 'resend_started=0';
+        break;
+      case WOL_TRACE_STAGE.BOARD_BOOT:
+        detailText =
+          `watchdog_reason=0x${d.toString(16).padStart(2, '0')}`
+          + ` (${[(d & 1) ? 'TIMER' : '', (d & 2) ? 'FORCE' : ''].filter(Boolean).join('|') || 'power-on/pin'})`;
+        break;
+      case WOL_TRACE_STAGE.BOARD_TRANSPORT_RECOVERY_REBOOT:
+        detailText = `site=${['disconnect-retry-exhausted', 'incoming-acl-pending-timeout', 'acl-cancel-incomplete'][d] ?? d}`;
+        break;
+      case WOL_TRACE_STAGE.OBSERVE_HOST_BEGIN:
+      case WOL_TRACE_STAGE.OBSERVE_HOST_SAMPLE_EDGE:
+      case WOL_TRACE_STAGE.OBSERVE_HOST_WINDOW_ELAPSED:
+      case WOL_TRACE_STAGE.WOL_TRIGGER_SKIPPED_HOST_ACTIVE:
+      case WOL_TRACE_STAGE.USB_MOUNT:
+      case WOL_TRACE_STAGE.USB_UMOUNT:
+        detailText = `usb_bits=[${usbHostActiveDebugBitsText(d)}]`;
+        break;
+      case WOL_TRACE_STAGE.USB_TOPOLOGY_RECONNECT_BEGIN:
+        detailText = `target_bridge_only=${(d & 1) !== 0} was_bridge_only=${(d & 2) !== 0} endpoint_teardown=${(d & 4) !== 0}`;
+        break;
+      case WOL_TRACE_STAGE.USB_TRANSPORT_CONNECT:
+        detailText = `bridge_only=${(d & 1) !== 0}`;
+        break;
+      case WOL_TRACE_STAGE.USB_SUSPEND_ARMED:
+        detailText = `armed_from=${(d & 1) ? 'tud_umount_cb' : (d & 2) ? 'tud_suspend_cb' : 'other'}`;
+        break;
+      case WOL_TRACE_STAGE.USB_CONTROLLER_POWER_OFF:
+        detailText =
+          `suppressed_by_wake=${(d & 1) !== 0} host_suspended=${(d & 2) !== 0} not_mounted=${(d & 4) !== 0}`;
+        break;
+      case WOL_TRACE_STAGE.BT_IDLE_DISCONNECT_FIRED:
+        detailText = `audio_route_protected=${(d & 1) !== 0}`;
+        break;
+      case WOL_TRACE_STAGE.WOL_WAKE_IN_PROGRESS_EDGE:
+        detailText =
+          `wake=${(d & 1) !== 0} resend=${(d & 2) !== 0} send_pending=${(d & 4) !== 0}`
+          + ` leave_pending=${(d & 8) !== 0} observe=${(d & 0x10) !== 0}`;
+        break;
+      case WOL_TRACE_STAGE.CONN_CONTROLLER_TYPE_IDENTIFIED:
+      case WOL_TRACE_STAGE.WOL_CONNECT_STARTED:
+      case WOL_TRACE_STAGE.WOL_WIFI_ASSOC_TIMEOUT:
+      case WOL_TRACE_STAGE.WOL_DHCP_WAIT_TIMEOUT:
+      case WOL_TRACE_STAGE.WOL_TRIGGER_DEBOUNCED:
+      case WOL_TRACE_STAGE.WOL_RESEND_CONFIRMED:
+      case WOL_TRACE_STAGE.CONN_SECURITY_TIMEOUT:
+      case WOL_TRACE_STAGE.CONN_HID_OPENING_TIMEOUT:
+      case WOL_TRACE_STAGE.CONN_HID_INTERRUPT_FOLLOWUP_TIMEOUT:
+        detailText = `value=${d}`; // ms / count / attempt, per stage
+        break;
+      default:
+        break;
+    }
+    return (
+      `${new Date().toISOString()} event=board-trace seq=${ev.sequence} `
+      + `board_time_ms=${ev.timeMs} stage=${stage} ${detailText}`
+    );
+  }
+
+  private formatWolSnapshotLine(s: WolSnapshotPayload): string {
+    return (
+      `${new Date().toISOString()} event=board-snapshot seq=${s.sequence} board_time_ms=${s.boardTimeMs} `
+      + `wifi=${wolWifiStateName(s.wifiState)} ms_in_state=${s.msInWifiState} `
+      + `connect_attempts=${s.connectAttemptCount} raw_link=${cyw43LinkStatusName(s.rawLinkStatus)} `
+      + `join_state=0x${s.wifiJoinState.toString(16).padStart(4, '0')} `
+      + `dhcp=${dhcpStateName(s.dhcpState)} dhcp_tries=${s.dhcpTries} have_ip=${s.haveIp} `
+      + `wol_guards=[${wolGuardBitsText(s.wolGuardBits)}] usb_bits=[${usbHostActiveDebugBitsText(s.usbDebugBits)}] `
+      + `bt_phase=${btConnectionPhaseName(s.connectionPhase)} hid_link_up=${s.hidLinkUp} `
+      + `lightbar=${wolIndicatorPhaseName(s.wolIndicatorPhase)}`
+    );
+  }
+
+  private async appendWolDebugLog(lines: string[]): Promise<void> {
+    if (!this.wolDebugLogDirectory) {
+      return;
+    }
+    try {
+      const logPath = path.join(this.wolDebugLogDirectory, 'ds5bridge-wol-debug.log');
+      await fsPromises.appendFile(logPath, lines.join('\n') + '\n');
+      this.wolDebugLogLastError = null;
+    } catch (error) {
+      this.wolDebugLogLastError = error instanceof Error ? error.message : String(error);
+    }
   }
 
   private publishAudioDiagnosticsSnapshot(): void {
@@ -4069,6 +4276,7 @@ export class BridgeService extends EventEmitter {
     await this.readFirmwareLog();
     await this.readAudioDebugThrottled(true);
     await this.readAudioStatus();
+    await this.readWolTraceThrottled(); // DEBUG-ONLY (debug/wol-boot-trace)
     const deviceIdentity = await this.readDeviceIdentity();
     this.updateConnectedDeviceIdentity(deviceIdentity, status.controllerConnected);
     this.maybeEmitStatusToasts(status);
@@ -4837,6 +5045,7 @@ export class BridgeService extends EventEmitter {
     this.incompatibleCompanionProtocolVersion = null;
     this.triggerTraceSupported = null;
     this.feedbackTraceSupported = null;
+    this.wolTraceSupported = null; // DEBUG-ONLY (debug/wol-boot-trace)
     this.firmwareLogEnabled = null;
     this.controllerPowerSavingActive = null;
     this.headsetJackActedState = null;

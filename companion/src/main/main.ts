@@ -1308,7 +1308,9 @@ app.whenReady().then(async () => {
   const settingsStore = new SettingsStore(app.getPath('userData'));
   applyLaunchAtStartup(settingsStore.get().launchAtStartupEnabled);
   bridgeService = new BridgeService(settingsStore, {
-    getSystemIdleTimeSeconds: () => powerMonitor.getSystemIdleTime()
+    getSystemIdleTimeSeconds: () => powerMonitor.getSystemIdleTime(),
+    // DEBUG-ONLY (debug/wol-boot-trace): board WOL trace drain -> this file.
+    wolDebugLogDirectory: app.getPath('logs')
   });
   registerIpc(bridgeService);
 
