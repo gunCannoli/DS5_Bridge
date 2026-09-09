@@ -7,6 +7,82 @@ test run; see `CHANGELOG.md` for that history. Newest first.
 
 ---
 
+## Debug branch: `debug/wol-boot-trace` — reusable board-trace patch (NOT for the PR)
+
+**Why it exists:** after the v1.7.1 merge + the "keep companion wake
+receiver online" USB rework (`7a7eaa8`), the controller stopped surviving
+the WOL boot sequence (drops as the PC starts booting) and the green
+lightbar pulse stopped appearing when the magic packet is sent. The
+stripped-in-`a09323b` board trace was the only tool that ever made
+PC-off WOL bugs diagnosable, so it was restored **and extended** on a
+dedicated branch off `feature/wol-wifi`.
+
+**Branch layout (6 commits, revert as a range to remove the patch):**
+1. `diag(bt): restore board WOL/connection trace ring buffer` — the
+   `WolTraceStage` enum (append-only; 0-31 original, 32-40 new), two RAM
+   rings (`wol_trace_ring` 8-byte events x40, `wol_snapshot_ring` wide
+   periodic snapshots x8), `bt_append_wol_trace_event()` /
+   `bt_append_wol_snapshot()` / `bt_read_wol_trace()` /
+   `bt_read_wol_snapshots()`, all the original BT-phase/boot call sites,
+   plus a new `BtIdleDisconnectFired` at the idle-timeout disconnect.
+2. `diag(wolwifi): restore WOL + ObserveHost trace points, add snapshot` —
+   all WOL trace points, `usb_host_active_debug_bits()` restored and
+   **widened to `uint16_t`** with the new topology-state bits (6-14), a
+   `WolWakeInProgressEdge` trace, and the periodic `WolStateSnapshot`
+   (full Wi-Fi/DHCP/join-state/guard-bits/usb-bits/BT-phase record every
+   ~1s active / ~5s idle).
+3. `diag(usb): trace the bridge-only descriptor-topology state machine` —
+   `UsbTopologyReconnectBegin` (the `tud_disconnect` + `dcd_edpt_close_all`
+   + `DCD_EVENT_UNPLUGGED` full endpoint teardown), `UsbTransportConnect`,
+   `UsbSuspendArmed` (which callback armed the power-off debounce),
+   `UsbMount`/`UsbUmount`, `UsbControllerPowerOff`.
+4. `diag(bt): size trace rings to fit the SRAM heap-headroom guard` — the
+   rings overflow `verify_core1_sram.cmake` on the `debug` variant; packed
+   structs + smaller rings. **`final` and `smoke` link clean; `debug`
+   still overflows.** The ring is transported over HID and does **not**
+   need the UART debug stream, so **smoke-test with `final`** (host-alive
+   gate active, which is what we're debugging).
+5. `diag(companion-fw): expose WOL trace + snapshot rings as feature
+   reports` — `COMPANION_REPORT_WOL_TRACE` (0x0B) /
+   `COMPANION_REPORT_WOL_SNAPSHOT` (0x0C), reclaiming the IDs freed by
+   `a09323b`. `kProtocolMinor` 23 -> 24.
+6. `diag(companion): drain the board WOL trace + snapshot rings to a log
+   file` — `PROTOCOL_MINOR` 23 -> 24, the `WOL_TRACE_STAGE` map + all the
+   name decoders, `parseWolTraceReport()` / `parseWolSnapshotReport()`,
+   and `bridge-service.ts`'s `readWolTraceThrottled()` which drains both
+   rings each diagnostics poll into `<app logs>/ds5bridge-wol-debug.log`
+   with every `detail` field decoded to names.
+
+**How to use it:** `git checkout debug/wol-boot-trace`, build
+`.\tools\build-firmware.ps1 final -WithCompanion` (protocol bump -> both
+sides), flash `firmware/ds5-bridge-1.71-wol-final.uf2`, run the PC-off ->
+PS-button -> boot test, then read `<app logs>/ds5bridge-wol-debug.log`
+(on Windows, `%APPDATA%\..\Roaming\ds5-bridge-companion\logs` or wherever
+Electron's `app.getPath('logs')` resolves). `board-boot` markers show
+reboots; `board-trace-dropped` / `board-snapshot-dropped` lines mean the
+ring wrapped before the app drained it.
+
+**Dropping it once the bug is found:** revert commits 1-6 as a range (or
+just don't merge the branch). Nothing on `feature/wol-wifi` depends on it.
+If any of it is kept, `kProtocolMinor`/`PROTOCOL_MINOR` must move together
+and `usb_descriptor_migration_test.cpp`'s hardcoded `= 23;` assertions
+updated (as commit 5 did for the bump to 24).
+
+**Leading hypotheses this trace is meant to decide between:**
+- `ObserveHost` reads a false "host active" from the bridge-only USB
+  topology now being enumerated against a still-booting PC -> WOL trigger
+  silently aborted (explains: no pulse; and, since no trigger, no
+  `wolwifi_wake_in_progress()` -> the USB-suspend controller power-off is
+  no longer suppressed -> controller drop). Watch `observe-host-*` +
+  `wol-trigger-skipped-host-active` + `usb-mount` bits.
+- The `usb-topology-reconnect-begin` full endpoint teardown firing
+  mid-boot while the BT session is fresh / Wi-Fi is contending
+  (HCI `0x22` signature — see the radio-contention entry).
+- `usb-suspend-armed armed_from=tud_umount_cb` + `usb-controller-power-off`
+  during the PC's boot re-enumeration churn.
+
+---
+
 ## Known issue: merging/rebasing onto a new upstream release can collide `COMMAND_ID` values — always check for gaps, don't just append
 
 **What happened (2026-08-15, merging upstream v1.7.0):** upstream added
