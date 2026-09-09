@@ -26,6 +26,28 @@ void usb_set_suspend_disconnect_enabled(bool enabled);
 bool usb_suspend_disconnect_enabled();
 bool usb_host_suspended_active();
 bool usb_host_active();
+// DEBUG-ONLY (debug/wol-boot-trace): raw bitmask of every flag
+// usb_host_active() depends on, PLUS the keep-wake-receiver-online
+// descriptor-topology state that landed after the original trace was
+// stripped. usb_host_active() alone can't say *why* it read a given value
+// (never mounted this session vs. mounted-but-suspended vs. bridge-only
+// topology enumerated vs. a topology reconnect in flight).
+//   bit0  usb_mounted
+//   bit1  tud_inited()
+//   bit2  tud_inited() && tud_suspended()
+//   bit3  usb_host_suspended        (suspend-debounce-armed flag)
+//   bit4  usb_controller_transport_ready
+//   bit5  usb_controller_transport_attached
+//   bit6  usb_attached_bridge_only
+//   bit7  usb_reconnect_target_bridge_only
+//   bit8  usb_reconnect_connect_pending
+//   bit9  usb_reconnect_requested
+//   bit10 usb_controller_transport_transition_pending
+//   bit11 usb_suspend_at_us != 0    (power-off debounce armed)
+//   bit12 usb_suspend_disconnect    (setting)
+//   bit13 usb_wake_on_connect       (setting)
+//   bit14 usb_remote_wakeup_armed
+uint16_t usb_host_active_debug_bits();
 bool usb_speaker_streaming_active();
 bool usb_mic_streaming_active();
 bool usb_line_streaming_active();

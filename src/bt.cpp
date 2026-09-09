@@ -2324,7 +2324,11 @@ void bt_append_wol_trace_event(WolTraceStage stage, uint8_t detail) {
     }
 }
 
-void bt_append_wol_snapshot(const WolSnapshot &snap) {
+void bt_append_wol_snapshot(WolSnapshot snap) {
+    snap.connection_phase = static_cast<uint8_t>(connection_phase);
+    snap.hid_link_up = hid_interrupt_cid != 0 ? 1 : 0;
+    snap.wol_indicator_phase = static_cast<uint8_t>(wol_indicator_phase);
+    snap.board_time_ms = time_us_32() / 1000;
     WolTraceSnapshotSlot &slot = wol_snapshot_ring[wol_snapshot_head];
     slot.sequence = wol_snapshot_next_sequence++;
     slot.snap = snap;

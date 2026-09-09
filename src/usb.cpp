@@ -274,6 +274,27 @@ bool usb_host_active() {
     return usb_mounted && !usb_bus_suspended();
 }
 
+// DEBUG-ONLY (debug/wol-boot-trace): see usb.h for the bit layout.
+uint16_t usb_host_active_debug_bits() {
+    return static_cast<uint16_t>(
+        (usb_mounted ? 0x0001 : 0)
+        | (tud_inited() ? 0x0002 : 0)
+        | (tud_inited() && tud_suspended() ? 0x0004 : 0)
+        | (usb_host_suspended ? 0x0008 : 0)
+        | (usb_controller_transport_ready ? 0x0010 : 0)
+        | (usb_controller_transport_attached ? 0x0020 : 0)
+        | (usb_attached_bridge_only ? 0x0040 : 0)
+        | (usb_reconnect_target_bridge_only ? 0x0080 : 0)
+        | (usb_reconnect_connect_pending ? 0x0100 : 0)
+        | (usb_reconnect_requested ? 0x0200 : 0)
+        | (usb_controller_transport_transition_pending ? 0x0400 : 0)
+        | (usb_suspend_at_us != 0 ? 0x0800 : 0)
+        | (usb_suspend_disconnect ? 0x1000 : 0)
+        | (usb_wake_on_connect ? 0x2000 : 0)
+        | (usb_remote_wakeup_armed ? 0x4000 : 0)
+    );
+}
+
 bool usb_mounted_active() {
     return usb_mounted;
 }

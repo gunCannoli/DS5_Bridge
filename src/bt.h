@@ -237,10 +237,11 @@ enum class WolTraceStage : uint8_t {
 // bt_append_wol_trace_event() call sites for the exact meaning at each site.
 void bt_append_wol_trace_event(WolTraceStage stage, uint8_t detail = 0);
 
-// Wide periodic-snapshot record. Filled by the caller (wolwifi.cpp has the
-// Wi-Fi state; bt.cpp has connection_phase / hid_interrupt_cid /
-// wol_indicator_phase; usb.cpp has the debug bits) and handed to
-// bt_append_wol_snapshot(), which frames it into the same ring.
+// Wide periodic-snapshot record. wolwifi.cpp fills the Wi-Fi-side fields and
+// usb_debug_bits (it can see usb_host_active_debug_bits()); bt_append_wol_
+// snapshot() fills connection_phase / hid_link_up / wol_indicator_phase /
+// board_time_ms itself (those are static in bt.cpp) and frames it into the
+// snapshot ring.
 #pragma pack(push, 1)
 struct WolSnapshot {
     uint8_t  wifi_state;              // WifiState enum
@@ -256,13 +257,15 @@ struct WolSnapshot {
                                      // bit4 wifi_leave_pending, bit5 observe_host_active,
                                      // bit6 wake_in_progress, bit7 target_confirmed_awake
     uint16_t usb_debug_bits;         // usb_host_active_debug_bits()
+    // ---- filled by bt_append_wol_snapshot() ----
     uint8_t  connection_phase;       // BtConnectionPhase
     uint8_t  hid_link_up;            // hid_interrupt_cid != 0
     uint8_t  wol_indicator_phase;    // WolIndicatorPhase
     uint32_t board_time_ms;
 };
 #pragma pack(pop)
-void bt_append_wol_snapshot(const WolSnapshot &snap);
+// Caller fills every field EXCEPT the four "filled by" ones above.
+void bt_append_wol_snapshot(WolSnapshot snap);
 
 struct WolTraceReadResult {
     uint8_t record_count;
