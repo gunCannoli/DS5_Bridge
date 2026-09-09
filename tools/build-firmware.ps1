@@ -35,6 +35,11 @@
   smoke            final + -DWOL_ALWAYS=ON: skips the host-alive gate so WOL
                    fires on every controller connect regardless of PC power
                    state. Bring-up testing only.
+  audiodebug       final + -DDS5_DIAGNOSTICS_PRESET=audio: the audio ring +
+                   audio_debug_stats companion HID reports only (NO UART
+                   logs, NO trigger/feedback traces). Host-alive gate active.
+                   For the debug/audio-output-trace branch -- diagnosing
+                   audio-output hiccups via ds5bridge-audio-debug.log.
 
 .PARAMETER PicoSdkPath
   Overrides $env:PICO_SDK_PATH. Must be pico-sdk 2.3.0 with TinyUSB at
@@ -54,7 +59,7 @@
   .\tools\build-firmware.ps1 final -WithCompanion
 #>
 param(
-  [ValidateSet('final', 'debug', 'smoke')]
+  [ValidateSet('final', 'debug', 'smoke', 'audiodebug')]
   [string] $Variant = 'final',
   [string] $PicoSdkPath,
   [switch] $WithCompanion
@@ -74,9 +79,10 @@ if (-not $PicoSdkPath) {
 }
 
 switch ($Variant) {
-  'final' { $diagPreset = 'off'; $wolAlways = 'OFF' }
-  'debug' { $diagPreset = 'all'; $wolAlways = 'OFF' }
-  'smoke' { $diagPreset = 'off'; $wolAlways = 'ON'  }
+  'final'      { $diagPreset = 'off';   $wolAlways = 'OFF' }
+  'debug'      { $diagPreset = 'all';   $wolAlways = 'OFF' }
+  'smoke'      { $diagPreset = 'off';   $wolAlways = 'ON'  }
+  'audiodebug' { $diagPreset = 'audio'; $wolAlways = 'OFF' }
 }
 
 # Firmware version, e.g. "1.7.1" -> "1.71" for the filename.
