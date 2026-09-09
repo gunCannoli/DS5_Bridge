@@ -103,10 +103,27 @@ static uint32_t nonzero_time(uint32_t now) {
     return now == 0 ? 1 : now;
 }
 
+// DEBUG-ONLY (debug/wol-boot-trace): 0 = arm called from tud_umount_cb,
+// 1 = from tud_suspend_cb, 2 = other. Set by the caller just before it calls
+// arm_suspend_disconnect().
+static uint8_t dbg_suspend_arm_source = 2;
+
 static void arm_suspend_disconnect(uint32_t now) {
+    const bool was_armed = usb_suspend_at_us != 0;
     usb_suspend_at_us = usb_suspend_disconnect && !reconnect_grace_active(now)
         ? nonzero_time(now)
         : 0;
+    // DEBUG-ONLY (debug/wol-boot-trace): trace only a real arm (0 -> nonzero),
+    // not a redundant re-arm or a clear. The post-v1.7.1 change to arm this
+    // from tud_umount_cb (not just tud_suspend_cb) plus the poll check
+    // widening to (usb_host_suspended || !usb_mounted) is a hypothesis for
+    // the controller being powered off during a boot's re-enumeration churn.
+    if (!was_armed && usb_suspend_at_us != 0) {
+        bt_append_wol_trace_event(
+            WolTraceStage::UsbSuspendArmed,
+            static_cast<uint8_t>(1u << dbg_suspend_arm_source)
+        );
+    }
 }
 
 static bool usb_bus_suspended() {
@@ -128,6 +145,20 @@ static uint8_t hid_polling_interval_for_mode(uint8_t mode) {
 static void usb_note_reconnect_disconnect(uint32_t now);
 
 static void usb_begin_descriptor_reconnect(uint32_t now, bool bridge_only) {
+    // DEBUG-ONLY (debug/wol-boot-trace): this tears down every USB endpoint
+    // (tud_disconnect + dcd_edpt_close_all + DCD_EVENT_UNPLUGGED). A leading
+    // hypothesis for the mid-boot controller drop: this firing while the BT
+    // session is still fresh / Wi-Fi WOL is contending for the shared radio.
+    // detail bit0 = target bridge_only, bit1 = was bridge_only, bit2 = 1
+    // (this path always does the dcd_edpt_close_all teardown).
+    bt_append_wol_trace_event(
+        WolTraceStage::UsbTopologyReconnectBegin,
+        static_cast<uint8_t>(
+            (bridge_only ? 0x01 : 0)
+            | (usb_attached_bridge_only ? 0x02 : 0)
+            | 0x04
+        )
+    );
     // Keep callbacks on the mounted descriptor topology until the new attach.
     usb_reconnect_target_bridge_only = bridge_only;
     usb_reconnect_requested = false;
@@ -219,6 +250,9 @@ static void usb_connect_transport(uint32_t now, bool bridge_only) {
     usb_device_stack_init_disconnected();
     tud_connect();
     usb_controller_transport_attached = true;
+    bt_append_wol_trace_event(
+        WolTraceStage::UsbTransportConnect, bridge_only ? 0x01 : 0x00
+    );  // DEBUG-ONLY (debug/wol-boot-trace)
 }
 
 uint8_t usb_hid_polling_rate_mode() {
@@ -365,13 +399,26 @@ extern "C" void tud_mount_cb(void) {
     usb_suspend_at_us = 0;
     usb_reconnect_grace_until_us = 0;
     host_input_note_usb_mounted();
+    // DEBUG-ONLY (debug/wol-boot-trace): a host mounting the CURRENT topology
+    // -- if this is the bridge-only topology (bit6 set) the PC re-enumerated
+    // it before the full persona swapped in; that mount is what makes
+    // usb_host_active() read true and can abort the WOL ObserveHost window.
+    bt_append_wol_trace_event(
+        WolTraceStage::UsbMount,
+        static_cast<uint8_t>(usb_host_active_debug_bits() & 0xFF)
+    );
 }
 
 extern "C" void tud_umount_cb(void) {
     const uint32_t now = time_us_32();
     usb_mounted = false;
+    bt_append_wol_trace_event(
+        WolTraceStage::UsbUmount,
+        static_cast<uint8_t>(usb_host_active_debug_bits() & 0xFF)
+    );  // DEBUG-ONLY (debug/wol-boot-trace)
     // Windows may report a durable unmount instead of suspend. Treat it as a
     // debounced power transition, excluding our own descriptor reconnects.
+    dbg_suspend_arm_source = 0;  // DEBUG-ONLY: from tud_umount_cb
     arm_suspend_disconnect(now);
     usb_remote_wakeup_armed = false;
     usb_remote_wakeup_pending = false;
@@ -411,6 +458,7 @@ extern "C" void tud_suspend_cb(bool remote_wakeup_en) {
     }
     usb_host_suspended = true;
     usb_remote_wakeup_armed = remote_wakeup_en;
+    dbg_suspend_arm_source = 1;  // DEBUG-ONLY (debug/wol-boot-trace): from tud_suspend_cb
     arm_suspend_disconnect(now);
     usb_speaker_streaming = false;
     usb_mic_streaming = false;
@@ -443,9 +491,27 @@ void usb_pm_poll() {
         // in progress (leave usb_suspend_at_us set so this re-checks every
         // tick and fires as soon as the wake finishes, confirmed or timed
         // out, instead of being skipped outright).
-        if (!wolwifi_wake_in_progress()) {
-            (void)bt_power_off_controller();
-            usb_suspend_at_us = 0;
+        // DEBUG-ONLY (debug/wol-boot-trace): record every time this branch is
+        // reached. bit0 = wake in progress (so power-off SUPPRESSED this
+        // tick), bit1 = usb_host_suspended, bit2 = !usb_mounted. Rate-limited
+        // to one trace per distinct (suppressed?) state so a suppressed wake
+        // spanning many ticks doesn't flood the ring.
+        {
+            const bool suppressed = wolwifi_wake_in_progress();
+            const uint8_t detail =
+                  (suppressed ? 0x01 : 0)
+                | (usb_host_suspended ? 0x02 : 0)
+                | (!usb_mounted ? 0x04 : 0);
+            static uint8_t dbg_last_poweroff_detail = 0xFF;
+            if (detail != dbg_last_poweroff_detail) {
+                dbg_last_poweroff_detail = detail;
+                bt_append_wol_trace_event(WolTraceStage::UsbControllerPowerOff, detail);
+            }
+            if (!suppressed) {
+                (void)bt_power_off_controller();
+                usb_suspend_at_us = 0;
+                dbg_last_poweroff_detail = 0xFF;
+            }
         }
     }
 
