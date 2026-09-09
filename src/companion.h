@@ -17,6 +17,12 @@
 #define COMPANION_REPORT_FEEDBACK_TRACE 0x0A
 #define COMPANION_REPORT_DEVICE_IDENTITY 0x0D
 #define COMPANION_REPORT_FIRMWARE_LOG 0x0E
+// DEBUG-ONLY (debug/wol-boot-trace): drains of the board WOL trace rings.
+// 0x0B/0x0C were freed by a09323b (old WOL_TRACE/WOL_DEBUG_STATUS) and are
+// reclaimed here. WOL_TRACE = the 8-byte event ring; WOL_SNAPSHOT = the wide
+// periodic-snapshot ring.
+#define COMPANION_REPORT_WOL_TRACE 0x0B
+#define COMPANION_REPORT_WOL_SNAPSHOT 0x0C
 #define COMPANION_PAYLOAD_SIZE 63
 
 enum CompanionTriggerTraceStage : uint8_t {

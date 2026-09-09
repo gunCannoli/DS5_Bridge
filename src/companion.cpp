@@ -32,7 +32,7 @@ namespace {
 
 constexpr uint8_t kMagic[] = {'D', 'S', '5', 'B'};
 constexpr uint8_t kProtocolMajor = 1;
-constexpr uint8_t kProtocolMinor = 23;
+constexpr uint8_t kProtocolMinor = 24;  // 24: debug/wol-boot-trace WOL_TRACE/WOL_SNAPSHOT reports
 constexpr uint8_t kProtocolMinSupportedMinor = 7;
 static_assert(DS5_FIRMWARE_VERSION_MAJOR <= 255);
 static_assert(DS5_FIRMWARE_VERSION_MINOR <= 255);
@@ -1899,6 +1899,54 @@ uint16_t build_audio_status(uint8_t *buffer, uint16_t reqlen) {
     return COMPANION_PAYLOAD_SIZE;
 }
 
+// DEBUG-ONLY (debug/wol-boot-trace): drain the board WOL event trace ring.
+// Header (report[1..] after the report-ID byte the host sees):
+//   [6] record_count  [7] record_size  [8..11] latest_sequence  [12..13]
+//   dropped_count  [14] is_snapshot(0)  [15..] packed 8-byte event records.
+uint16_t build_wol_trace(uint8_t *buffer, uint16_t reqlen) {
+    if (reqlen < COMPANION_PAYLOAD_SIZE) {
+        return 0;
+    }
+    memset(buffer, 0, COMPANION_PAYLOAD_SIZE);
+    write_magic_and_version(buffer);
+
+    constexpr std::size_t kDataOffset = 15;
+    const WolTraceReadResult result = bt_read_wol_trace(
+        buffer + kDataOffset,
+        COMPANION_PAYLOAD_SIZE - kDataOffset
+    );
+    buffer[6] = result.record_count;
+    buffer[7] = result.record_size;
+    write_u32(buffer + 8, result.latest_sequence);
+    write_u16(buffer + 12, result.dropped_count);
+    buffer[14] = result.is_snapshot;
+    return COMPANION_PAYLOAD_SIZE;
+}
+
+// DEBUG-ONLY (debug/wol-boot-trace): drain the wide periodic-snapshot ring.
+// Same header layout as build_wol_trace(); record_size is the wide record
+// size and is_snapshot = 1. Only one wide record fits per 63-byte payload,
+// so the companion polls this repeatedly to drain a backlog.
+uint16_t build_wol_snapshot(uint8_t *buffer, uint16_t reqlen) {
+    if (reqlen < COMPANION_PAYLOAD_SIZE) {
+        return 0;
+    }
+    memset(buffer, 0, COMPANION_PAYLOAD_SIZE);
+    write_magic_and_version(buffer);
+
+    constexpr std::size_t kDataOffset = 15;
+    const WolTraceReadResult result = bt_read_wol_snapshots(
+        buffer + kDataOffset,
+        COMPANION_PAYLOAD_SIZE - kDataOffset
+    );
+    buffer[6] = result.record_count;
+    buffer[7] = result.record_size;
+    write_u32(buffer + 8, result.latest_sequence);
+    write_u16(buffer + 12, result.dropped_count);
+    buffer[14] = result.is_snapshot;
+    return COMPANION_PAYLOAD_SIZE;
+}
+
 uint16_t build_firmware_log(uint8_t *buffer, uint16_t reqlen) {
     if (reqlen < COMPANION_PAYLOAD_SIZE) {
         return 0;
@@ -3486,6 +3534,10 @@ uint16_t companion_get_report(uint8_t report_id, hid_report_type_t report_type, 
 #endif
         case COMPANION_REPORT_AUDIO_STATUS:
             return build_audio_status(buffer, reqlen);
+        case COMPANION_REPORT_WOL_TRACE:        // DEBUG-ONLY (debug/wol-boot-trace)
+            return build_wol_trace(buffer, reqlen);
+        case COMPANION_REPORT_WOL_SNAPSHOT:     // DEBUG-ONLY (debug/wol-boot-trace)
+            return build_wol_snapshot(buffer, reqlen);
         case COMPANION_REPORT_DEVICE_IDENTITY:
             return build_device_identity(buffer, reqlen);
         case COMPANION_REPORT_FIRMWARE_LOG:
