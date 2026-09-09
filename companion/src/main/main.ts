@@ -1308,7 +1308,9 @@ app.whenReady().then(async () => {
   const settingsStore = new SettingsStore(app.getPath('userData'));
   applyLaunchAtStartup(settingsStore.get().launchAtStartupEnabled);
   bridgeService = new BridgeService(settingsStore, {
-    getSystemIdleTimeSeconds: () => powerMonitor.getSystemIdleTime()
+    getSystemIdleTimeSeconds: () => powerMonitor.getSystemIdleTime(),
+    // DEBUG-ONLY (debug/audio-output-trace): audio-debug ring/stats -> this file.
+    audioDebugLogDirectory: app.getPath('logs')
   });
   registerIpc(bridgeService);
 

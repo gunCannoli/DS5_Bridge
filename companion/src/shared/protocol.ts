@@ -49,7 +49,11 @@ export const AUDIO_DEBUG_EVENT = {
   USB_EVENT: 20,
   HID_EVENT: 21,
   BT_EVENT: 22,
-  CPU_LOAD: 23
+  CPU_LOAD: 23,
+  // DEBUG-ONLY (debug/audio-output-trace): BT send-batch assembly path.
+  BATCH_BLOCKED: 24,
+  BATCH_SENT: 25,
+  GENERATION_FLUSH: 26
 } as const;
 
 export const AUDIO_DEBUG_RECORD_SIZE = 14;

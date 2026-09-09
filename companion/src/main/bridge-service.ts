@@ -930,6 +930,16 @@ function formatAudioDebugEvent(event: AudioDebugEventPayload): string {
       return formatBtDebugEvent(prefix, event.args);
     case AUDIO_DEBUG_EVENT.CPU_LOAD:
       return `${prefix} [CPU] core1Busy=${arg0}% core1Speaker=${arg1}% core1Mic=${arg2}% audioLoopMax=${scaled100Us(arg3)} audioLoopGapMax=${scaled100Us(arg4)}`;
+    case AUDIO_DEBUG_EVENT.BATCH_BLOCKED: {
+      const reasons: Record<number, string> = {
+        1: 'haptics<2', 2: 'opus-not-ready', 3: 'opus-dequeue-fail', 4: 'stale-generation'
+      };
+      return `${prefix} [BatchBlocked] reason=${reasons[arg0] ?? arg0} pendingHaptics=${arg1} opusFifo=${arg2} audioFifo=${arg3} speaker=${arg4 === 1}`;
+    }
+    case AUDIO_DEBUG_EVENT.BATCH_SENT:
+      return `${prefix} [BatchSent] gapMs=${arg0}${(arg4 & 0x02) !== 0 ? ' HICCUP' : ''} sendOk=${arg1 === 1} opusFifo=${arg2} audioFifo=${arg3} speaker=${(arg4 & 0x01) !== 0}`;
+    case AUDIO_DEBUG_EVENT.GENERATION_FLUSH:
+      return `${prefix} [GenFlush] gen ${arg0}->${arg1} (pipeline flushed) opusFifo=${arg2} audioFifo=${arg3}`;
     default:
       return `${prefix} [Audio] UNKNOWN code=${event.eventCode} args=${event.args.join(',')}`;
   }
@@ -1382,13 +1392,18 @@ export class BridgeService extends EventEmitter {
   // in isolation). main.ts passes powerMonitor.getSystemIdleTime; tests pass
   // a stub. Returns seconds since the last system-wide keyboard/mouse input.
   private readonly getSystemIdleTimeSeconds: () => number;
+  // DEBUG-ONLY (debug/audio-output-trace): directory the audio-debug ring +
+  // stats drain writes ds5bridge-audio-debug.log into. main.ts passes
+  // app.getPath('logs'); undefined in tests -> no file, in-memory ring only.
+  private readonly audioDebugLogDirectory?: string;
 
   constructor(
     private readonly settingsStore: SettingsStore,
-    options?: { getSystemIdleTimeSeconds?: () => number }
+    options?: { getSystemIdleTimeSeconds?: () => number; audioDebugLogDirectory?: string }
   ) {
     super();
     this.getSystemIdleTimeSeconds = options?.getSystemIdleTimeSeconds ?? (() => 0);
+    this.audioDebugLogDirectory = options?.audioDebugLogDirectory;
     this.snapshot = {
       state: 'no-bridge',
       message: 'No bridge detected',
@@ -2028,6 +2043,23 @@ export class BridgeService extends EventEmitter {
       ...this.snapshot,
       diagnostics: this.withAudioDebugDiagnostics(this.snapshot.diagnostics)
     };
+    // DEBUG-ONLY (debug/audio-output-trace): also persist to a file so a
+    // hiccup that scrolled out of the in-memory 300-line ring, or one that
+    // happened before the Diagnostics tab was open, is still on disk.
+    void this.appendAudioDebugLogFile(lines);
+  }
+
+  private async appendAudioDebugLogFile(lines: string[]): Promise<void> {
+    if (!this.audioDebugLogDirectory) {
+      return;
+    }
+    try {
+      const logPath = path.join(this.audioDebugLogDirectory, 'ds5bridge-audio-debug.log');
+      const stamp = new Date().toISOString();
+      await fsPromises.appendFile(logPath, lines.map((l) => `${stamp} ${l}`).join('\n') + '\n');
+    } catch {
+      // Best-effort; never block diagnostics polling on a file write.
+    }
   }
 
   private consumeCompletedHostPersonaMode(): HostPersonaMode | null {
