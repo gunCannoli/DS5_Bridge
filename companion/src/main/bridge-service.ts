@@ -2049,6 +2049,10 @@ export class BridgeService extends EventEmitter {
     void this.appendAudioDebugLogFile(lines);
   }
 
+  private audioDebugLogBytesThisSession = 0;
+  private audioDebugLogStarted = false;
+  private static readonly AUDIO_DEBUG_LOG_MAX_BYTES = 8 * 1024 * 1024;
+
   private async appendAudioDebugLogFile(lines: string[]): Promise<void> {
     if (!this.audioDebugLogDirectory) {
       return;
@@ -2056,7 +2060,23 @@ export class BridgeService extends EventEmitter {
     try {
       const logPath = path.join(this.audioDebugLogDirectory, 'ds5bridge-audio-debug.log');
       const stamp = new Date().toISOString();
-      await fsPromises.appendFile(logPath, lines.map((l) => `${stamp} ${l}`).join('\n') + '\n');
+      const chunk = lines.map((l) => `${stamp} ${l}`).join('\n') + '\n';
+      // Start each session with a fresh file (the mostly-idle CPU/stats lines
+      // accumulate fast -- an unbounded file was reaching 10MB+ across days),
+      // and hard-cap it so one long session can't fill the disk either.
+      if (
+        !this.audioDebugLogStarted
+        || this.audioDebugLogBytesThisSession + chunk.length > BridgeService.AUDIO_DEBUG_LOG_MAX_BYTES
+      ) {
+        this.audioDebugLogStarted = true;
+        this.audioDebugLogBytesThisSession = 0;
+        await fsPromises.writeFile(
+          logPath,
+          `${stamp} [AudioDebugLog] --- session start (previous contents discarded) ---\n`
+        );
+      }
+      await fsPromises.appendFile(logPath, chunk);
+      this.audioDebugLogBytesThisSession += chunk.length;
     } catch {
       // Best-effort; never block diagnostics polling on a file write.
     }
