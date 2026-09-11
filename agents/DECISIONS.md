@@ -68,23 +68,61 @@ ring (300 lines, lost on disconnect).
    protocol bump (event codes ride the existing 14-byte AUDIO_DEBUG
    record). `appendAudioDebugLines()` also appends to
    `<app logs>/ds5bridge-audio-debug.log`; `formatAudioDebugEvent()`
-   decodes the three new codes. The per-poll `[AudioStats]` line already
-   carries the BT-side cadence stats (send-gap-max, enqueue-age-max,
-   queue-depth-max, drop-oldest) and flows to the file too.
+   decodes the new codes.
+4. `diag(audio): rotate ds5bridge-audio-debug.log per session + size cap` —
+   the drain appended forever (10MB+ across days); now truncates on the
+   first write of each session and caps at 8MB within a session.
+5. `diag(bt): fine-grained BT-transport timing for the audio-stutter hunt`
+   — the earlier trace showed the audio.cpp send side clean (`[BatchSent]`
+   every 20-22ms) but was blind to what happens between `l2cap_send()` and
+   over-the-air delivery. New `BtAudioDebug` kinds (ride the existing
+   `AudioDebugBtEvent` record): `BtAudioDebugSendCadence` (4 — EVERY audio
+   send: gap ms / enqueue-age ms / free ACL slots / queue depth; always on
+   gap>=24ms or credits<=1, else ~1/500ms), `BtAudioDebugCanSendLatency`
+   (5 — `CAN_SEND_NOW` request->grant latency when audio was queued,
+   >=8ms), `BtAudioDebugNonAudioSelected` (6 — scheduler picked a
+   non-audio packet while audio was queued). All behind
+   `DS5_AUDIO_DEBUG_ENABLED`.
+6. `diag(audio): decode BT-transport events + per-poll [AudioWindow] rate
+   line` — decodes kinds 4/5/6 (kind 4 was an unused CONTROL_SUPPRESSED
+   decoder with no firmware emitter, reclaimed). Adds `[AudioWindow]`: the
+   DELTA of every stats counter since the previous poll, so a run of the
+   log is a timeline (the `[AudioStats]` line is lifetime maxima only and
+   can't show *when* drift starts).
 
 **How to use it:** `git checkout debug/audio-output-trace`,
 `.\tools\build-firmware.ps1 audiodebug -WithCompanion`, flash
 `firmware/ds5-bridge-1.71-wol-audiodebug.uf2`, set
 `DS5_BRIDGE_AUDIO_DEBUG_DIAGNOSTICS=1` (or `DS5_BRIDGE_DIAGNOSTICS=audio`)
 for the companion, play audio, reproduce the hiccup, read
-`ds5bridge-audio-debug.log`. `[BatchSent] ... HICCUP` marks a >30 ms
-audio.cpp-side gap; `[BatchBlocked] reason=opus-not-ready` means the opus
-encoder on core 1 is behind; `[GenFlush]` means something flushed the
-pipeline; `[BtEvent]`/`BtAudioDebugLateAudio` means the BT transport
-itself was late. Δ between `[BatchSent]` and the BT-side late event
-separates batch-assembly jitter from transport jitter.
+`<app logs>/ds5bridge-audio-debug.log`.
 
-**Dropping it:** revert the 3 commits as a range (or don't merge). Nothing
+Reading it:
+- `[BatchSent] ... HICCUP` — >30ms gap on the audio.cpp send side (batch
+  assembly stalled). `[BatchBlocked] reason=opus-not-ready` before it =
+  opus encoder on core 1 behind; `reason=haptics<2` = resampler starved.
+- `[GenFlush]` — something flushed the whole pipeline (persona/route
+  toggle, disconnect).
+- `[BT] SEND_CADENCE ... <<CONGESTED` — `freeAclSlots<=1`: the link was
+  full / retransmitting; the board sent on time but the radio couldn't.
+- `[BT] CAN_SEND_LATENCY latencyMs=NN` — the audio packet was ready but
+  BTstack made it wait NN ms for a send slot.
+- `[BT] NON_AUDIO_SELECTED` — a state/rumble/urgent report jumped the
+  queue ahead of a waiting audio packet.
+- `[BT] AUDIO_LATE` — the original outlier trace (>12ms age / >25ms gap).
+- `[AudioWindow]` per poll — any nonzero `late12k` / `dropOldest` /
+  `genDrop` / `starve` / `opusOverBudget` pins the moment.
+
+**Known finding so far:** the route-change hiccup (headset jack plug ->
+AutoSwitchAudio switches the Windows render endpoint mid-re-enumeration ->
+one ~36ms send-gap) is fixed on `feature/wol-wifi` by
+`fix(companion): settle window before auto-switching audio to the
+controller` (1s hold before routing TO the controller). The
+**steady-state** hiccup during normal headset use is still open — the
+BT-transport trace (commits 5-6) is aimed at it; leading suspicion is
+over-the-air retransmit jitter (everything board-side was clean).
+
+**Dropping it:** revert the commits as a range (or don't merge). Nothing
 on `feature/wol-wifi` depends on it; the `audiodebug` variant is inert
 without `DS5_AUDIO_DEBUG_ENABLED` code, so even the build-script commit is
 harmless to keep if wanted.
