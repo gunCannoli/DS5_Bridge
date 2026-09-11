@@ -102,6 +102,42 @@ ring (300 lines, lost on disconnect).
    vs the 21ms BT cadence). Both behind `DS5_AUDIO_DEBUG_ENABLED`.
 8. `diag(audio): decode UsbReadGap / AudioFifoUnderrun events` — companion
    decoders for kinds 27/28, no protocol change.
+9. `diag(audio): deepen audio_fifo/speaker_opus_fifo by one slot each` —
+   the experiment motivated by the DS5Dongle PR 227 / issue 252 finding
+   below: `audio_fifo` 2 -> `AUDIO_FIFO_DEPTH` (3, ~4.1KB SRAM),
+   `speaker_opus_fifo` `AUDIO_BATCH_FRAMES` -> `AUDIO_BATCH_FRAMES+1` (3,
+   ~0.2KB). Storage headroom only -- `speaker_opus_batch_ready()`'s
+   send-readiness check is still `>= AUDIO_BATCH_FRAMES`, so the required
+   batch size and BT send cadence are unchanged. Updated the
+   `usb_descriptor_migration_test.cpp` guard that hardcoded
+   `audio_fifo`'s old literal `2`.
+
+**External finding: this fork already carries DS5Dongle PR 227's "pack
+double audio data into a packet" architecture, which a same-repo issue
+(252) reports causes exactly this kind of stutter.** PR 227
+(`awalol/DS5Dongle`, merged) batches 2 opus + 2 haptic frames per BT
+report (`REPORT_SIZE` 398->547, `REPORT_ID` 0x36->0x39, `packetCounter +=
+2`) specifically to roughly halve the send rate (~10ms -> ~20ms) and cut
+BT load -- this fork's `AUDIO_BATCH_FRAMES=2` / `try_send_pending_audio_
+batch()` / `speaker_opus_batch_ready()` is that same design, confirmed via
+the PR's report-size/ID/counter-increment details matching this codebase
+exactly. Issue 252 on that repo reports the built-in speaker "stutters so
+heavily at low audio_buffer_length values that the content is practically
+unrecognizable" specifically **after** PR 227 landed, with the minimum
+usable buffer length roughly doubling (16 -> 28) because both a speaker
+AND a haptics frame pair must now fully assemble before anything sends,
+i.e. the design's inherent latency floor doubled and packets now arrive
+at the controller in bursty pairs rather than evenly spaced, instead of a
+literal regression in any one component. This is a plausible root cause
+for the steady-state hiccup being chased on this branch, orthogonal to
+everything the BT-transport/USB-jitter traces (commits 5-8) can show,
+since it is inherent to the wire protocol shape, not a timing bug in our
+scheduling of it. If commit 9's FIFO depth increase does not resolve it,
+the next lever is reducing the controller's own opus-decode cost (lower
+bitrate, currently 160kbps via `OPUS_SET_BITRATE(200*8*100)`) rather than
+more board-side buffering, or -- as a last resort, bigger and riskier --
+reverting to one-frame-per-packet for this fork specifically, trading BT
+airtime efficiency for even, single-frame delivery spacing.
 
 **How to use it:** `git checkout debug/audio-output-trace`,
 `.\tools\build-firmware.ps1 audiodebug -WithCompanion`, flash
