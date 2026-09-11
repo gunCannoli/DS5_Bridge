@@ -949,6 +949,10 @@ function formatAudioDebugEvent(event: AudioDebugEventPayload): string {
       return `${prefix} [BatchSent] gapMs=${arg0}${(arg4 & 0x02) !== 0 ? ' HICCUP' : ''} sendOk=${arg1 === 1} opusFifo=${arg2} audioFifo=${arg3} speaker=${(arg4 & 0x01) !== 0}`;
     case AUDIO_DEBUG_EVENT.GENERATION_FLUSH:
       return `${prefix} [GenFlush] gen ${arg0}->${arg1} (pipeline flushed) opusFifo=${arg2} audioFifo=${arg3}`;
+    case AUDIO_DEBUG_EVENT.USB_READ_GAP:
+      return `${prefix} [UsbReadGap] gapMs=${arg0} lateRun=${arg1}${arg1 >= 3 ? ' <<BURST' : ''} audioFifo=${arg2}${arg2 === 0 ? ' <<EMPTY' : ''} opusFifo=${arg3} frames=${arg4}`;
+    case AUDIO_DEBUG_EVENT.AUDIO_FIFO_UNDERRUN:
+      return `${prefix} [AudioFifoUnderrun] starvedMs=${arg0} opusFifoLeft=${arg1} audioFifo=${arg2} routeActive=${arg3 === 1} (core1 had nothing to encode -> next opus frame late)`;
     default:
       return `${prefix} [Audio] UNKNOWN code=${event.eventCode} args=${event.args.join(',')}`;
   }

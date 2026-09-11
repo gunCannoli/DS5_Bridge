@@ -53,7 +53,11 @@ export const AUDIO_DEBUG_EVENT = {
   // DEBUG-ONLY (debug/audio-output-trace): BT send-batch assembly path.
   BATCH_BLOCKED: 24,
   BATCH_SENT: 25,
-  GENERATION_FLUSH: 26
+  GENERATION_FLUSH: 26,
+  // DEBUG-ONLY (debug/audio-output-trace): USB-in -> audio_fifo(2) -> core1
+  // opus pipeline timing.
+  USB_READ_GAP: 27,
+  AUDIO_FIFO_UNDERRUN: 28
 } as const;
 
 export const AUDIO_DEBUG_RECORD_SIZE = 14;
