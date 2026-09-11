@@ -118,6 +118,14 @@ enum AudioDebugEventCode : uint8_t {
     AudioDebugBatchBlocked = 24,      // batch could not assemble this call
     AudioDebugBatchSent = 25,        // a batch went to bt_write_audio_stream()
     AudioDebugGenerationFlush = 26,  // drain_audio_queues() bumped the generation mid-stream
+    // DEBUG-ONLY (debug/audio-output-trace): the USB-in -> audio_fifo(2) ->
+    // core1 opus -> speaker_opus_fifo(2) path. Everything the earlier traces
+    // measured was count-clean, but audio_fifo is only 2 slots deep -- a
+    // 3ms-late USB packet (usbGapOver1500 ~50/sec) can drain it to 0 and
+    // make core1's next opus frame land late vs the 21ms BT send cadence,
+    // a timing glitch no count-based stat can see.
+    AudioDebugUsbReadGap = 27,       // a USB audio read arrived >=3ms after the last
+    AudioDebugAudioFifoUnderrun = 28,// core1 starved of audio_fifo data for >=15ms while streaming
 };
 
 struct mic_packet_element {
@@ -202,6 +210,14 @@ static uint8_t audio_debug_packet_log_budget = 0;
 static uint32_t audio_dbg_last_batch_sent_us = 0;
 static uint32_t audio_dbg_last_batch_sent_log_us = 0;
 static uint32_t audio_dbg_last_batch_blocked_log_us = 0;
+// DEBUG-ONLY (debug/audio-output-trace): USB-read gap + audio_fifo underrun +
+// opus-supply-low tracking. All plain counters/timestamps.
+static uint32_t audio_dbg_last_usb_read_gap_log_us = 0;
+static uint32_t audio_dbg_usb_gap_cluster = 0;       // consecutive >=3ms USB gaps
+// core 1: us timestamp of the last successful audio_fifo pull; used to detect
+// core1 being starved long enough that its next opus frame will land late.
+static uint32_t audio_dbg_core1_last_pull_us = 0;
+static uint32_t audio_dbg_last_underrun_log_us = 0;
 static audio_debug_stats audio_stats{};
 static volatile uint32_t audio_loop_runtime_max_us = 0;
 static volatile uint32_t audio_loop_gap_max_us = 0;
@@ -1925,6 +1941,42 @@ static bool __not_in_flash_func(process_usb_audio_packet)() {
     if (frames == 0) {
         return false;
     }
+#if DS5_AUDIO_DEBUG_ENABLED
+    // DEBUG-ONLY (debug/audio-output-trace): USB-read jitter. last_usb_audio_
+    // read_us still holds the PREVIOUS read's time here (audio_stats_note_
+    // usb_read below updates it). A gap >2ms means Windows delivered this USB
+    // audio packet late. arg0 gap ms, arg1 consecutive-late-run (a burst is
+    // worse than isolated), arg2 audio_fifo level right now (0 = core1 has
+    // already drained everything and is starved), arg3 speaker_opus_fifo
+    // level, arg4 frames read. Logged when gap>=3ms, else the run resets;
+    // rate-limited to ~1/100ms so a sustained-jittery stream marks the ring
+    // without flooding.
+    if (last_usb_audio_read_us != 0 && last_audio_us != 0) {
+        const uint32_t usb_gap_us = static_cast<uint32_t>(now - last_usb_audio_read_us);
+        if (usb_gap_us >= 3000u) {
+            if (audio_dbg_usb_gap_cluster < 255) {
+                audio_dbg_usb_gap_cluster++;
+            }
+            if (
+                audio_dbg_last_usb_read_gap_log_us == 0
+                || static_cast<uint32_t>(now - audio_dbg_last_usb_read_gap_log_us) >= 100000u
+                || audio_dbg_usb_gap_cluster <= 3
+            ) {
+                audio_dbg_last_usb_read_gap_log_us = now;
+                audio_debug_log(
+                    AudioDebugUsbReadGap,
+                    clamp_debug_u8((usb_gap_us + 500u) / 1000u),
+                    clamp_debug_u8(audio_dbg_usb_gap_cluster),
+                    clamp_debug_u8(queue_get_level(&audio_fifo)),
+                    opus_debug_level(),
+                    clamp_debug_u8(static_cast<uint32_t>(frames))
+                );
+            }
+        } else {
+            audio_dbg_usb_gap_cluster = 0;
+        }
+    }
+#endif
     audio_stats_note_usb_read(now);
     if (last_audio_us == 0) {
         audio_debug_packet_log_budget = 4;
@@ -2716,9 +2768,41 @@ static void __not_in_flash_func(core1_entry)() {
 
     while (true) {
         const uint32_t speaker_start_us = time_us_32();
-        const bool did_speaker = queue_get_level(&audio_fifo) > 0
+        const bool speaker_data_available = queue_get_level(&audio_fifo) > 0;
+        const bool did_speaker = speaker_data_available
             ? core1_process_speaker()
             : false;
+#if DS5_AUDIO_DEBUG_ENABLED
+        // DEBUG-ONLY (debug/audio-output-trace): audio_fifo (depth 2) starved
+        // core 1. Track time since the last successful pull; if core1 has had
+        // nothing to encode for >=15ms while a stream is active, its next
+        // opus frame will land late vs the ~21ms BT send cadence -- an
+        // audible micro-glitch the count stats can't see. arg0 starved ms,
+        // arg1 speaker_opus_fifo level (what's left to send), arg2
+        // audio_fifo level (should be 0), arg3 1 if route active. Once per
+        // starve episode (>=50ms cooldown).
+        {
+            const uint32_t c1now = time_us_32();
+            if (did_speaker) {
+                audio_dbg_core1_last_pull_us = c1now;
+            } else if (
+                speaker_route_active
+                && audio_dbg_core1_last_pull_us != 0
+                && static_cast<uint32_t>(c1now - audio_dbg_core1_last_pull_us) >= 15000u
+                && static_cast<uint32_t>(c1now - audio_dbg_last_underrun_log_us) >= 50000u
+            ) {
+                audio_dbg_last_underrun_log_us = c1now;
+                audio_debug_log(
+                    AudioDebugAudioFifoUnderrun,
+                    clamp_debug_u8((c1now - audio_dbg_core1_last_pull_us) / 1000u),
+                    clamp_debug_u8(queue_get_level(&speaker_opus_fifo)),
+                    clamp_debug_u8(queue_get_level(&audio_fifo)),
+                    speaker_route_active ? 1 : 0,
+                    0
+                );
+            }
+        }
+#endif
         const uint32_t mic_start_us = time_us_32();
         const bool did_mic = queue_get_level(&mic_fifo) > 0
             ? core1_process_mic()
