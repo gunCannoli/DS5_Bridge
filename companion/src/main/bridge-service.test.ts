@@ -1472,8 +1472,27 @@ describe('BridgeService', () => {
     // these tests advance a fake clock past it. Unplug is never delayed.
     let clockOffsetMs = 0;
     const realNow = Date.now;
-    beforeEach(() => { clockOffsetMs = 0; Date.now = () => realNow() + clockOffsetMs; });
-    afterEach(() => { Date.now = realNow; });
+    // isRemoteSessionActive() reads process.env.SESSIONNAME live (no
+    // injection point) and treats any "RDP-..." value as an active remote
+    // session, which disables the whole feature. These tests must not be at
+    // the mercy of whatever session actually runs them -- force a clean,
+    // non-RDP value here so every test below is deterministic regardless of
+    // host environment; the one test that exercises the RDP-active case
+    // overrides this locally and restores it in its own afterEach.
+    const previousSessionName = process.env.SESSIONNAME;
+    beforeEach(() => {
+      clockOffsetMs = 0;
+      Date.now = () => realNow() + clockOffsetMs;
+      process.env.SESSIONNAME = 'Console';
+    });
+    afterEach(() => {
+      Date.now = realNow;
+      if (previousSessionName === undefined) {
+        delete process.env.SESSIONNAME;
+      } else {
+        process.env.SESSIONNAME = previousSessionName;
+      }
+    });
     const advancePastPlugSettle = () => { clockOffsetMs += 1500; };
 
     function attachRenderMocks(
