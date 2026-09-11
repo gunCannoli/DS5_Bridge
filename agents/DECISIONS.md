@@ -148,13 +148,18 @@ Reading it:
   something inside the controller's own opus decode/playout, which this
   board cannot instrument).
 
-**Known unrelated issue found while working on this branch:** 3 tests in
-`Auto Switch Audio on Jack` (`bridge-service.test.ts`) fail on
-`feature/wol-wifi` as of `89d59a9` (the auto-switch feature's own commit)
--- confirmed via bisection to predate both this branch and the
-`938ebce` settle-window fix, so it is a pre-existing test-harness bug, not
-a regression from any WOL/audio-trace work. Not chased down here; flag it
-before that PR goes out.
+**Unrelated test-harness bug found and fixed while working on this
+branch:** 3 tests in `Auto Switch Audio on Jack` (`bridge-service.test.ts`)
+were failing on `feature/wol-wifi` whenever run from an actual RDP session
+(this machine's normal state) -- `isRemoteSessionActive()` reads
+`process.env.SESSIONNAME` live and the tests never controlled it, so they
+silently depended on the host session not being RDP. Bisected to
+`89d59a9` (the auto-switch feature's own commit), so unrelated to any
+WOL/audio-trace work. Fixed on `feature/wol-wifi`:
+`test(companion): stop Auto Switch Audio tests depending on the host
+session` (forces a clean `SESSIONNAME` in the describe block's
+`beforeEach`). This branch rebased onto that fix; full suite is
+338/338 clean.
 
 **Dropping it:** revert the commits as a range (or don't merge). Nothing
 on `feature/wol-wifi` depends on it; the `audiodebug` variant is inert
