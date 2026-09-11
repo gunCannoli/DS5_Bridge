@@ -205,6 +205,14 @@ enum BtAudioDebugKind : uint8_t {
     BtAudioDebugLateAudio = 1,
     BtAudioDebugNonAudioAheadOfQueuedAudio = 2,
     BtAudioDebugControlSend = 3,
+    // DEBUG-ONLY (debug/audio-output-trace): fine-grained BT-transport timing
+    // for the steady-state audio-stutter hunt. LateAudio only fires on the
+    // >12ms-age / >25ms-gap outliers -- these cover the 20-24ms jitter band
+    // and the can-send-now / ACL-credit backpressure that LateAudio can't see.
+    // arg meanings are per-kind, decoded companion-side.
+    BtAudioDebugSendCadence = 4,     // every audio l2cap_send()
+    BtAudioDebugCanSendLatency = 5,  // CAN_SEND_NOW request -> grant latency
+    BtAudioDebugNonAudioSelected = 6, // scheduler picked non-audio w/ audio queued
 };
 
 enum OutputTraceFlag : uint8_t {
@@ -465,6 +473,23 @@ static output_scheduler_counters output_counters{};
 static uint32_t last_bt_send_us = 0;
 static uint32_t last_audio_0x36_send_us = 0;
 static uint32_t non_audio_reports_since_audio = 0;
+#if DS5_AUDIO_DEBUG_ENABLED
+// DEBUG-ONLY (debug/audio-output-trace): us timestamp of the last
+// l2cap_request_can_send_now_event() made while audio was queued, so
+// handle_l2cap_can_send_now() can measure the request->grant latency.
+// 0 = no pending audio-motivated request.
+static uint32_t dbg_audio_can_send_requested_us = 0;
+static uint32_t dbg_last_send_cadence_log_us = 0;
+// select_next_output_packet_locked() runs under queue_lock; it can't safely
+// take audio_debug_cs. When it picks a non-audio packet while audio is
+// queued, it stashes the details here for the caller to emit after the
+// lock is released. detail0 = reason/class, detail1 = audio_queue depth,
+// detail2 = head audio packet age ms.
+static bool dbg_non_audio_selected_pending = false;
+static uint8_t dbg_non_audio_selected_reason = 0;
+static uint8_t dbg_non_audio_selected_depth = 0;
+static uint8_t dbg_non_audio_selected_head_age_ms = 0;
+#endif
 static uint8_t consecutive_non_audio_sends = 0;
 static uint8_t consecutive_audio_sends = 0;
 static uint8_t consecutive_classic_rumble_stop_sends = 0;
@@ -3781,6 +3806,36 @@ static __attribute__((noinline, noclone, optimize("O2"))) void __not_in_flash_fu
                 audio_queue.size()
             );
         }
+#if DS5_AUDIO_DEBUG_ENABLED
+        // DEBUG-ONLY (debug/audio-output-trace): trace EVERY audio send's
+        // cadence, not just the LateAudio outliers. arg1 gap ms, arg2
+        // enqueue->send age ms, arg3 free ACL slots for the link (0 = link
+        // full / retransmitting), arg4 audio_queue depth after pop. Always
+        // logged when the gap is >=24ms or ACL credits <=1 (the interesting
+        // cases); otherwise rate-limited to ~1/500ms so a healthy stream
+        // doesn't flood the ring.
+        {
+            const uint16_t free_acl = acl_handle != HCI_CON_HANDLE_INVALID
+                ? hci_number_free_acl_slots_for_handle(acl_handle)
+                : 0;
+            const uint32_t gap_ms = audio_gap_us / 1000;
+            const bool interesting = gap_ms >= 24 || free_acl <= 1;
+            if (
+                interesting
+                || dbg_last_send_cadence_log_us == 0
+                || static_cast<uint32_t>(now - dbg_last_send_cadence_log_us) >= 500000u
+            ) {
+                dbg_last_send_cadence_log_us = now;
+                audio_debug_note_bt_event(
+                    BtAudioDebugSendCadence,
+                    gap_ms,
+                    age_us / 1000,
+                    free_acl,
+                    audio_queue.size()
+                );
+            }
+        }
+#endif
         update_max_u32(output_counters.non_audio_reports_between_audio_max, non_audio_reports_since_audio);
         non_audio_reports_since_audio = 0;
         output_counters.audio_0x36_sent_count++;
@@ -3867,6 +3922,22 @@ static __attribute__((noinline, noclone, optimize("O2"))) bool __not_in_flash_fu
             scheduler_config
         );
 
+#if DS5_AUDIO_DEBUG_ENABLED
+        // DEBUG-ONLY (debug/audio-output-trace): the scheduler picked a
+        // non-audio packet while audio was waiting -- that audio packet now
+        // has to wait for the next can-send slot. Stash for the caller to
+        // trace outside queue_lock.
+        if (choice != OutputSchedulerChoice::AudioStream && audio_available) {
+            dbg_non_audio_selected_pending = true;
+            dbg_non_audio_selected_reason = static_cast<uint8_t>(choice);
+            dbg_non_audio_selected_depth = clamp_output_trace_u8(
+                static_cast<uint32_t>(audio_queue.size())
+            );
+            dbg_non_audio_selected_head_age_ms = clamp_output_trace_u8(
+                packet_age_us(now, audio_queue.front().enqueue_time_us) / 1000
+            );
+        }
+#endif
         if (choice == OutputSchedulerChoice::AudioStream) {
             const audio_output_packet &audio_packet = audio_queue.front();
             packet.data.assign(
@@ -4058,6 +4129,28 @@ static __attribute__((optimize("O2"))) void __not_in_flash_func(handle_l2cap_can
     interrupt_can_send_event_requested = false;
 
     const uint32_t now = time_us_32();
+#if DS5_AUDIO_DEBUG_ENABLED
+    // DEBUG-ONLY (debug/audio-output-trace): how long BTstack took to grant
+    // a send slot after we asked for one with audio queued. A long grant
+    // latency = the ACL buffer was full / the radio was busy -- the audio
+    // packet was ready on time but couldn't go out. arg1 latency ms, arg2
+    // free ACL slots now, arg3 audio_queue depth. Logged when latency >= 8ms.
+    if (dbg_audio_can_send_requested_us != 0) {
+        const uint32_t latency_us = static_cast<uint32_t>(now - dbg_audio_can_send_requested_us);
+        dbg_audio_can_send_requested_us = 0;
+        if (latency_us >= 8000u) {
+            const uint16_t free_acl = acl_handle != HCI_CON_HANDLE_INVALID
+                ? hci_number_free_acl_slots_for_handle(acl_handle)
+                : 0;
+            audio_debug_note_bt_event(
+                BtAudioDebugCanSendLatency,
+                latency_us / 1000,
+                free_acl,
+                audio_queue.size()
+            );
+        }
+    }
+#endif
     critical_section_enter_blocking(&queue_lock);
     if (!select_next_output_packet_locked(interrupt_send_packet, now)) {
         critical_section_exit(&queue_lock);
@@ -4070,6 +4163,22 @@ static __attribute__((optimize("O2"))) void __not_in_flash_func(handle_l2cap_can
         interrupt_send_packet
     );
     critical_section_exit(&queue_lock);
+
+#if DS5_AUDIO_DEBUG_ENABLED
+    // DEBUG-ONLY (debug/audio-output-trace): emit the "non-audio jumped the
+    // queue" event stashed by select_next_output_packet_locked(), now that
+    // queue_lock is released. arg1 choice (1=urgent, 2=coalesced-state per
+    // OutputSchedulerChoice), arg2 audio_queue depth, arg3 head audio pkt age ms.
+    if (dbg_non_audio_selected_pending) {
+        dbg_non_audio_selected_pending = false;
+        audio_debug_note_bt_event(
+            BtAudioDebugNonAudioSelected,
+            dbg_non_audio_selected_reason,
+            dbg_non_audio_selected_depth,
+            dbg_non_audio_selected_head_age_ms
+        );
+    }
+#endif
 
     if (!transport_ready) {
         DS5_LOG("[L2CAP] Refusing malformed DualSense output transport report\n");
@@ -4487,6 +4596,12 @@ static void request_can_send_if_needed(bool should_request_send) {
         return;
     }
     interrupt_can_send_event_requested = true;
+#if DS5_AUDIO_DEBUG_ENABLED
+    // DEBUG-ONLY (debug/audio-output-trace): timestamp the request so the
+    // grant callback can measure how long BTstack made us wait. Only when
+    // audio is actually queued -- an idle can-send request tells us nothing.
+    dbg_audio_can_send_requested_us = !audio_queue.empty() ? time_us_32() | 1u : 0;
+#endif
     l2cap_request_can_send_now_event(hid_interrupt_cid);
 }
 
