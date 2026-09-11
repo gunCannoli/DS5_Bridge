@@ -1467,6 +1467,15 @@ describe('BridgeService', () => {
   describe('Auto Switch Audio on Jack', () => {
     const FALLBACK = '4 - Beyo TV (2- AMD High Definition Audio Device)';
 
+    // The plug settle window (HEADSET_AUDIO_JACK_PLUG_SETTLE_MS = 1000ms)
+    // holds the switch-to-controller off until the pipeline stabilises, so
+    // these tests advance a fake clock past it. Unplug is never delayed.
+    let clockOffsetMs = 0;
+    const realNow = Date.now;
+    beforeEach(() => { clockOffsetMs = 0; Date.now = () => realNow() + clockOffsetMs; });
+    afterEach(() => { Date.now = realNow; });
+    const advancePastPlugSettle = () => { clockOffsetMs += 1500; };
+
     function attachRenderMocks(
       service: BridgeService,
       endpoints: Array<{ name: string; isBridge: boolean }> = [
@@ -1511,11 +1520,18 @@ describe('BridgeService', () => {
       expect(mocks.setDefaultRenderEndpointByName).toHaveBeenCalledWith([FALLBACK]);
       expect(mocks.setDefaultRenderBridgeEndpoint).not.toHaveBeenCalled();
 
-      // Headset plugged in: needs to hold for the debounce window before acting.
+      // Headset plugged in: needs to hold for the debounce window AND the
+      // plug settle window before acting.
       device.audioStatusReports = [audioStatusReport({ headsetPlugged: true })];
       await poll(service);
       expect(mocks.setDefaultRenderBridgeEndpoint).not.toHaveBeenCalled();
 
+      device.audioStatusReports = [audioStatusReport({ headsetPlugged: true })];
+      await poll(service);
+      // Debounce satisfied, but the settle window has not elapsed yet.
+      expect(mocks.setDefaultRenderBridgeEndpoint).not.toHaveBeenCalled();
+
+      advancePastPlugSettle();
       device.audioStatusReports = [audioStatusReport({ headsetPlugged: true })];
       await poll(service);
       expect(mocks.setDefaultRenderBridgeEndpoint).toHaveBeenCalledOnce();

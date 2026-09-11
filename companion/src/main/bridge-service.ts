@@ -156,6 +156,12 @@ const CONTROLLER_POWER_SAVING_CAP_PERCENT = 60;
 // audio-status polls (~500 ms each) before the feature acts, so a
 // marginal/chattering 3.5 mm plug doesn't flip the default output repeatedly.
 const HEADSET_AUDIO_JACK_DEBOUNCE_POLLS = 2;
+// After the jack is seen plugged, wait this long before switching Windows'
+// default render endpoint to the controller, so the switch doesn't collide
+// with the controller's BT speaker-route (re)enable + USB audio
+// re-enumeration (which causes an audible startup hiccup -- see the field
+// comment on headsetJackPluggedSince). Unplug is unaffected.
+const HEADSET_AUDIO_JACK_PLUG_SETTLE_MS = 1000;
 const STANDARD_FEEDBACK_GAIN_PERCENT = 200;
 const BOOSTED_FEEDBACK_GAIN_PERCENT = 500;
 const HAPTICS_STEP = 20;
@@ -1329,6 +1335,15 @@ export class BridgeService extends EventEmitter {
   private headsetJackPending: boolean | null = null;
   private headsetJackPendingCount = 0;
   private headsetAudioSwitchInFlight = false;
+  // ms timestamp the jack was first seen plugged for the current plugged
+  // episode (null while unplugged). Switching Windows' default render endpoint
+  // to the controller the instant the jack goes in lands in the middle of the
+  // controller's BT speaker-route (re)enable + USB audio re-enumeration --
+  // board traces showed a ~36ms audio send-gap and an audible hiccup right
+  // there. Hold the *plugged* switch off until the pipeline has had a settle
+  // window to stabilise. Unplug still acts immediately (nothing to protect
+  // when routing away).
+  private headsetJackPluggedSince: number | null = null;
   // Cache of active render endpoints (name + isBridge) from the last
   // listRenderEndpoints() call -- used both for the settings dropdown and to
   // auto-resolve the fallback when there's exactly one non-controller output.
@@ -2444,6 +2459,7 @@ export class BridgeService extends EventEmitter {
       this.headsetJackActedState = null;
       this.headsetJackPending = null;
       this.headsetJackPendingCount = 0;
+      this.headsetJackPluggedSince = null;
       return;
     }
 
@@ -2474,6 +2490,14 @@ export class BridgeService extends EventEmitter {
 
     const jackPlugged = this.audioStatus.headsetPlugged;
 
+    // Track when the current plugged episode began (for the settle window
+    // below). Cleared the moment the jack reads empty.
+    if (jackPlugged) {
+      this.headsetJackPluggedSince ??= Date.now();
+    } else {
+      this.headsetJackPluggedSince = null;
+    }
+
     // Debounce transitions only: a *changed* jack state must hold across N
     // consecutive polls before we act. The very first evaluation after
     // enable/connect (headsetJackActedState === null) is applied immediately
@@ -2488,6 +2512,20 @@ export class BridgeService extends EventEmitter {
     if (
       this.headsetJackActedState !== null
       && this.headsetJackPendingCount < HEADSET_AUDIO_JACK_DEBOUNCE_POLLS
+    ) {
+      return;
+    }
+
+    // Settle window: don't switch the render endpoint TO the controller until
+    // the pipeline has had HEADSET_AUDIO_JACK_PLUG_SETTLE_MS to stabilise
+    // after the jack went in. Applies even on the first evaluation -- the
+    // startup hiccup happens regardless of whether there was a prior acted
+    // state. A later poll (every POLL_INTERVAL_MS) re-enters here and acts
+    // once the window has passed. Routing AWAY (jack empty) is never delayed.
+    if (
+      jackPlugged
+      && this.headsetJackPluggedSince !== null
+      && Date.now() - this.headsetJackPluggedSince < HEADSET_AUDIO_JACK_PLUG_SETTLE_MS
     ) {
       return;
     }
@@ -3352,6 +3390,9 @@ export class BridgeService extends EventEmitter {
   private async reevaluateHeadsetAudioAutoSwitch(): Promise<void> {
     // Force a fresh evaluation (adopt the current jack state and apply the
     // matching target immediately, rather than waiting for the next poll).
+    // NOTE: headsetJackPluggedSince is intentionally NOT reset here -- a
+    // manual re-evaluation while the jack is already settled should not
+    // re-impose the plug settle window.
     this.headsetJackActedState = null;
     this.headsetJackPending = null;
     this.headsetJackPendingCount = 0;
@@ -4842,6 +4883,7 @@ export class BridgeService extends EventEmitter {
     this.headsetJackActedState = null;
     this.headsetJackPending = null;
     this.headsetJackPendingCount = 0;
+    this.headsetJackPluggedSince = null;
     this.systemAudioHapticsRetryAt = 0;
     this.systemAudioHapticsPassthroughActive = false;
     this.syncAudioHelperBridgeTarget();
