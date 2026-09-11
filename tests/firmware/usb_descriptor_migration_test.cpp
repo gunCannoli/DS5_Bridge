@@ -1870,7 +1870,11 @@ void assert_watchdog_and_bootsel_flash_safety(std::filesystem::path const &root)
         || audio_cpp.find("AUDIO_CORE1_STACK_GUARD_WORDS = 64") == std::string::npos
         || audio_cpp.find("audio_core1_stack_init_watermark();") == std::string::npos
         || audio_cpp.find("audio_core1_stack_poll(now);") == std::string::npos
-        || audio_cpp.find("ExactAudioQueue<audio_raw_element, 2> audio_fifo")
+        // DEBUG-ONLY EXPERIMENT (debug/audio-output-trace): audio_fifo's
+        // capacity moved from a literal 2 to the named AUDIO_FIFO_DEPTH
+        // constant (now 3, one slot of headroom above AUDIO_BATCH_FRAMES to
+        // absorb USB-read jitter) -- see audio.cpp's field comment.
+        || audio_cpp.find("ExactAudioQueue<audio_raw_element, AUDIO_FIFO_DEPTH> audio_fifo")
             == std::string::npos
         || audio_cpp.find("ExactAudioQueue<mic_packet_element, HOST_MIC_QUEUE_DEPTH> mic_fifo")
             == std::string::npos

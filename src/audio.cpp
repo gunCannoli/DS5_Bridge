@@ -245,8 +245,23 @@ struct alignas(8) AudioCore1StackStorage {
 };
 
 static AudioCore1StackStorage audio_core1_stack_storage{};
-static ExactAudioQueue<audio_raw_element, 2> audio_fifo;
-static ExactAudioQueue<speaker_opus_element, AUDIO_BATCH_FRAMES> speaker_opus_fifo;
+// DEBUG-ONLY EXPERIMENT (debug/audio-output-trace): both were exactly
+// AUDIO_BATCH_FRAMES (2) deep -- the minimum needed to hold one outgoing
+// batch, with zero headroom to absorb jitter upstream of it. A real capture
+// showed usbGapOver1500 firing ~50/sec (USB audio packets from Windows
+// arriving >1.5ms apart) against audio_fifo's 2-slot depth, and
+// AudioDebugAudioFifoUnderrun exists specifically to see whether that drains
+// it to empty. Widened by one slot each so a single late USB read / slow
+// opus encode has somewhere to land without stalling core1 or the BT send.
+// The send-readiness check (speaker_opus_batch_ready(), still >=
+// AUDIO_BATCH_FRAMES) is unchanged -- this only adds storage headroom, not a
+// bigger required batch. Costs ~4.1KB (audio_fifo) + ~0.2KB
+// (speaker_opus_fifo) of SRAM; see DECISIONS.md for the before/after
+// headroom numbers once measured.
+constexpr std::size_t AUDIO_FIFO_DEPTH = 3;
+constexpr std::size_t SPEAKER_OPUS_FIFO_DEPTH = AUDIO_BATCH_FRAMES + 1;
+static ExactAudioQueue<audio_raw_element, AUDIO_FIFO_DEPTH> audio_fifo;
+static ExactAudioQueue<speaker_opus_element, SPEAKER_OPUS_FIFO_DEPTH> speaker_opus_fifo;
 static bool speaker_opus_fifo_ready = false;
 static ExactAudioQueue<mic_packet_element, HOST_MIC_QUEUE_DEPTH> mic_fifo;
 static ExactAudioQueue<mic_decode_element, HOST_MIC_QUEUE_DEPTH> mic_decode_fifo;
