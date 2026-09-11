@@ -89,6 +89,19 @@ ring (300 lines, lost on disconnect).
    DELTA of every stats counter since the previous poll, so a run of the
    log is a timeline (the `[AudioStats]` line is lifetime maxima only and
    can't show *when* drift starts).
+7. `diag(audio): trace USB-read jitter + core1 audio_fifo underrun` — a
+   real 3-minute stutter capture came back completely clean on the
+   BT-transport trace (commits 5-6): `SEND_CADENCE` 20-22ms throughout, ACL
+   credits 4-7, zero LATE/congestion/non-audio-selected events. The only
+   non-zero signal was `usbGapOver1500` (~50/sec, USB audio packets from
+   Windows arriving >1.5ms apart) against `audio_fifo`'s 2-slot depth. New:
+   `AudioDebugUsbReadGap` (27 — a USB read >=3ms after the last, with the
+   consecutive-late-run and both FIFO levels) and
+   `AudioDebugAudioFifoUnderrun` (28 — core1 found `audio_fifo` empty for
+   >=15ms while streaming, long enough that its next opus frame lands late
+   vs the 21ms BT cadence). Both behind `DS5_AUDIO_DEBUG_ENABLED`.
+8. `diag(audio): decode UsbReadGap / AudioFifoUnderrun events` — companion
+   decoders for kinds 27/28, no protocol change.
 
 **How to use it:** `git checkout debug/audio-output-trace`,
 `.\tools\build-firmware.ps1 audiodebug -WithCompanion`, flash
@@ -112,15 +125,36 @@ Reading it:
 - `[BT] AUDIO_LATE` — the original outlier trace (>12ms age / >25ms gap).
 - `[AudioWindow]` per poll — any nonzero `late12k` / `dropOldest` /
   `genDrop` / `starve` / `opusOverBudget` pins the moment.
+- `[UsbReadGap] ... <<BURST` — 3+ consecutive USB audio reads arriving
+  late; `audioFifo=0 <<EMPTY` means core1 has already run dry.
+- `[AudioFifoUnderrun] starvedMs=NN` — core1 had nothing to encode for NN
+  ms; its next opus frame (and therefore the next BT audio packet) will be
+  late by roughly that amount.
 
-**Known finding so far:** the route-change hiccup (headset jack plug ->
-AutoSwitchAudio switches the Windows render endpoint mid-re-enumeration ->
-one ~36ms send-gap) is fixed on `feature/wol-wifi` by
-`fix(companion): settle window before auto-switching audio to the
-controller` (1s hold before routing TO the controller). The
-**steady-state** hiccup during normal headset use is still open — the
-BT-transport trace (commits 5-6) is aimed at it; leading suspicion is
-over-the-air retransmit jitter (everything board-side was clean).
+**Known findings so far:**
+- The route-change hiccup (headset jack plug -> AutoSwitchAudio switches
+  the Windows render endpoint mid-re-enumeration -> one ~36ms send-gap) is
+  fixed on `feature/wol-wifi` by `fix(companion): settle window before
+  auto-switching audio to the controller` (1s hold before routing TO the
+  controller).
+- A real 3-minute steady-state stutter capture came back **completely
+  clean** on the BT-transport trace (commits 5-6): no LATE/congestion/
+  non-audio-selected events, ACL credits never below 4, 20-22ms cadence
+  throughout. The one non-zero signal was `usbGapOver1500` (~50/sec)
+  against `audio_fifo`'s 2-slot depth -- commits 7-8 target that
+  specifically. **Still open** as of this writing; next real capture
+  should show `UsbReadGap`/`AudioFifoUnderrun` activity if that is the
+  cause, or come back clean too (in which case the remaining suspect is
+  something inside the controller's own opus decode/playout, which this
+  board cannot instrument).
+
+**Known unrelated issue found while working on this branch:** 3 tests in
+`Auto Switch Audio on Jack` (`bridge-service.test.ts`) fail on
+`feature/wol-wifi` as of `89d59a9` (the auto-switch feature's own commit)
+-- confirmed via bisection to predate both this branch and the
+`938ebce` settle-window fix, so it is a pre-existing test-harness bug, not
+a regression from any WOL/audio-trace work. Not chased down here; flag it
+before that PR goes out.
 
 **Dropping it:** revert the commits as a range (or don't merge). Nothing
 on `feature/wol-wifi` depends on it; the `audiodebug` variant is inert
