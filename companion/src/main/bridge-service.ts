@@ -864,8 +864,17 @@ function formatBtDebugEvent(prefix: string, args: number[]): string {
       return `${prefix} [BT] NON_AUDIO_WITH_AUDIO_QUEUED reason=${arg1} queuedAudioAge=${scaled100Us(arg2)} criticalQ=${arg3} statePending=${arg4 === 1 ? 'true' : 'false'}`;
     case 3:
       return `${prefix} [BT] CONTROL_SEND op=${hexByte(arg1)} report=${hexByte(arg2)} age=${scaled100Us(arg3)} controlQ=${arg4}`;
+    // DEBUG-ONLY (debug/audio-output-trace): BtAudioDebugSendCadence / _CanSendLatency
+    // / _NonAudioSelected. (Kind 4 on feature/wol-wifi was an unused
+    // CONTROL_SUPPRESSED decoder with no firmware emitter -- reclaimed here.)
     case 4:
-      return `${prefix} [BT] CONTROL_SUPPRESSED op=${hexByte(arg1)} report=${hexByte(arg2)} cached=${arg3 === 1 ? 'true' : 'false'}`;
+      return `${prefix} [BT] SEND_CADENCE gapMs=${arg1}${arg1 >= 24 ? ' <<' : ''} ageMs=${arg2} freeAclSlots=${arg3}${arg3 <= 1 ? ' <<CONGESTED' : ''} audioQ=${arg4}`;
+    case 5:
+      return `${prefix} [BT] CAN_SEND_LATENCY latencyMs=${arg1} freeAclSlots=${arg2} audioQ=${arg3} (audio packet ready but no send slot)`;
+    case 6: {
+      const choice = arg1 === 2 ? 'urgent' : arg1 === 3 ? 'coalesced-state' : `choice-${arg1}`;
+      return `${prefix} [BT] NON_AUDIO_SELECTED chose=${choice} audioQ=${arg2} headAudioAgeMs=${arg3} (audio waits for next slot)`;
+    }
     default:
       return `${prefix} [BT] type=${type} arg1=${arg1} arg2=${arg2} arg3=${arg3} arg4=${arg4}`;
   }
@@ -1325,6 +1334,9 @@ export class BridgeService extends EventEmitter {
   private audioDebugLogLines: string[] = [];
   private audioDebugDroppedCount = 0;
   private audioDebugStats: AudioDebugStatsPayload | null = null;
+  // DEBUG-ONLY (debug/audio-output-trace): previous poll's stats snapshot,
+  // for the per-poll [AudioWindow] rate line.
+  private lastAudioWindowStats: AudioDebugStatsPayload | null = null;
   private triggerTraceLines: string[] = [];
   private triggerTraceDroppedCount = 0;
   private triggerTraceSupported: boolean | null = null;
@@ -2138,6 +2150,29 @@ export class BridgeService extends EventEmitter {
         this.lastAudioStatsSignature = signature;
         this.appendAudioDebugLines([formatAudioStats(stats)]);
       }
+      // DEBUG-ONLY (debug/audio-output-trace): a per-poll RATE line. The
+      // [AudioStats] line above is all lifetime maxima/totals -- once a
+      // spike happens the max never comes back down, so it can't show
+      // *when* things drift. This shows the delta of every counter since
+      // the previous poll, so a run of the log is a timeline: any nonzero
+      // late/drop/overBudget/genDrop/starve in a window pins the moment.
+      const prev = this.lastAudioWindowStats;
+      if (prev) {
+        const d = (a: number, b: number) => Math.max(0, a - b);
+        const sent = d(stats.audio0x36SentCount, prev.audio0x36SentCount);
+        this.appendAudioDebugLines([
+          `[AudioWindow] sent=${sent} enq=${d(stats.audio0x36EnqueuedCount, prev.audio0x36EnqueuedCount)}`
+          + ` late12k=${d(stats.audio0x36LateCountOver12000Us, prev.audio0x36LateCountOver12000Us)}`
+          + ` dropOldest=${d(stats.audio0x36DropOldestCount, prev.audio0x36DropOldestCount)}`
+          + ` opusOverBudget=${d(stats.opusEncodeOverBudgetCount, prev.opusEncodeOverBudgetCount)}`
+          + ` genDrop=${d(stats.audioGenerationDropCount, prev.audioGenerationDropCount)}`
+          + ` starve=${d(stats.criticalStarvingAudioCount, prev.criticalStarvingAudioCount)}`
+          + ` usbGapOver1500=${d(stats.usbAudioGapOver1500Count, prev.usbAudioGapOver1500Count)}`
+          + ` | maxSoFar: sendGapUs=${stats.audio0x36SendGapMaxUs} enqToSendUs=${stats.audio0x36EnqueueToSendMaxUs}`
+          + ` opusEncUs=${stats.opusEncodeMaxUs} usbGapUs=${stats.usbAudioGapMaxUs} btQDepth=${stats.btAudioQueueDepthMax}`
+        ]);
+      }
+      this.lastAudioWindowStats = stats;
     } catch {
       // Keep diagnostics best-effort so normal status polling is not blocked.
     }
