@@ -211,6 +211,15 @@ const HEADSET_AUDIO_JACK_DEBOUNCE_POLLS = 2;
 // re-enumeration (which causes an audible startup hiccup -- see the field
 // comment on headsetJackPluggedSince). Unplug is unaffected.
 const HEADSET_AUDIO_JACK_PLUG_SETTLE_MS = 1000;
+// After a failed switch, wait this long before trying again rather than
+// re-spawning the helper on every poll.
+const HEADSET_AUDIO_SWITCH_FAILURE_BACKOFF_MS = 10_000;
+// While the jack is empty, how often to check whether Windows has made the
+// controller the default again (each check spawns the helper).
+const HEADSET_AUDIO_EMPTY_JACK_CHECK_INTERVAL_MS = 2000;
+// Max age of the cached endpoint list used to auto-resolve the fallback;
+// outputs come and go (RDP, TV power, USB DACs) while the app runs.
+const HEADSET_AUDIO_ENDPOINT_CACHE_MAX_AGE_MS = 30_000;
 const STANDARD_FEEDBACK_GAIN_PERCENT = 200;
 const BOOSTED_FEEDBACK_GAIN_PERCENT = 500;
 const HAPTICS_STEP = 20;
@@ -330,6 +339,10 @@ const PRESET_SETTINGS: Record<Exclude<BridgePresetId, 'custom'>, Partial<Compani
     lightbarOverrideEnabled: true
   }
 };
+
+function formatFallbacks(names: string[]): string {
+  return `[${names.map((name) => `'${name}'`).join(', ')}]`;
+}
 
 function isDualSenseDevice(device: HidDeviceSummary): boolean {
   return device.vendorId === SONY_VENDOR_ID
@@ -1399,6 +1412,11 @@ export class BridgeService extends EventEmitter {
   // listRenderEndpoints() call -- used both for the settings dropdown and to
   // auto-resolve the fallback when there's exactly one non-controller output.
   private cachedRenderEndpoints: RenderEndpointInfo[] = [];
+  private cachedRenderEndpointsAt = 0;
+  // ms timestamp before which no new switch is attempted (failure backoff),
+  // and of the last empty-jack "is the controller default again?" check.
+  private headsetAudioRetryAt = 0;
+  private headsetAudioLastEmptyJackCheckAt = 0;
   private previousControllerConnected: boolean | null = null;
   /** Set while the connect toast waits for the first battery level. */
   private connectToastDeadline: number | null = null;
@@ -2509,22 +2527,40 @@ export class BridgeService extends EventEmitter {
   // redirects audio to a "Remote Audio" endpoint then, and fighting that by
   // forcing a default-render device is pointless and confusing -- mirrors the
   // is_rdp_active() gate the user's C:\auto\boot automation already uses.
+  // NOTE: SESSIONNAME is captured when the companion launches (and is unset
+  // for a scheduled-task launch), so it goes stale as the same session moves
+  // between console and RDP. It is only a cheap first check; the helper does
+  // the live one (--list-render-endpoints returns [] and the set verbs fail
+  // with "remote-session" while remoted), handled via the failure backoff.
   private isRemoteSessionActive(): boolean {
     const sessionName = process.env.SESSIONNAME ?? '';
     return /^rdp-/i.test(sessionName);
   }
 
-  // Resolve the "jack empty" target device name: the explicitly chosen
-  // fallback if set, else -- when the last endpoint scan saw exactly one
-  // non-controller output -- that one, automatically. Returns '' if there is
-  // no usable target (feature then stays idle).
-  private resolveHeadsetAudioFallback(settings: CompanionSettings): string {
+  // The "jack empty" target devices, in preference order. Explicit pick first;
+  // when it isn't currently connected, any other non-controller output still
+  // beats leaving the controller (its built-in speaker) as the default. With
+  // no explicit pick, the sole non-controller output, if there is exactly one.
+  // Empty = no usable target (feature then stays idle).
+  private resolveHeadsetAudioFallbacks(settings: CompanionSettings): string[] {
     const explicit = settings.headsetAudioFallbackDevice.trim();
-    if (explicit !== '') {
-      return explicit;
+    const nonBridge = this.cachedRenderEndpoints
+      .filter((endpoint) => !endpoint.isBridge)
+      .map((endpoint) => endpoint.name);
+    if (explicit === '') {
+      return nonBridge.length === 1 ? nonBridge : [];
     }
-    const nonBridge = this.cachedRenderEndpoints.filter((endpoint) => !endpoint.isBridge);
-    return nonBridge.length === 1 ? nonBridge[0].name : '';
+    return [explicit, ...nonBridge.filter((name) => name.toLowerCase() !== explicit.toLowerCase())];
+  }
+
+  private async refreshRenderEndpointCache(): Promise<RenderEndpointInfo[]> {
+    this.cachedRenderEndpoints = await this.listRenderEndpoints();
+    this.cachedRenderEndpointsAt = Date.now();
+    return this.cachedRenderEndpoints;
+  }
+
+  private async listRenderEndpoints(): Promise<RenderEndpointInfo[]> {
+    return listRenderEndpoints();
   }
 
   // "Auto Switch Audio on Jack". Called every poll with
@@ -2532,14 +2568,15 @@ export class BridgeService extends EventEmitter {
   // Windows default render endpoint: headset in jack -> the controller (bridge)
   // endpoint; jack empty -> the resolved fallback device. Off entirely when
   // the toggle is off or no fallback can be resolved. Never blocks the poll --
-  // the helper call is fire-and-forget with its own retry, and a switch
-  // already in flight is skipped.
+  // a switch already in flight is skipped, and a failed one backs off for
+  // HEADSET_AUDIO_SWITCH_FAILURE_BACKOFF_MS instead of retrying every poll.
   private async syncHeadsetAudioAutoSwitch(settings: CompanionSettings): Promise<void> {
     if (!settings.headsetAudioAutoSwitchEnabled) {
       this.headsetJackActedState = null;
       this.headsetJackPending = null;
       this.headsetJackPendingCount = 0;
       this.headsetJackPluggedSince = null;
+      this.headsetAudioRetryAt = 0;
       return;
     }
 
@@ -2547,6 +2584,7 @@ export class BridgeService extends EventEmitter {
       this.snapshot.state !== 'connected'
       || this.audioStatus === null
       || this.headsetAudioSwitchInFlight
+      || Date.now() < this.headsetAudioRetryAt
       || this.isRemoteSessionActive()
       || this.isHostPersonaTransitionActive()
       || this.hostPersonaDefaultRenderRestore !== null
@@ -2555,20 +2593,30 @@ export class BridgeService extends EventEmitter {
     }
 
     // With the toggle on but no explicit fallback chosen, we need the endpoint
-    // list to auto-resolve "the only other output". Refresh it once if we
-    // don't have it yet (first evaluation after connect / enable).
-    if (settings.headsetAudioFallbackDevice.trim() === '' && this.cachedRenderEndpoints.length === 0) {
-      this.cachedRenderEndpoints = await listRenderEndpoints();
+    // list to auto-resolve "the only other output". Refresh it when missing or
+    // stale -- a list cached during an RDP session (only "Remote Audio") or
+    // before an output appeared would otherwise pin the wrong answer forever.
+    if (
+      settings.headsetAudioFallbackDevice.trim() === ''
+      && (
+        this.cachedRenderEndpoints.length === 0
+        || Date.now() - this.cachedRenderEndpointsAt > HEADSET_AUDIO_ENDPOINT_CACHE_MAX_AGE_MS
+      )
+    ) {
+      await this.refreshRenderEndpointCache();
     }
 
-    const fallbackDevice = this.resolveHeadsetAudioFallback(settings);
-    if (fallbackDevice === '') {
+    if (this.resolveHeadsetAudioFallbacks(settings).length === 0) {
       // Toggle on but nothing usable to fall back to (0 or 2+ other outputs and
       // no explicit pick). Stay idle without churning the acted-state.
       return;
     }
 
-    const jackPlugged = this.audioStatus.headsetPlugged;
+    // The firmware's jack bit is sticky: it only updates on controller input
+    // reports, so it keeps reading "plugged" after the controller disconnects
+    // with a headset in. No controller means no headset to route to.
+    const jackPlugged = this.audioStatus.headsetPlugged
+      && Boolean(this.snapshot.status?.controllerConnected);
 
     // Track when the current plugged episode began (for the settle window
     // below). Cleared the moment the jack reads empty.
@@ -2614,8 +2662,12 @@ export class BridgeService extends EventEmitter {
       // Already on the right target for this jack state -- but if the jack is
       // empty and Windows has since made the controller default again, pull
       // it back to the fallback.
-      if (!jackPlugged) {
-        await this.correctDefaultRenderIfBridgeWhileJackEmpty(fallbackDevice);
+      if (
+        !jackPlugged
+        && Date.now() - this.headsetAudioLastEmptyJackCheckAt >= HEADSET_AUDIO_EMPTY_JACK_CHECK_INTERVAL_MS
+      ) {
+        this.headsetAudioLastEmptyJackCheckAt = Date.now();
+        await this.correctDefaultRenderIfBridgeWhileJackEmpty(settings);
       }
       return;
     }
@@ -2627,42 +2679,65 @@ export class BridgeService extends EventEmitter {
         await this.setDefaultRenderBridgeEndpoint(settings.hostPersonaMode);
         this.appendAudioDebugLines(['[AutoSwitchAudio] jack plugged -> default render = controller']);
       } else {
-        await this.setDefaultRenderEndpointByName([fallbackDevice]);
-        this.appendAudioDebugLines([`[AutoSwitchAudio] jack empty -> default render = '${fallbackDevice}'`]);
+        const fallbacks = await this.switchDefaultRenderToFallback(settings);
+        this.headsetAudioLastEmptyJackCheckAt = Date.now();
+        this.appendAudioDebugLines([
+          `[AutoSwitchAudio] jack empty -> default render = first active of ${formatFallbacks(fallbacks)}`
+        ]);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.appendAudioDebugLines([`[AutoSwitchAudio] switch failed (jackPlugged=${jackPlugged}): ${message}`]);
-      // Let the next poll retry: clear the acted state so the transition is
-      // re-detected.
+      this.appendAudioDebugLines([
+        `[AutoSwitchAudio] switch failed (jackPlugged=${jackPlugged}), retry in `
+          + `${HEADSET_AUDIO_SWITCH_FAILURE_BACKOFF_MS / 1000}s: ${message}`
+      ]);
+      // Re-detect the transition after the backoff (clearing the acted state
+      // makes the next attempt immediate, so it must not happen every poll).
       this.headsetJackActedState = null;
+      this.headsetAudioRetryAt = Date.now() + HEADSET_AUDIO_SWITCH_FAILURE_BACKOFF_MS;
     } finally {
       this.headsetAudioSwitchInFlight = false;
     }
   }
 
-  private async correctDefaultRenderIfBridgeWhileJackEmpty(fallbackDevice: string): Promise<void> {
+  // Route away from the controller using a freshly scanned endpoint list, so
+  // the targets reflect the outputs that exist *now*. Throws if there is no
+  // target or the helper can't set any of them.
+  private async switchDefaultRenderToFallback(settings: CompanionSettings): Promise<string[]> {
+    await this.refreshRenderEndpointCache();
+    const fallbacks = this.resolveHeadsetAudioFallbacks(settings);
+    if (fallbacks.length === 0) {
+      throw new Error('no non-controller output is available');
+    }
+    await this.setDefaultRenderEndpointByName(fallbacks);
+    return fallbacks;
+  }
+
+  private async correctDefaultRenderIfBridgeWhileJackEmpty(settings: CompanionSettings): Promise<void> {
     this.headsetAudioSwitchInFlight = true;
     try {
       const status = await this.getDefaultRenderEndpointStatus();
       if (!status.isBridgeEndpoint) {
         return;
       }
-      await this.setDefaultRenderEndpointByName([fallbackDevice]);
+      const fallbacks = await this.switchDefaultRenderToFallback(settings);
       this.appendAudioDebugLines([
-        `[AutoSwitchAudio] jack empty but controller was default -> forced '${fallbackDevice}'`
+        `[AutoSwitchAudio] jack empty but controller was default -> forced first active of ${formatFallbacks(fallbacks)}`
       ]);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.appendAudioDebugLines([`[AutoSwitchAudio] empty-jack correction failed: ${message}`]);
+      this.appendAudioDebugLines([
+        `[AutoSwitchAudio] empty-jack correction failed, retry in `
+          + `${HEADSET_AUDIO_SWITCH_FAILURE_BACKOFF_MS / 1000}s: ${message}`
+      ]);
+      this.headsetAudioRetryAt = Date.now() + HEADSET_AUDIO_SWITCH_FAILURE_BACKOFF_MS;
     } finally {
       this.headsetAudioSwitchInFlight = false;
     }
   }
 
   async listRenderEndpointNames(): Promise<RenderEndpointInfo[]> {
-    this.cachedRenderEndpoints = await listRenderEndpoints();
-    return this.cachedRenderEndpoints;
+    return this.refreshRenderEndpointCache();
   }
 
   async setHapticsGain(percent: number): Promise<BridgeSnapshot> {
@@ -3405,6 +3480,7 @@ export class BridgeService extends EventEmitter {
     this.headsetJackActedState = null;
     this.headsetJackPending = null;
     this.headsetJackPendingCount = 0;
+    this.headsetAudioRetryAt = 0;
     if (this.snapshot.state === 'connected') {
       await this.syncHeadsetAudioAutoSwitch(this.snapshot.settings);
     }
@@ -5470,6 +5546,8 @@ export class BridgeService extends EventEmitter {
     this.headsetJackPending = null;
     this.headsetJackPendingCount = 0;
     this.headsetJackPluggedSince = null;
+    this.headsetAudioRetryAt = 0;
+    this.headsetAudioLastEmptyJackCheckAt = 0;
     this.systemAudioHapticsPassthroughActive = false;
     this.syncAudioHelperBridgeTarget();
     void this.stopControllerAudioPolling();
