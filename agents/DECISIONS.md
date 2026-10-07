@@ -204,7 +204,7 @@ harmless to keep if wanted.
 
 ---
 
-## Known issue: merging## Debug branch: `debug/wol-boot-trace` — reusable board-trace patch (NOT for the PR)rebasing onto a new upstream release can collide `COMMAND_ID` values — always check for gaps, don't just append
+## Known issue: merging/rebasing onto a new upstream release can collide `COMMAND_ID` values — always check for gaps, don't just append
 
 **What happened (2026-08-15, merging upstream v1.7.0):** upstream added
 `SET_RADIAL_DEADZONES` and `SET_EDGE_PROFILE_SWITCHING_BLOCKED` at `0x37`/
