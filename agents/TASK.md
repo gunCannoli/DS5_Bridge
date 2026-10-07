@@ -31,6 +31,23 @@ Repo hygiene work completed 2026-09-07:
 - **`CONTRIBUTING-FORK.md`** — the durable rule for both the pollution ban
   and the PR-vs-local-patch policy.
 
+## ACTIVE: Auto Switch Audio unplug fix — needs hardware smoke test
+
+Fixed on `feature/wol-wifi` (`ff08d58`, `4c2ba3d`). The fix and the
+root cause (stale RDP-era fallback cache, stale `SESSIONNAME`, per-poll retry
+storm) are in CHANGELOG 2026-10-07. Packaged companion rebuilt; zero
+AudioHelper crash events since.
+
+- [ ] Smoke test with the controller: plug/unplug repeatedly → default follows
+      (TV on unplug, never the controller speaker); power the controller off
+      with the headset in → default goes to the TV; RDP in and out, then
+      unplug → still goes to the TV. Expect no 1026 events in Event Viewer.
+- [ ] Decide whether to fold both commits into DS5_Bridge PR 147
+      (`pr/auto-switch-audio-on-jack`, amend + **force-push**, needs
+      confirmation). The fix is part of the feature, not a local patch.
+- `docs/audio-switching-fix-plan.md` is untracked and was left in place. It's
+  mostly superseded (see CHANGELOG for which tasks were dropped and why).
+
 ## ACTIVE: WOL boot-sequence investigation — done for now
 
 **Reported (post-v1.7.1 + `7a7eaa8` keep-wake-receiver-online USB rework):**

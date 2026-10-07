@@ -8,6 +8,52 @@ Architecture/known-issue knowledge that should inform future work lives in
 
 ---
 
+## 2026-10-07 — Auto Switch Audio: fixed "unplug leaves the controller as default" + AudioHelper crash storm
+
+**Symptom:** sometimes, after the headset came out of the jack, Windows kept
+playing through the controller's built-in speaker. Separately, the Application
+log had ~7,500 `AudioHelper.exe` .NET Runtime crash events (ID 1026) in 24h.
+
+**Root causes, from the Event Log + `[AutoSwitchAudio]` debug lines (reproduced
+live):**
+- 6,243 were `InvalidCastException` from `Marshal.ThrowExceptionForHR` in
+  `SetDefaultRenderEndpoint`. `SetDefaultEndpoint` returns `E_NOINTERFACE`
+  inside an RDP session. The feature was running during RDP because
+  `isRemoteSessionActive()` read a stale `SESSIONNAME`.
+- 995 were `No active render endpoint matched any of ['Remote Audio']`. The
+  auto-resolved fallback was cached during RDP and never refreshed, so back on
+  the console every unplug tried to switch to a device that no longer existed.
+  **This was the user-visible bug.**
+- 245 were `persona 'dualsense' not found` (plug direction during RDP).
+- Each failure cleared the acted state, so the next 500 ms poll retried
+  immediately with no debounce.
+
+**Fixed on `feature/wol-wifi`** (`ff08d58` helper, `4c2ba3d` companion):
+- The endpoint verbs now exit 1 with the reason on stderr instead of crashing.
+  `SetDefaultRenderEndpoint` refuses with "remote-session" while remoted, and
+  `--list-render-endpoints` returns `[]` while remoted.
+- The endpoint list is rescanned before every route-away. The auto-resolve
+  cache expires after 30s.
+- An explicit fallback that isn't connected falls through to any other
+  non-controller output.
+- After a failed switch, the feature backs off for 10s.
+- The empty-jack re-promotion check runs at most every 2s (it used to run on
+  every poll).
+- The jack counts as empty unless a controller is connected, because the
+  firmware bit latches.
+- 4 new regression tests. Each one fails on the old code. Full suite: 342/342.
+
+**Not done from `docs/audio-switching-fix-plan.md`:** the multi-version
+`IPolicyConfig` + SoundVolumeView fallback (Task 1). It rested on a
+misdiagnosis: the cast succeeds and `IPolicyConfig` works on this Win11 build.
+A machine-specific `C:\auto\tools` path also can't ship in an upstream feature.
+The 1.5 s debounce and the "is it already default?" pre-check were also
+dropped. The flapping in the plan's log came from the failure path skipping
+the debounce, now fixed by the backoff. The empty-jack direction already
+checks the current default.
+
+---
+
 ## 2026-09-06 — One-command smoke-test setup: `build-firmware.ps1 -WithCompanion`
 
 The companion rebuild is now automated so it doesn't have to be done by hand

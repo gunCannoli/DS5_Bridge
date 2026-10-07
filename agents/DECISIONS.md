@@ -7,6 +7,34 @@ test run; see `CHANGELOG.md` for that history. Newest first.
 
 ---
 
+## Known issue: Windows audio-endpoint gotchas for Auto Switch Audio on Jack
+
+Three facts that cost a debugging round (see CHANGELOG 2026-10-07):
+
+- **`IPolicyConfig.SetDefaultEndpoint` returns `E_NOINTERFACE` inside an RDP
+  session.** .NET surfaces that as `InvalidCastException: Specified cast is not
+  valid` from `Marshal.ThrowExceptionForHR`. That message reads like an
+  interface or vtable mismatch between Windows versions, but it isn't one: the
+  COM cast succeeds. The session's only render endpoint is the redirected
+  "Remote Audio", and Remote Desktop owns routing. The live check is
+  `GetSystemMetrics(SM_REMOTESESSION)` in the helper
+  (`EndpointManager.IsRemoteSession()`).
+- **`process.env.SESSIONNAME` can't be used to detect RDP in the companion.**
+  It's captured at launch (and unset for a scheduled-task launch). The same
+  session then moves between console and RDP while the app keeps running. It's
+  only a cheap first check. The helper's refusal plus the failure backoff is
+  the real gate.
+- **The firmware's `headsetPlugged` bit latches.** `set_headset()` only runs on
+  controller input reports, so after a controller disconnect the bit reads
+  whatever it was last. Gate on `status.controllerConnected` too.
+
+Corollaries: never cache an endpoint list for longer than a few seconds of
+decision-making (outputs come and go with RDP, TV power, USB DACs). And any
+helper failure must back off, never retry per poll: a per-poll retry turns one
+bad state into thousands of process crashes.
+
+---
+
 ## Known issue: merging/rebasing onto a new upstream release can collide `COMMAND_ID` values — always check for gaps, don't just append
 
 **What happened (2026-08-15, merging upstream v1.7.0):** upstream added

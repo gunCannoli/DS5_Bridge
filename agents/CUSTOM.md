@@ -385,9 +385,15 @@ Behavior:
 - Also corrects the case where Windows re-promotes the controller to default
   while the jack is empty.
 - Debounced (2 consecutive ~500 ms audio-status polls) because the firmware
-  bit is a raw pass-through with no debouncing of its own.
+  bit is a raw pass-through with no debouncing of its own. The jack counts as
+  empty unless a controller is connected (the bit latches after a disconnect).
+- Routing away always rescans endpoints first. An absent explicit fallback
+  falls through to any other non-controller output. A failed switch backs off
+  10 s (never retried per poll).
 - Dormant during an RDP session (Windows redirects audio to "Remote Audio";
-  don't fight it) and during host-persona transitions / render-restores.
+  don't fight it) and during host-persona transitions / render-restores. The
+  live RDP check is in the helper (`SM_REMOTESESSION`), not `SESSIONNAME` (see
+  DECISIONS.md, "Windows audio-endpoint gotchas").
 - One toggle (`headsetAudioAutoSwitchEnabled`) + one optional fallback-device
   string (`headsetAudioFallbackDevice`, `''` = auto). Both default off/empty.
 
@@ -399,12 +405,12 @@ restructured.
 
 | File | What was added |
 |---|---|
-| `native/AudioHelper/EndpointManager.cs` | `SetDefaultRenderEndpointByName(string candidates)` — set default render to the first *active* endpoint whose FriendlyName matches one of `;`-separated candidates; throws (non-zero exit) if none. `ListRenderEndpoints()` — print active render endpoints as JSON `[{name,isBridge}]` on stdout (`isBridge` via existing `IsKnownBridgeEndpoint`). |
-| `native/AudioHelper/Program.cs` | Two new CLI flags: `--set-default-render` (uses the existing `--device-name` arg) and `--list-render-endpoints`. New `SetDefaultRender` / `ListRenderEndpoints` bools on the `HelperOptions` record + their arg-parse cases + dispatch in `Main`. |
+| `native/AudioHelper/EndpointManager.cs` | `SetDefaultRenderEndpointByName(string candidates)` — set default render to the first *active* endpoint whose FriendlyName matches one of `;`-separated candidates; throws (non-zero exit) if none. `ListRenderEndpoints()` — print active render endpoints as JSON `[{name,isBridge}]` on stdout (`isBridge` via existing `IsKnownBridgeEndpoint`); `[]` while remoted. `IsRemoteSession()` (`GetSystemMetrics(SM_REMOTESESSION)`); the private `SetDefaultRenderEndpoint` throws "remote-session" while remoted (`SetDefaultEndpoint` would return `E_NOINTERFACE`). |
+| `native/AudioHelper/Program.cs` | Two new CLI flags: `--set-default-render` (uses the existing `--device-name` arg) and `--list-render-endpoints`. New `SetDefaultRender` / `ListRenderEndpoints` bools on the `HelperOptions` record + their arg-parse cases + dispatch in `Main`. A `RunEndpointCommand` local function wraps the four endpoint verbs (incl. upstream's `--default-render-status` / `--set-default-render-bridge`) so failures exit 1 with the reason on stderr instead of an unhandled-exception crash. |
 | `src/main/audio-helper.ts` | `setDefaultRenderEndpointByName(names[])` and `listRenderEndpoints(): Promise<RenderEndpointInfo[]>` wrappers (spawn the helper via the existing `runAudioHelperCommand`). New exported `RenderEndpointInfo` type. |
 | `src/shared/types.ts` | `headsetAudioAutoSwitchEnabled: boolean` and `headsetAudioFallbackDevice: string` on `CompanionSettings`. |
 | `src/main/settings-store.ts` | Both in `DEFAULT_SETTINGS` (`false` / `''`) and in `normalizeSettings()`. **Not** in `CONTROLLER_PROFILE_SETTING_KEYS` — these are global, not per-profile. |
-| `src/main/bridge-service.ts` | The feature block (see §10.3): `syncHeadsetAudioAutoSwitch()` called each poll; `resolveHeadsetAudioFallback()`; `correctDefaultRenderIfBridgeWhileJackEmpty()`; `isRemoteSessionActive()`; `listRenderEndpointNames()`; `setHeadsetAudioAutoSwitchEnabled()` / `setHeadsetAudioFallbackDevice()` / `reevaluateHeadsetAudioAutoSwitch()`. New instance state: `headsetJack{ActedState,Pending,PendingCount}`, `headsetAudioSwitchInFlight`, `cachedRenderEndpoints`. Instance-method wrappers `this.setDefaultRenderBridgeEndpoint` / `this.setDefaultRenderEndpointByName` / `this.getDefaultRenderEndpointStatus` (so tests can inject). Reset the jack state in `closeDevice()`. |
+| `src/main/bridge-service.ts` | The feature block (see §10.3): `syncHeadsetAudioAutoSwitch()` called each poll; `resolveHeadsetAudioFallbacks()`; `refreshRenderEndpointCache()`; `switchDefaultRenderToFallback()`; `correctDefaultRenderIfBridgeWhileJackEmpty()`; `isRemoteSessionActive()`; `listRenderEndpointNames()`; `setHeadsetAudioAutoSwitchEnabled()` / `setHeadsetAudioFallbackDevice()` / `reevaluateHeadsetAudioAutoSwitch()`. New instance state: `headsetJack{ActedState,Pending,PendingCount,PluggedSince}`, `headsetAudio{SwitchInFlight,RetryAt,LastEmptyJackCheckAt}`, `cachedRenderEndpoints{,At}`. Instance-method wrappers `this.setDefaultRenderBridgeEndpoint` / `this.setDefaultRenderEndpointByName` / `this.getDefaultRenderEndpointStatus` / `this.listRenderEndpoints` (so tests can inject). Reset the jack state in `closeDevice()`. |
 | `src/main/main.ts` | `bridge:setHeadsetAudioAutoSwitchEnabled`, `bridge:setHeadsetAudioFallbackDevice`, `bridge:listRenderEndpointNames` IPC handlers. |
 | `src/preload.ts` | The three matching `window.bridge.*` methods. |
 | `src/renderer/App.tsx` | "Auto Switch Audio on Jack" row in Bridge Settings > Power & Controller: a toggle, plus a `CustomSelect` fallback dropdown shown *only* when there are ≥2 non-controller outputs (or a saved-but-absent device). `renderEndpoints` state + a `useEffect` that calls `listRenderEndpointNames()` whenever Bridge Settings opens; `headsetAudioOutputChoices` / `headsetAudioShowFallbackSelect` / `headsetAudioFallbackOptions` derived values. |
@@ -445,28 +451,31 @@ await this.syncHeadsetAudioAutoSwitch(settings);   // <-- ADD
 1. Early-return unless `settings.headsetAudioAutoSwitchEnabled` (clears the
    debounce state).
 2. Early-return if not `connected`, no `audioStatus`, a switch is in flight,
-   RDP is active, a host-persona transition / `hostPersonaDefaultRenderRestore`
+   inside the failure backoff (`headsetAudioRetryAt`), RDP is active, or a host-persona transition / `hostPersonaDefaultRenderRestore`
    is in flight.
 3. If the toggle is on but no explicit fallback is set and
-   `cachedRenderEndpoints` is empty, refresh it once (`await
-   listRenderEndpoints()`).
-4. `resolveHeadsetAudioFallback()` → explicit `headsetAudioFallbackDevice`, or
-   the sole non-`isBridge` endpoint name, or `''`. If `''`, stay idle.
+   `cachedRenderEndpoints` is empty or older than 30 s, refresh it
+   (`refreshRenderEndpointCache()`).
+4. `resolveHeadsetAudioFallbacks()` → `[explicit, ...other non-bridge]`, or
+   `[the sole non-bridge endpoint]`, or `[]`. If `[]`, stay idle. Effective
+   jack = `headsetPlugged && status.controllerConnected`.
 5. Debounce: track `headsetJackPending`/`PendingCount`; a *changed*
    `headsetPlugged` must hold `HEADSET_AUDIO_JACK_DEBOUNCE_POLLS` (=2) polls.
    The first evaluation (`headsetJackActedState === null`) is applied
    immediately.
-6. If `headsetJackActedState === jackPlugged`: already on target; if the jack
-   is empty, run `correctDefaultRenderIfBridgeWhileJackEmpty(fallback)`
+6. If `headsetJackActedState === jackPlugged`: already on target. If the jack
+   is empty, at most every 2 s run `correctDefaultRenderIfBridgeWhileJackEmpty`
    (queries the current default; re-routes only if it's the bridge endpoint).
 7. Otherwise set `headsetJackActedState`, then:
    - jack plugged → `this.setDefaultRenderBridgeEndpoint(settings.hostPersonaMode)`
-   - jack empty → `this.setDefaultRenderEndpointByName([fallback])`
-   All fire-and-forget with try/catch; on error clear `headsetJackActedState`
-   so the next poll retries. `headsetAudioSwitchInFlight` guards re-entry.
+   - jack empty → `switchDefaultRenderToFallback()` (rescan endpoints, then
+     `setDefaultRenderEndpointByName(fallbacks)`)
+   On error, clear `headsetJackActedState` and set `headsetAudioRetryAt =
+   now + 10 s`. `headsetAudioSwitchInFlight` guards re-entry.
 
-Reset `headsetJack{ActedState,Pending,PendingCount}` in `closeDevice()` next
-to the existing `controllerPowerSavingActive = null`.
+Reset `headsetJack{ActedState,Pending,PendingCount,PluggedSince}` and
+`headsetAudio{RetryAt,LastEmptyJackCheckAt}` in `closeDevice()` next to the
+existing `controllerPowerSavingActive = null`.
 
 ## 10.4. AudioHelper verbs
 
