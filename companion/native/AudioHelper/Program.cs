@@ -75,24 +75,42 @@ if (options.ListBridges)
     BridgeCensus.PrintJson();
     return;
 }
+// The one-shot endpoint verbs fail routinely and recoverably (no default
+// endpoint during an HDMI renegotiation, a Remote Desktop session, a device
+// that just went away). Report those as a normal non-zero exit with the reason
+// on stderr -- which the companion already surfaces -- rather than an
+// unhandled exception, which logs a .NET Runtime crash event every time.
+static int RunEndpointCommand(Action command)
+{
+    try
+    {
+        command();
+        return 0;
+    }
+    catch (Exception error)
+    {
+        Console.Error.WriteLine($"{error.GetType().Name}: {error.Message}");
+        return 1;
+    }
+}
 if (options.DefaultRenderStatus)
 {
-    EndpointManager.PrintDefaultRenderEndpointStatus();
+    Environment.ExitCode = RunEndpointCommand(EndpointManager.PrintDefaultRenderEndpointStatus);
     return;
 }
 if (options.SetDefaultRenderBridge)
 {
-    EndpointManager.SetDefaultRenderBridgeEndpoint(options.BridgePersona);
+    Environment.ExitCode = RunEndpointCommand(() => EndpointManager.SetDefaultRenderBridgeEndpoint(options.BridgePersona));
     return;
 }
 if (options.SetDefaultRender)
 {
-    EndpointManager.SetDefaultRenderEndpointByName(options.DeviceName ?? string.Empty);
+    Environment.ExitCode = RunEndpointCommand(() => EndpointManager.SetDefaultRenderEndpointByName(options.DeviceName ?? string.Empty));
     return;
 }
 if (options.ListRenderEndpoints)
 {
-    EndpointManager.ListRenderEndpoints();
+    Environment.ExitCode = RunEndpointCommand(EndpointManager.ListRenderEndpoints);
     return;
 }
 

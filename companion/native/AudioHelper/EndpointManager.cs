@@ -250,8 +250,18 @@ sealed class EndpointManager
     // can tell it apart from real output devices (and auto-pick the fallback
     // when there's exactly one non-bridge endpoint). Selection is still
     // matched back by name substring, same as SetDefaultRenderEndpointByName.
+    // Empty inside a Remote Desktop session: its only endpoint is the
+    // redirected "Remote Audio", which can't be made default and doesn't exist
+    // once the session returns to the console, so it must never be offered or
+    // auto-picked as the fallback.
     public static void ListRenderEndpoints()
     {
+        if (IsRemoteSession())
+        {
+            Console.WriteLine("[]");
+            return;
+        }
+
         using var enumerator = new MMDeviceEnumerator();
         var entries = enumerator
             .EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)
@@ -545,8 +555,28 @@ sealed class EndpointManager
             || !friendlyName.Contains("DualSense Wireless Controller", StringComparison.OrdinalIgnoreCase);
     }
 
+    // Live check of the session this helper runs in (unlike the SESSIONNAME
+    // environment variable, which is fixed when the companion is launched and
+    // goes stale as the same session moves between console and RDP).
+    public static bool IsRemoteSession()
+    {
+        const int SmRemoteSession = 0x1000;
+        return GetSystemMetrics(SmRemoteSession) != 0;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
+
     private static void SetDefaultRenderEndpoint(MMDevice device)
     {
+        // Inside an RDP session IPolicyConfig.SetDefaultEndpoint returns
+        // E_NOINTERFACE (surfacing as a misleading InvalidCastException) --
+        // Remote Desktop owns audio routing there. Say so plainly instead.
+        if (IsRemoteSession())
+        {
+            throw new InvalidOperationException(
+                "remote-session: Remote Desktop controls audio output in this session; the default render endpoint can't be changed.");
+        }
 #pragma warning disable CA1416
         var policyConfigType = Type.GetTypeFromCLSID(PolicyConfigClientId)
             ?? throw new InvalidOperationException("Windows audio policy configuration is unavailable.");
