@@ -15,7 +15,7 @@ Four fork features, all documented in `CUSTOM.md`:
 | # | Feature | State |
 |---|---|---|
 | 1 | Wake-on-LAN over Wi-Fi (firmware + companion) | shipped in DS5_Bridge PR 120, open upstream |
-| 2 | Auto Switch Audio on Jack (companion only) | **DS5_Bridge PR 147 open** (branch `pr/auto-switch-audio-on-jack` off upstream/main). Hardware-tested, incl. the multi-output dropdown. Awaiting maintainer review. |
+| 2 | Auto Switch Audio on Jack (companion only) | **DS5_Bridge PR 147 closed 2026-10-07** to give the feature more real-world testing (see below). Branch `pr/auto-switch-audio-on-jack` kept, but it predates the 2026-10-07 fix. |
 | 3 | Audio-aware Idle Disconnect (firmware) | **DS5_Bridge PR 146 open** (branch `pr/idle-disconnect-audio-aware` off upstream/main). Hardware-tested. Awaiting maintainer review. |
 | 4 | Speaker-audio stutter | investigated and **reverted** — see `PLAN-audio-stutter.md`; nothing shipped |
 
@@ -42,11 +42,11 @@ AudioHelper crash events since.
       (TV on unplug, never the controller speaker); power the controller off
       with the headset in → default goes to the TV; RDP in and out, then
       unplug → still goes to the TV. Expect no 1026 events in Event Viewer.
-- [ ] Decide whether to fold both commits into DS5_Bridge PR 147
-      (`pr/auto-switch-audio-on-jack`, amend + **force-push**, needs
-      confirmation). The fix is part of the feature, not a local patch.
-- `docs/audio-switching-fix-plan.md` is untracked and was left in place. It's
-  mostly superseded (see CHANGELOG for which tasks were dropped and why).
+- [ ] Live with it for a while (RDP sessions, TV off/on, controller sleeps).
+- [ ] When it's ready to go upstream again: fold `ff08d58` + `4c2ba3d` into
+      `pr/auto-switch-audio-on-jack` (still one clean commit off upstream/main,
+      amend + **force-push**, needs confirmation), then reopen PR 147 or open a
+      new one.
 
 ## ACTIVE: WOL boot-sequence investigation — done for now
 
@@ -123,10 +123,9 @@ buffer 120 (≈40 ms). New branch `debug/audio-output-trace` off
 
 - [ ] **Scrub `origin/feature/wol-wifi`** (the clean PR 120 branch) the same
       way `wol-wifi-full-history` was scrubbed, before PR 120 is next updated.
-- [ ] Respond to review on PRs 146 / 147. If revision is needed the branches
-      are `pr/idle-disconnect-audio-aware` and `pr/auto-switch-audio-on-jack`,
-      each one clean commit off `upstream/main` -- amend + force-push, do not
-      merge fork-branch history in.
+- [ ] Respond to review on PR 146. If revision is needed the branch is
+      `pr/idle-disconnect-audio-aware`, one clean commit off `upstream/main`
+      -- amend + force-push, do not merge fork-branch history in.
 - Local-only items (full-window settings modal, the `:disabled` flicker fix)
   stay on `feature/wol-wifi` only and are NOT in either PR.
 
