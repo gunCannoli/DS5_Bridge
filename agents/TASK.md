@@ -16,7 +16,7 @@ Four fork features, all documented in `CUSTOM.md`:
 |---|---|---|
 | 1 | Wake-on-LAN over Wi-Fi (firmware + companion) | shipped in DS5_Bridge PR 120, open upstream |
 | 2 | Auto Switch Audio on Jack (companion only) | **DS5_Bridge PR 147 closed 2026-10-07** to give the feature more real-world testing (see below). Branch `pr/auto-switch-audio-on-jack` kept, but it predates the 2026-10-07 fix. |
-| 3 | Audio-aware Idle Disconnect (firmware) | **DS5_Bridge PR 146 open** (branch `pr/idle-disconnect-audio-aware` off upstream/main). Hardware-tested. Awaiting maintainer review. |
+| 3 | Audio-aware Idle Disconnect (firmware) | **DS5_Bridge PR 146 closed 2026-10-07**, for more real-world testing. Kept as a custom patch on `feature/wol-wifi`. Branch `pr/idle-disconnect-audio-aware` kept for a future PR. |
 | 4 | Speaker-audio stutter | investigated and **reverted** — see `PLAN-audio-stutter.md`; nothing shipped |
 
 Repo hygiene work completed 2026-09-07:
@@ -123,11 +123,13 @@ buffer 120 (≈40 ms). New branch `debug/audio-output-trace` off
 
 - [ ] **Scrub `origin/feature/wol-wifi`** (the clean PR 120 branch) the same
       way `wol-wifi-full-history` was scrubbed, before PR 120 is next updated.
-- [ ] Respond to review on PR 146. If revision is needed the branch is
-      `pr/idle-disconnect-audio-aware`, one clean commit off `upstream/main`
-      -- amend + force-push, do not merge fork-branch history in.
+- [ ] Features #2 and #3 are custom patches on `feature/wol-wifi` while they
+      prove stable. When one is ready for upstream: bring its
+      `pr/...` branch up to date (one clean commit off `upstream/main`, amend
+      + force-push with confirmation, no fork-branch history merged in), then
+      reopen its PR or open a new one.
 - Local-only items (full-window settings modal, the `:disabled` flicker fix)
-  stay on `feature/wol-wifi` only and are NOT in either PR.
+  stay on `feature/wol-wifi` only and never go into a PR.
 
 ## Known, deliberately not fixed
 
