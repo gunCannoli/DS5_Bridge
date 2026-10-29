@@ -902,6 +902,11 @@ int main() {
     vreg_set_voltage(VREG_VOLTAGE_1_20);
     sleep_ms(1000);
     set_sys_clock_khz(SYS_CLOCK_KHZ, true);
+#else
+    // LOCAL-ONLY: the RP2350 regulator setting survives every reset except
+    // power-on, so a board last flashed with a >150 MHz build (1.20 V) would
+    // stay overvolted after reflashing this one. Reset it to the default.
+    vreg_set_voltage(VREG_VOLTAGE_DEFAULT);
 #endif
 
     board_init();

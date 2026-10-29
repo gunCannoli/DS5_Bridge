@@ -1,6 +1,9 @@
 build
 build-*
 !tools/build-pico-universal-flash-nuke.ps1
+!tools/build-firmware.ps1
+!tools/rebuild-companion.ps1
+firmware/*.uf2
 artifacts
 .vscode
 .idea
@@ -16,3 +19,6 @@ companion/native/**/bin
 companion/native/**/obj
 tools/**/bin
 tools/**/obj
+*DS5 Bridge.lnk
+# Local debug capture (audio stats logs, etc.) -- never committed.
+log/
