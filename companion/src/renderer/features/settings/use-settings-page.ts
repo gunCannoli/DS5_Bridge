@@ -122,6 +122,13 @@ export function useSettingsPage(runtime: AppRuntime, { notifications }: Settings
     toggleControllerPowerSaving: toggle('controller-power-saving', (settings) => (
       window.bridge.setControllerPowerSavingEnabled(!settings.controllerPowerSavingEnabled)
     )),
+    toggleHeadsetAudioAutoSwitch: toggle('headset-audio-auto-switch', (settings) => (
+      window.bridge.setHeadsetAudioAutoSwitchEnabled(!settings.headsetAudioAutoSwitchEnabled)
+    )),
+    setHeadsetAudioFallbackDevice: (deviceName) => void runAction('headset-audio-fallback', () => (
+      window.bridge.setHeadsetAudioFallbackDevice(deviceName)
+    )),
+    listRenderEndpoints: () => window.bridge.listRenderEndpointNames(),
     toggleLed: toggle('led', (settings) => window.bridge.setLedEnabled(!settings.ledEnabled)),
     togglePlayerLed: toggle('player-led', (settings) => window.bridge.setPlayerLedEnabled(!settings.playerLedEnabled)),
     toggleLightbarRestore: toggle('lightbar-restore', (settings) => (

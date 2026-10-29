@@ -62,6 +62,7 @@ export type SettingsSearchEntryId =
   | 'mic-mute-notifications'
   | 'idle-disconnect'
   | 'pc-sleep-disconnect'
+  | 'headset-audio-auto-switch'
   | 'controller-power-saving'
   | 'pico-led'
   | 'player-slot-led'
@@ -104,6 +105,7 @@ const SEARCH_ENTRIES: ReadonlyArray<Omit<SettingsSearchResult, 'categoryLabel'>>
   { id: 'mic-mute-notifications', label: 'Mic Mute', category: 'notifications', keywords: 'microphone mute button unmute' },
   { id: 'idle-disconnect', label: 'Idle Disconnect', category: 'connection-power', keywords: 'controller timeout sleep minutes' },
   { id: 'pc-sleep-disconnect', label: 'PC Sleep Disconnect', category: 'connection-power', keywords: 'usb suspend windows' },
+  { id: 'headset-audio-auto-switch', label: 'Auto Switch Audio on Jack', category: 'connection-power', keywords: 'headset headphones jack windows output default audio device fallback' },
   { id: 'controller-power-saving', label: 'Controller Power Saving', category: 'connection-power', keywords: 'headphones haptics triggers light bar lightbar' },
   { id: 'pico-led', label: 'Bridge LED', category: 'lights', keywords: 'pico bridge device light indicator' },
   { id: 'player-slot-led', label: 'Player LEDs', category: 'lights', keywords: 'controller player slot number indicator lights' },

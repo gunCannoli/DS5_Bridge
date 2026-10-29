@@ -100,6 +100,7 @@ import {
   setDefaultRenderBridgeEndpoint,
   setDefaultRenderEndpointByName,
   listRenderEndpoints,
+  type RenderEndpointInfo,
   setAudioHelperBridgeTarget,
   type BridgeCensus,
   type BridgeCensusEntry,

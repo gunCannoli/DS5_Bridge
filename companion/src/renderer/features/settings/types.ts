@@ -19,6 +19,8 @@ export interface SettingsPageModel {
     | 'usbSuspendDisconnectEnabled'
     | 'wakeOnConnectEnabled'
     | 'controllerPowerSavingEnabled'
+    | 'headsetAudioAutoSwitchEnabled'
+    | 'headsetAudioFallbackDevice'
     | 'edgeProfileSwitchingBlocked'
     | 'sleepKeybindEnabled'
     | 'speakerVolumeShortcutEnabled'
@@ -79,6 +81,10 @@ export interface SettingsPageActions {
   toggleIdleDisconnect(): void;
   toggleUsbSuspendDisconnect(): void;
   toggleControllerPowerSaving(): void;
+  toggleHeadsetAudioAutoSwitch(): void;
+  setHeadsetAudioFallbackDevice(deviceName: string): void;
+  /** Active Windows output devices, with the controller's own marked; rejects when the audio helper is unavailable. */
+  listRenderEndpoints(): Promise<Array<{ name: string; isBridge: boolean }>>;
   toggleLed(): void;
   togglePlayerLed(): void;
   toggleLightbarRestore(): void;

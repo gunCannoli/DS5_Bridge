@@ -38,6 +38,8 @@ function baseModel(overrides: Partial<SettingsPageModel> = {}): SettingsPageMode
       usbSuspendDisconnectEnabled: true,
       wakeOnConnectEnabled: true,
       controllerPowerSavingEnabled: false,
+      headsetAudioAutoSwitchEnabled: false,
+      headsetAudioFallbackDevice: '',
       edgeProfileSwitchingBlocked: false,
       sleepKeybindEnabled: false,
       speakerVolumeShortcutEnabled: false,
@@ -65,7 +67,7 @@ function createActions(): SettingsPageActions & Record<string, ReturnType<typeof
     'setTheme', 'setUiScale', 'setTextScale', 'setLocale', 'toggleLaunchAtStartup', 'toggleBatteryTrayIcon',
     'toggleCloseButtonQuits', 'toggleControllerNotifications', 'toggleLowBatteryNotifications',
     'togglePersonaNotifications', 'toggleMicMuteNotifications', 'setIdleDisconnectTimeout',
-    'toggleIdleDisconnect', 'toggleUsbSuspendDisconnect', 'toggleControllerPowerSaving', 'toggleLed', 'togglePlayerLed',
+    'toggleIdleDisconnect', 'toggleUsbSuspendDisconnect', 'toggleControllerPowerSaving', 'toggleHeadsetAudioAutoSwitch', 'setHeadsetAudioFallbackDevice', 'toggleLed', 'togglePlayerLed',
     'toggleLightbarRestore', 'toggleEdgeProfileSwitching', 'toggleSleepShortcut', 'toggleVolumeShortcut',
     'toggleWakeOnConnect', 'mountPicoBootloader', 'flashPicoFirmware', 'nukePicoFlash', 'openExternal'
   ];
@@ -78,7 +80,11 @@ function createActions(): SettingsPageActions & Record<string, ReturnType<typeof
     forgetWakeOnLan: vi.fn(),
     cancelWakeOnLan: vi.fn()
   };
-  return { ...Object.fromEntries(names.map((name) => [name, vi.fn()])), wakeOnLan } as never;
+  return {
+    ...Object.fromEntries(names.map((name) => [name, vi.fn()])),
+    listRenderEndpoints: vi.fn(async () => []),
+    wakeOnLan
+  } as never;
 }
 
 function Harness({ model, actions, onBack = vi.fn(), focusTarget = null }: {
