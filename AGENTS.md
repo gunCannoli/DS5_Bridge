@@ -2,6 +2,8 @@
 
 Working agreement for AI-assisted work on this fork (`gunCannoli/DS5_Bridge`).
 
+> **v2.0.1 port (2026-10-29):** upstream now ships its own Wake-on-LAN, so this fork no longer carries `wolwifi`. The fork's custom features and the port runbook live in `Features-Port.md` (repo root, by explicit request). Sections below that describe `wolwifi`, `ENABLE_WOLWIFI`, the `smoke` variant and `-wol-` file names are historical until they are rewritten.
+
 ## Purpose of this fork
 
 This fork exists to develop **Wake-on-LAN over Wi-Fi** as an optional, isolated
