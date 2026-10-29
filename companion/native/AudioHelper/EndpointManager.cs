@@ -609,6 +609,14 @@ sealed class EndpointManager
             throw new InvalidOperationException(
                 "remote-session: Remote Desktop controls audio output in this session; the default render endpoint can't be changed.");
         }
+        // LOCAL-ONLY: re-issuing SetDefaultEndpoint for the endpoint that already
+        // holds every role still fires a default-changed notification, which can
+        // make apps rebuild (and silently lose) their streams. Skip it.
+        if (HoldsAllDefaultRenderRoles(device))
+        {
+            Console.Error.WriteLine($"status: default-render-unchanged device='{device.FriendlyName}'");
+            return;
+        }
 #pragma warning disable CA1416
         var policyConfigType = Type.GetTypeFromCLSID(PolicyConfigClientId)
             ?? throw new InvalidOperationException("Windows audio policy configuration is unavailable.");
@@ -622,6 +630,28 @@ sealed class EndpointManager
             {
                 Marshal.ThrowExceptionForHR(result);
             }
+        }
+    }
+
+    private static bool HoldsAllDefaultRenderRoles(MMDevice device)
+    {
+        try
+        {
+            using var enumerator = new MMDeviceEnumerator();
+            foreach (var role in DefaultRenderRoles)
+            {
+                using var current = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, role);
+                if (!string.Equals(current.ID, device.ID, StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+        catch
+        {
+            // No default endpoint at all (or lookup failed): go ahead and set it.
+            return false;
         }
     }
 
