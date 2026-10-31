@@ -1908,7 +1908,7 @@ describe('BridgeService', () => {
       });
       const device = new MockHidDevice();
       device.status = statusReport({ controllerConnected: true, hostPersonaMode: 'dualsense' });
-      device.audioStatusReports = [audioStatusReport({ headsetPlugged: false })];
+      device.audioStatusReports = [audioStatusReport({ controllerStateReady: true, headsetPlugged: false })];
       hidMock.state.devicesList = [companionDeviceInfo()];
       hidMock.state.openDevices.set('companion-path', device);
       const mocks = attachRenderMocks(service);
@@ -1921,27 +1921,27 @@ describe('BridgeService', () => {
 
       // Headset plugged in: needs to hold for the debounce window AND the
       // plug settle window before acting.
-      device.audioStatusReports = [audioStatusReport({ headsetPlugged: true })];
+      device.audioStatusReports = [audioStatusReport({ controllerStateReady: true, headsetPlugged: true })];
       await poll(service);
       expect(mocks.setDefaultRenderBridgeEndpoint).not.toHaveBeenCalled();
 
-      device.audioStatusReports = [audioStatusReport({ headsetPlugged: true })];
+      device.audioStatusReports = [audioStatusReport({ controllerStateReady: true, headsetPlugged: true })];
       await poll(service);
       // Debounce satisfied, but the settle window has not elapsed yet.
       expect(mocks.setDefaultRenderBridgeEndpoint).not.toHaveBeenCalled();
 
       advancePastPlugSettle();
-      device.audioStatusReports = [audioStatusReport({ headsetPlugged: true })];
+      device.audioStatusReports = [audioStatusReport({ controllerStateReady: true, headsetPlugged: true })];
       await poll(service);
       expect(mocks.setDefaultRenderBridgeEndpoint).toHaveBeenCalledOnce();
       expect(mocks.setDefaultRenderBridgeEndpoint).toHaveBeenCalledWith('dualsense');
 
       // Unplug: again debounced, then routes back to the fallback.
       mocks.setDefaultRenderEndpointByName.mockClear();
-      device.audioStatusReports = [audioStatusReport({ headsetPlugged: false })];
+      device.audioStatusReports = [audioStatusReport({ controllerStateReady: true, headsetPlugged: false })];
       await poll(service);
       expect(mocks.setDefaultRenderEndpointByName).not.toHaveBeenCalled();
-      device.audioStatusReports = [audioStatusReport({ headsetPlugged: false })];
+      device.audioStatusReports = [audioStatusReport({ controllerStateReady: true, headsetPlugged: false })];
       await poll(service);
       expect(mocks.setDefaultRenderEndpointByName).toHaveBeenCalledOnce();
     });
@@ -1951,9 +1951,9 @@ describe('BridgeService', () => {
       const device = new MockHidDevice();
       device.status = statusReport({ controllerConnected: true });
       device.audioStatusReports = [
-        audioStatusReport({ headsetPlugged: false }),
-        audioStatusReport({ headsetPlugged: true }),
-        audioStatusReport({ headsetPlugged: true })
+        audioStatusReport({ controllerStateReady: true, headsetPlugged: false }),
+        audioStatusReport({ controllerStateReady: true, headsetPlugged: true }),
+        audioStatusReport({ controllerStateReady: true, headsetPlugged: true })
       ];
       hidMock.state.devicesList = [companionDeviceInfo()];
       hidMock.state.openDevices.set('companion-path', device);
@@ -1973,7 +1973,7 @@ describe('BridgeService', () => {
       });
       const device = new MockHidDevice();
       device.status = statusReport({ controllerConnected: true, hostPersonaMode: 'dualsense' });
-      device.audioStatusReports = [audioStatusReport({ headsetPlugged: false })];
+      device.audioStatusReports = [audioStatusReport({ controllerStateReady: true, headsetPlugged: false })];
       hidMock.state.devicesList = [companionDeviceInfo()];
       hidMock.state.openDevices.set('companion-path', device);
       const mocks = attachRenderMocks(service);
@@ -1990,8 +1990,8 @@ describe('BridgeService', () => {
       const device = new MockHidDevice();
       device.status = statusReport({ controllerConnected: true, hostPersonaMode: 'dualsense' });
       device.audioStatusReports = [
-        audioStatusReport({ headsetPlugged: false }),
-        audioStatusReport({ headsetPlugged: false })
+        audioStatusReport({ controllerStateReady: true, headsetPlugged: false }),
+        audioStatusReport({ controllerStateReady: true, headsetPlugged: false })
       ];
       hidMock.state.devicesList = [companionDeviceInfo()];
       hidMock.state.openDevices.set('companion-path', device);
@@ -2014,7 +2014,7 @@ describe('BridgeService', () => {
       });
       const device = new MockHidDevice();
       device.status = statusReport({ controllerConnected: true, hostPersonaMode: 'dualsense' });
-      device.audioStatusReports = [audioStatusReport({ headsetPlugged: false })];
+      device.audioStatusReports = [audioStatusReport({ controllerStateReady: true, headsetPlugged: false })];
       hidMock.state.devicesList = [companionDeviceInfo()];
       hidMock.state.openDevices.set('companion-path', device);
       const mocks = attachRenderMocks(service);
@@ -2025,12 +2025,12 @@ describe('BridgeService', () => {
       // Windows promoted the controller again; the empty-jack correction path
       // (getDefaultRenderEndpointStatus -> isBridgeEndpoint -> re-route) fires
       // -- rate-limited to one check per ~2s, not every poll.
-      device.audioStatusReports = [audioStatusReport({ headsetPlugged: false })];
+      device.audioStatusReports = [audioStatusReport({ controllerStateReady: true, headsetPlugged: false })];
       await poll(service);
       expect(mocks.getDefaultRenderEndpointStatus).not.toHaveBeenCalled();
 
       clockOffsetMs += 2500;
-      device.audioStatusReports = [audioStatusReport({ headsetPlugged: false })];
+      device.audioStatusReports = [audioStatusReport({ controllerStateReady: true, headsetPlugged: false })];
       await poll(service);
       expect(mocks.getDefaultRenderEndpointStatus).toHaveBeenCalledOnce();
       expect(mocks.setDefaultRenderEndpointByName).toHaveBeenCalledOnce();
@@ -2044,7 +2044,7 @@ describe('BridgeService', () => {
       });
       const device = new MockHidDevice();
       device.status = statusReport({ controllerConnected: true, hostPersonaMode: 'dualsense' });
-      device.audioStatusReports = [audioStatusReport({ headsetPlugged: false })];
+      device.audioStatusReports = [audioStatusReport({ controllerStateReady: true, headsetPlugged: false })];
       hidMock.state.devicesList = [companionDeviceInfo()];
       hidMock.state.openDevices.set('companion-path', device);
       const mocks = attachRenderMocks(service);
@@ -2065,7 +2065,7 @@ describe('BridgeService', () => {
       });
       const device = new MockHidDevice();
       device.status = statusReport({ controllerConnected: true, hostPersonaMode: 'dualsense' });
-      device.audioStatusReports = [audioStatusReport({ headsetPlugged: false })];
+      device.audioStatusReports = [audioStatusReport({ controllerStateReady: true, headsetPlugged: false })];
       hidMock.state.devicesList = [companionDeviceInfo()];
       hidMock.state.openDevices.set('companion-path', device);
       const mocks = attachRenderMocks(service);
@@ -2089,14 +2089,14 @@ describe('BridgeService', () => {
       );
 
       for (let i = 0; i < 4; i += 1) {
-        device.audioStatusReports = [audioStatusReport({ headsetPlugged: false })];
+        device.audioStatusReports = [audioStatusReport({ controllerStateReady: true, headsetPlugged: false })];
         await poll(service);
       }
       expect(mocks.setDefaultRenderEndpointByName).toHaveBeenCalledOnce();
 
       clockOffsetMs += 10_500;
       mocks.setDefaultRenderEndpointByName.mockResolvedValue(undefined);
-      device.audioStatusReports = [audioStatusReport({ headsetPlugged: false })];
+      device.audioStatusReports = [audioStatusReport({ controllerStateReady: true, headsetPlugged: false })];
       await poll(service);
       expect(mocks.setDefaultRenderEndpointByName).toHaveBeenCalledTimes(2);
     });
@@ -2108,21 +2108,21 @@ describe('BridgeService', () => {
       });
       const device = new MockHidDevice();
       device.status = statusReport({ controllerConnected: true, hostPersonaMode: 'dualsense' });
-      device.audioStatusReports = [audioStatusReport({ headsetPlugged: true })];
+      device.audioStatusReports = [audioStatusReport({ controllerStateReady: true, headsetPlugged: true })];
       hidMock.state.devicesList = [companionDeviceInfo()];
       hidMock.state.openDevices.set('companion-path', device);
       const mocks = attachRenderMocks(service);
 
       await poll(service); // starts the plug settle window
       advancePastPlugSettle();
-      device.audioStatusReports = [audioStatusReport({ headsetPlugged: true })];
+      device.audioStatusReports = [audioStatusReport({ controllerStateReady: true, headsetPlugged: true })];
       await poll(service);
       expect(mocks.setDefaultRenderBridgeEndpoint).toHaveBeenCalledOnce();
 
       // Controller powers off; the firmware's jack bit stays latched "plugged".
       device.status = statusReport({ controllerConnected: false, hostPersonaMode: 'dualsense' });
       for (let i = 0; i < 2; i += 1) {
-        device.audioStatusReports = [audioStatusReport({ headsetPlugged: true })];
+        device.audioStatusReports = [audioStatusReport({ controllerStateReady: true, headsetPlugged: true })];
         await poll(service);
       }
       expect(mocks.setDefaultRenderEndpointByName).toHaveBeenCalledOnce();
@@ -2136,7 +2136,7 @@ describe('BridgeService', () => {
       });
       const device = new MockHidDevice();
       device.status = statusReport({ controllerConnected: true });
-      device.audioStatusReports = [audioStatusReport({ headsetPlugged: false })];
+      device.audioStatusReports = [audioStatusReport({ controllerStateReady: true, headsetPlugged: false })];
       hidMock.state.devicesList = [companionDeviceInfo()];
       hidMock.state.openDevices.set('companion-path', device);
       const mocks = attachRenderMocks(service);

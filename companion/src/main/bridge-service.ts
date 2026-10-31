@@ -220,6 +220,12 @@ const HEADSET_AUDIO_SWITCH_FAILURE_BACKOFF_MS = 10_000;
 // While the jack is empty, how often to check whether Windows has made the
 // controller the default again (each check spawns the helper).
 const HEADSET_AUDIO_EMPTY_JACK_CHECK_INTERVAL_MS = 2000;
+// After the jack is seen plugged (e.g. the controller paired with a headset
+// already in), the first switch can land before Windows/USB audio finished
+// enumerating and get overridden. For this long after the plug, keep verifying
+// that the controller really is the default render endpoint and re-apply it.
+// Bounded so a deliberate manual output change later is not fought.
+const HEADSET_AUDIO_PLUG_VERIFY_WINDOW_MS = 30_000;
 // Max age of the cached endpoint list used to auto-resolve the fallback;
 // outputs come and go (RDP, TV power, USB DACs) while the app runs.
 const HEADSET_AUDIO_ENDPOINT_CACHE_MAX_AGE_MS = 30_000;
@@ -2642,9 +2648,15 @@ export class BridgeService extends EventEmitter {
       await this.refreshRenderEndpointCache();
     }
 
-    if (this.resolveHeadsetAudioFallbacks(settings).length === 0) {
-      // Toggle on but nothing usable to fall back to (0 or 2+ other outputs and
-      // no explicit pick). Stay idle without churning the acted-state.
+    // Right after pairing the firmware has not yet received an input report,
+    // so the jack bit reads "empty" even with a headset in. Acting on that
+    // would route away to the fallback (and the empty-jack correction would
+    // fight Windows promoting the controller) before the real state arrives.
+    // Wait for the first input report before evaluating anything.
+    if (this.snapshot.status?.controllerConnected && !this.audioStatus.controllerStateReady) {
+      this.headsetJackPending = null;
+      this.headsetJackPendingCount = 0;
+      this.headsetJackPluggedSince = null;
       return;
     }
 
@@ -2660,6 +2672,14 @@ export class BridgeService extends EventEmitter {
       this.headsetJackPluggedSince ??= Date.now();
     } else {
       this.headsetJackPluggedSince = null;
+    }
+
+    // Plugging in only needs the controller endpoint, so it works with no
+    // fallback. Routing away needs one: with the fallback on Auto and 0 or 2+
+    // other outputs (e.g. TV plus Steam Streaming Speakers) there is nothing
+    // usable, so stay idle on an empty jack without churning the acted-state.
+    if (!jackPlugged && this.resolveHeadsetAudioFallbacks(settings).length === 0) {
+      return;
     }
 
     // Debounce transitions only: a *changed* jack state must hold across N
@@ -2704,6 +2724,14 @@ export class BridgeService extends EventEmitter {
       ) {
         this.headsetAudioLastEmptyJackCheckAt = Date.now();
         await this.correctDefaultRenderIfBridgeWhileJackEmpty(settings);
+      } else if (
+        jackPlugged
+        && this.headsetJackPluggedSince !== null
+        && Date.now() - this.headsetJackPluggedSince < HEADSET_AUDIO_PLUG_VERIFY_WINDOW_MS
+        && Date.now() - this.headsetAudioLastEmptyJackCheckAt >= HEADSET_AUDIO_EMPTY_JACK_CHECK_INTERVAL_MS
+      ) {
+        this.headsetAudioLastEmptyJackCheckAt = Date.now();
+        await this.correctDefaultRenderIfNotBridgeWhileJackPlugged(settings);
       }
       return;
     }
@@ -2713,6 +2741,7 @@ export class BridgeService extends EventEmitter {
     try {
       if (jackPlugged) {
         await this.setDefaultRenderBridgeEndpoint(settings.hostPersonaMode);
+        this.headsetAudioLastEmptyJackCheckAt = Date.now();
         this.appendAudioDebugLines(['[AutoSwitchAudio] jack plugged -> default render = controller']);
       } else {
         const fallbacks = await this.switchDefaultRenderToFallback(settings);
@@ -2764,6 +2793,32 @@ export class BridgeService extends EventEmitter {
       const message = error instanceof Error ? error.message : String(error);
       this.appendAudioDebugLines([
         `[AutoSwitchAudio] empty-jack correction failed, retry in `
+          + `${HEADSET_AUDIO_SWITCH_FAILURE_BACKOFF_MS / 1000}s: ${message}`
+      ]);
+      this.headsetAudioRetryAt = Date.now() + HEADSET_AUDIO_SWITCH_FAILURE_BACKOFF_MS;
+    } finally {
+      this.headsetAudioSwitchInFlight = false;
+    }
+  }
+
+  // Plugged-side twin of correctDefaultRenderIfBridgeWhileJackEmpty: if the
+  // first switch to the controller didn't stick (Windows still enumerating the
+  // controller's audio after pairing), re-apply it.
+  private async correctDefaultRenderIfNotBridgeWhileJackPlugged(settings: CompanionSettings): Promise<void> {
+    this.headsetAudioSwitchInFlight = true;
+    try {
+      const status = await this.getDefaultRenderEndpointStatus();
+      if (status.isBridgeEndpoint) {
+        return;
+      }
+      await this.setDefaultRenderBridgeEndpoint(settings.hostPersonaMode);
+      this.appendAudioDebugLines([
+        '[AutoSwitchAudio] jack plugged but controller was not default -> re-applied controller'
+      ]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.appendAudioDebugLines([
+        `[AutoSwitchAudio] plugged-jack correction failed, retry in `
           + `${HEADSET_AUDIO_SWITCH_FAILURE_BACKOFF_MS / 1000}s: ${message}`
       ]);
       this.headsetAudioRetryAt = Date.now() + HEADSET_AUDIO_SWITCH_FAILURE_BACKOFF_MS;
