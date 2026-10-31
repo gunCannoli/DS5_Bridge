@@ -8,6 +8,17 @@ Architecture/known-issue knowledge that should inform future work lives in
 
 ---
 
+## 2026-10-31 — Auto Switch Audio: now works when the headset is already plugged at pairing
+
+Symptom: with the jack already in when the controller paired, output stayed
+on the TV until the jack was replugged. Causes: (1) fallback on Auto with 2+
+other outputs idled the whole feature, including plug-to-controller; (2) the
+jack bit reads empty until the first input report, so the app routed away
+right after pairing; (3) a switch made too early could be reverted by Windows
+and was never re-checked. Fixes and details: `Features-Port.md` §4 and
+`CUSTOM.md` §10.3. Also dropped `baseUrl` from `companion/tsconfig.json`
+(deprecated in newer TypeScript; `paths` made `./`-relative).
+
 ## 2026-10-07 — Auto Switch Audio: fixed "unplug leaves the controller as default" + AudioHelper crash storm
 
 **Symptom:** sometimes, after the headset came out of the jack, Windows kept

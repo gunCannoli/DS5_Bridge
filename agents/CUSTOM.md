@@ -453,17 +453,24 @@ await this.syncHeadsetAudioAutoSwitch(settings);   // <-- ADD
 2. Early-return if not `connected`, no `audioStatus`, a switch is in flight,
    inside the failure backoff (`headsetAudioRetryAt`), RDP is active, or a host-persona transition / `hostPersonaDefaultRenderRestore`
    is in flight.
+2b. If the controller is connected but `audioStatus.controllerStateReady` is
+   false (no input report yet, jack bit unreliable), reset pending state and
+   return.
 3. If the toggle is on but no explicit fallback is set and
    `cachedRenderEndpoints` is empty or older than 30 s, refresh it
    (`refreshRenderEndpointCache()`).
 4. `resolveHeadsetAudioFallbacks()` → `[explicit, ...other non-bridge]`, or
-   `[the sole non-bridge endpoint]`, or `[]`. If `[]`, stay idle. Effective
+   `[the sole non-bridge endpoint]`, or `[]`. If `[]`, stay idle **only while
+   the jack is empty** (plugging in needs no fallback). Effective
    jack = `headsetPlugged && status.controllerConnected`.
 5. Debounce: track `headsetJackPending`/`PendingCount`; a *changed*
    `headsetPlugged` must hold `HEADSET_AUDIO_JACK_DEBOUNCE_POLLS` (=2) polls.
    The first evaluation (`headsetJackActedState === null`) is applied
    immediately.
 6. If `headsetJackActedState === jackPlugged`: already on target. If the jack
+   is plugged and within `HEADSET_AUDIO_PLUG_VERIFY_WINDOW_MS` (30 s) of the
+   plug, at most every 2 s run `correctDefaultRenderIfNotBridgeWhileJackPlugged`
+   (re-apply the controller if it is not default). If the jack
    is empty, at most every 2 s run `correctDefaultRenderIfBridgeWhileJackEmpty`
    (queries the current default; re-routes only if it's the bridge endpoint).
 7. Otherwise set `headsetJackActedState`, then:

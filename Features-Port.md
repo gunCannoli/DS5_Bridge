@@ -173,6 +173,30 @@ Re-apply map for v2.0.1 (file names verified present on the tag):
 | CSS | feature stylesheet, not `styles.css` | **Drop** the full-window preferences modal and the LOCAL-ONLY `:disabled` block: the settings UI no longer has that modal. |
 | Tests | `bridge-service.test.ts`, `ipc-contract.test.ts` | Reuse the `describe('Auto Switch Audio on Jack')` block (6 tests + the baseline fixture field). |
 
+**Connect-time fixes (2026-10-31, found on v2.0.1; carry them with the port).**
+Plugging the headset in *before* the controller pairs did not switch audio.
+Three causes, three changes, all in `syncHeadsetAudioAutoSwitch()`:
+
+1. **Plug does not need a fallback.** With the fallback on Auto and 0 or 2+
+   other outputs (TV plus Steam Streaming Speakers) the old early return
+   idled the whole feature. Now only the *empty-jack* direction needs a
+   resolved fallback; plugging always routes to the controller.
+2. **Wait for `audioStatus.controllerStateReady`.** Right after pairing the
+   firmware has no input report yet, so the jack bit reads empty. Do not
+   evaluate (and reset the pending/plugged-since state) until it is ready.
+3. **Re-verify after a plug.** For `HEADSET_AUDIO_PLUG_VERIFY_WINDOW_MS`
+   (30 s) after the plug, every 2 s check the default render endpoint and
+   re-apply the controller if Windows moved it
+   (`correctDefaultRenderIfNotBridgeWhileJackPlugged`). Bounded so a manual
+   output change later is not fought.
+
+Tests: the `Auto Switch Audio on Jack` fixtures must pass
+`controllerStateReady: true` to `audioStatusReport(...)`.
+
+Note: on v2.0.1 firmware the jack bit is *not* latched after disconnect
+(`src/audio.cpp` resets `plug_headset` on disconnect); the
+`&& controllerConnected` guard is kept anyway.
+
 Signal check on the new firmware: `headsetPlugged` is still
 `(routeFlags & 0x01)` in `protocol.ts`. Re-verify the firmware side still
 passes input byte 53 bit 0 through unfiltered before relying on the debounce
