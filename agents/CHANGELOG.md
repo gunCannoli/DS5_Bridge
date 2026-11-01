@@ -8,6 +8,19 @@ Architecture/known-issue knowledge that should inform future work lives in
 
 ---
 
+## 2026-10-31 — Auto Switch Audio: eliminated steady-state polling churn and conhost micro-stuttering
+
+Symptom: with headsetAudioAutoSwitchEnabled on, DS5 Bridge.exe spawned
+AudioHelper.exe and conhost.exe 0x4 every 2 s in an unthrottled loop whenever
+the 3.5 mm jack was empty, causing background process churn and desktop/game
+micro-stuttering. Cause: unlike the plugged verification window (PLUG_VERIFY_WINDOW_MS = 30_000),
+the empty-jack check (correctDefaultRenderIfBridgeWhileJackEmpty) had no bounding
+window and ran continuously. Fix: symmetrically bounded empty-jack verification to
+HEADSET_AUDIO_UNPLUG_VERIFY_WINDOW_MS = 30_000 via headsetJackUnpluggedSince.
+In steady state (after 30 s), background helper polling ceases completely (0 checks/s),
+dropping background process overhead to zero while preserving immediate switching on
+headset plug and unplug.
+
 ## 2026-10-31 — Auto Switch Audio: now works when the headset is already plugged at pairing
 
 Symptom: with the jack already in when the controller paired, output stayed

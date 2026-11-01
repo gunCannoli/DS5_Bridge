@@ -226,6 +226,12 @@ const HEADSET_AUDIO_EMPTY_JACK_CHECK_INTERVAL_MS = 2000;
 // that the controller really is the default render endpoint and re-apply it.
 // Bounded so a deliberate manual output change later is not fought.
 const HEADSET_AUDIO_PLUG_VERIFY_WINDOW_MS = 30_000;
+// Symmetrical verification window while the jack is empty (e.g. controller paired
+// with no headset, or headset just unplugged). Windows can asynchronously
+// promote the controller during USB audio enumeration, but once that initial
+// window passes Windows will not re-promote it in steady state. Bounding this
+// window completely eliminates steady-state background helper/conhost process churn.
+const HEADSET_AUDIO_UNPLUG_VERIFY_WINDOW_MS = 30_000;
 // Max age of the cached endpoint list used to auto-resolve the fallback;
 // outputs come and go (RDP, TV power, USB DACs) while the app runs.
 const HEADSET_AUDIO_ENDPOINT_CACHE_MAX_AGE_MS = 30_000;
@@ -1426,6 +1432,7 @@ export class BridgeService extends EventEmitter {
   // window to stabilise. Unplug still acts immediately (nothing to protect
   // when routing away).
   private headsetJackPluggedSince: number | null = null;
+  private headsetJackUnpluggedSince: number | null = null;
   // Cache of active render endpoints (name + isBridge) from the last
   // listRenderEndpoints() call -- used both for the settings dropdown and to
   // auto-resolve the fallback when there's exactly one non-controller output.
@@ -2618,6 +2625,7 @@ export class BridgeService extends EventEmitter {
       this.headsetJackPending = null;
       this.headsetJackPendingCount = 0;
       this.headsetJackPluggedSince = null;
+      this.headsetJackUnpluggedSince = null;
       this.headsetAudioRetryAt = 0;
       return;
     }
@@ -2657,6 +2665,7 @@ export class BridgeService extends EventEmitter {
       this.headsetJackPending = null;
       this.headsetJackPendingCount = 0;
       this.headsetJackPluggedSince = null;
+      this.headsetJackUnpluggedSince = null;
       return;
     }
 
@@ -2670,7 +2679,9 @@ export class BridgeService extends EventEmitter {
     // below). Cleared the moment the jack reads empty.
     if (jackPlugged) {
       this.headsetJackPluggedSince ??= Date.now();
+      this.headsetJackUnpluggedSince = null;
     } else {
+      this.headsetJackUnpluggedSince ??= Date.now();
       this.headsetJackPluggedSince = null;
     }
 
@@ -2717,9 +2728,12 @@ export class BridgeService extends EventEmitter {
     if (this.headsetJackActedState === jackPlugged) {
       // Already on the right target for this jack state -- but if the jack is
       // empty and Windows has since made the controller default again, pull
-      // it back to the fallback.
+      // it back to the fallback (bounded by HEADSET_AUDIO_UNPLUG_VERIFY_WINDOW_MS
+      // so steady state never polls background processes).
       if (
         !jackPlugged
+        && this.headsetJackUnpluggedSince !== null
+        && Date.now() - this.headsetJackUnpluggedSince < HEADSET_AUDIO_UNPLUG_VERIFY_WINDOW_MS
         && Date.now() - this.headsetAudioLastEmptyJackCheckAt >= HEADSET_AUDIO_EMPTY_JACK_CHECK_INTERVAL_MS
       ) {
         this.headsetAudioLastEmptyJackCheckAt = Date.now();
@@ -5699,6 +5713,7 @@ export class BridgeService extends EventEmitter {
     this.headsetJackPending = null;
     this.headsetJackPendingCount = 0;
     this.headsetJackPluggedSince = null;
+    this.headsetJackUnpluggedSince = null;
     this.headsetAudioRetryAt = 0;
     this.headsetAudioLastEmptyJackCheckAt = 0;
     this.systemAudioHapticsPassthroughActive = false;

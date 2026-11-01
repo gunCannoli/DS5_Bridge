@@ -471,8 +471,10 @@ await this.syncHeadsetAudioAutoSwitch(settings);   // <-- ADD
    is plugged and within `HEADSET_AUDIO_PLUG_VERIFY_WINDOW_MS` (30 s) of the
    plug, at most every 2 s run `correctDefaultRenderIfNotBridgeWhileJackPlugged`
    (re-apply the controller if it is not default). If the jack
-   is empty, at most every 2 s run `correctDefaultRenderIfBridgeWhileJackEmpty`
+   is empty and within `HEADSET_AUDIO_UNPLUG_VERIFY_WINDOW_MS` (30 s) of the
+   unplug/connect, at most every 2 s run `correctDefaultRenderIfBridgeWhileJackEmpty`
    (queries the current default; re-routes only if it's the bridge endpoint).
+   After 30 s, steady-state background polling stops completely.
 7. Otherwise set `headsetJackActedState`, then:
    - jack plugged → `this.setDefaultRenderBridgeEndpoint(settings.hostPersonaMode)`
    - jack empty → `switchDefaultRenderToFallback()` (rescan endpoints, then

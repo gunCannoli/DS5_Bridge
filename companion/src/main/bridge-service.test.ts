@@ -2035,6 +2035,14 @@ describe('BridgeService', () => {
       expect(mocks.getDefaultRenderEndpointStatus).toHaveBeenCalledOnce();
       expect(mocks.setDefaultRenderEndpointByName).toHaveBeenCalledOnce();
       expect(mocks.setDefaultRenderEndpointByName).toHaveBeenCalledWith([FALLBACK]);
+
+      // After the empty-jack verify window (30s) elapses, background verification stops
+      // completely so steady state never churns helper/conhost processes.
+      mocks.getDefaultRenderEndpointStatus.mockClear();
+      clockOffsetMs += 35_000;
+      device.audioStatusReports = [audioStatusReport({ controllerStateReady: true, headsetPlugged: false })];
+      await poll(service);
+      expect(mocks.getDefaultRenderEndpointStatus).not.toHaveBeenCalled();
     });
 
     it('routes to an output that exists now, not one cached during an RDP session', async () => {

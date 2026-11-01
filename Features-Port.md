@@ -166,16 +166,17 @@ Re-apply map for v2.0.1 (file names verified present on the tag):
 | AudioHelper verbs `--set-default-render`, `--list-render-endpoints`, `IsRemoteSession`, clean-exit wrapper | `companion/native/AudioHelper/EndpointManager.cs`, `Program.cs` | Upstream still has `--default-render-status` / `--set-default-render-bridge`. `Program.cs` arg parsing moved (now ~line 2900+); add cases next to those two. Upstream added `--list-physical-ethernet-adapters` / `--wake-on-lan-readiness`; do not disturb them. |
 | TS wrappers | `companion/src/main/audio-helper.ts` | Add `setDefaultRenderEndpointByName`, `listRenderEndpoints`, `RenderEndpointInfo`. |
 | Settings fields | `shared/types.ts`, `main/settings-store.ts` | **New in 2.0: per-bridge settings workspaces** (`settings-bridge-workspaces.ts`). Decide whether these two fields are global or per-bridge. They were global on v1.7.1; keep global unless the workspace code forces otherwise. |
-| Poll hook + feature block | `main/bridge-service.ts` | Hook after `syncControllerPowerSavingState` in `poll()` (method still exists, plus `hostPersonaDefaultRenderRestore`, `setDefaultRenderBridgeEndpoint`, `closeDevice`). Re-read each, since 2.0 changed persona-switch behaviour. |
+| Poll hook + feature block | `main/bridge-service.ts` | Hook after `syncControllerPowerSavingState` in `poll()` (method still exists, plus `hostPersonaDefaultRenderRestore`, `setDefaultRenderBridgeEndpoint`, `closeDevice`). Re-read each, since 2.0 changed persona-switch behaviour. **Ensure both verify windows (`PLUG_VERIFY_WINDOW_MS` and `UNPLUG_VERIFY_WINDOW_MS`) are bounded to 30 s so steady-state polling never spawns background processes.** |
 | IPC | `main/main.ts`, `preload.ts` | 3 channels. Check the new IPC contract test style before adding. |
 | UI | `renderer/features/settings/ControllerBridgeSettings.tsx` (`ConnectionPowerSettings`) | Replaces the old `App.tsx` "Power & Controller" column. New rows must use `SearchableSetting` + a stable id so the settings search finds them. Fallback dropdown uses `components/CustomSelect`. |
 | Strings | `renderer/common/localization/catalogs.ts` | Eight more languages now exist. Check whether a missing key fails a test or falls back to English before deciding how much to translate. |
 | CSS | feature stylesheet, not `styles.css` | **Drop** the full-window preferences modal and the LOCAL-ONLY `:disabled` block: the settings UI no longer has that modal. |
 | Tests | `bridge-service.test.ts`, `ipc-contract.test.ts` | Reuse the `describe('Auto Switch Audio on Jack')` block (6 tests + the baseline fixture field). |
 
-**Connect-time fixes (2026-10-31, found on v2.0.1; carry them with the port).**
-Plugging the headset in *before* the controller pairs did not switch audio.
-Three causes, three changes, all in `syncHeadsetAudioAutoSwitch()`:
+**Connect-time and performance fixes (2026-10-31, found on v2.0.1; carry them with the port).**
+Plugging the headset in *before* the controller pairs did not switch audio, and
+an unbounded empty-jack verification loop caused micro-stuttering.
+Four causes, four changes, all in `syncHeadsetAudioAutoSwitch()`:
 
 1. **Plug does not need a fallback.** With the fallback on Auto and 0 or 2+
    other outputs (TV plus Steam Streaming Speakers) the old early return
@@ -189,9 +190,41 @@ Three causes, three changes, all in `syncHeadsetAudioAutoSwitch()`:
    re-apply the controller if Windows moved it
    (`correctDefaultRenderIfNotBridgeWhileJackPlugged`). Bounded so a manual
    output change later is not fought.
+4. **Bounded empty-jack verification window (CRITICAL FOR PERFORMANCE):**
+   Previously, while the jack was empty (`!jackPlugged`), `correctDefaultRenderIfBridgeWhileJackEmpty`
+   polled every 2 s indefinitely, spawning `AudioHelper.exe` and `conhost.exe 0x4`
+   continuously in the background and causing desktop/game micro-stuttering.
+   Now bounded by `HEADSET_AUDIO_UNPLUG_VERIFY_WINDOW_MS` (30 s) via `headsetJackUnpluggedSince`
+   (matching the plug verification window). After the 30-second window following
+   connect or an unplug event, background process polling drops to **0 checks per second**.
+   In steady state, **zero** helper processes are spawned, completely eliminating
+   `conhost.exe` process churn and CPU wakeups.
 
 Tests: the `Auto Switch Audio on Jack` fixtures must pass
-`controllerStateReady: true` to `audioStatusReport(...)`.
+`controllerStateReady: true` to `audioStatusReport(...)`, and assert that background
+polling ceases after 30 s in steady state.
+
+**Known failure mode: Rapid AudioHelper.exe respawn & conhost churn (2026-10-31, resolved):**
+- **Symptom:** Persistent background process churn, frequent `conhost.exe 0x4`
+  creation, and micro-stuttering on the PC every 2–3 seconds while `DS5 Bridge.exe`
+  runs in the background.
+- **Root cause:**
+  - The companion loop polled every 2 seconds (`HEADSET_AUDIO_EMPTY_JACK_CHECK_INTERVAL_MS = 2000`)
+    indefinitely while the jack was empty (`correctDefaultRenderIfBridgeWhileJackEmpty`),
+    unlike the plugged verification window which was bounded to 30 s.
+  - Spawning `AudioHelper.exe` (a Windows CUI console binary) spawned a new `conhost.exe`
+    process every 2 seconds throughout the entire session.
+  - When the fallback endpoint was set to `'Remote Audio'` (an endpoint that only exists
+    during an active Remote Desktop/RDP session), `EndpointManager.SetDefaultRenderEndpointByName`
+    threw `InvalidOperationException: No active render endpoint matched any of ['Remote Audio']`,
+    causing rapid retry cycles.
+- **Resolution implemented in code:**
+  - Symmetrically bounded the empty-jack verification window with
+    `HEADSET_AUDIO_UNPLUG_VERIFY_WINDOW_MS = 30_000` using `headsetJackUnpluggedSince`.
+  - In steady state (30 seconds after controller connect or a plug/unplug event), background
+    polling ceases completely (0 helper invocations, 0 conhost spawns).
+  - Maintained instant, reliable automatic audio switching to controller on headset plug
+    and back to fallback on unplug. Unit tests in `bridge-service.test.ts` updated and passing.
 
 Note: on v2.0.1 firmware the jack bit is *not* latched after disconnect
 (`src/audio.cpp` resets `plug_headset` on disconnect); the
@@ -350,6 +383,7 @@ Decide after the §3.4 smoke test whether the missing feedback actually hurts.
 | Release | Date | Outcome |
 |---|---|---|
 | v2.0.1 | 2026-10-29 | Port in progress on branch `port/v2.0.1` (off the tag). Done: WOL switched to upstream's (ours not carried); audio-aware idle disconnect (`bt.cpp` + test); regulator reset; Auto Switch Audio on Jack (AudioHelper, service, IPC, new settings row, all 8 locale catalogs); display-aware idle disconnect; fork tooling (`build-firmware.ps1` without `smoke`, `package:win:local`). Host firmware tests, companion typecheck and 865 vitest tests pass; firmware `final` builds. Pending: hardware smoke test (WOL, jack switch, idle), FIFO re-test (§7), lightbar decision (§7a). |
+| v2.0.1 | 2026-10-31 | Documented connect-time fixes and AudioHelper rapid respawn failure mode (churning conhost.exe every 2 s when targeting missing endpoints like RDP 'Remote Audio' on local console; added immediate workaround, config fix, and code backoff guidelines to §4). |
 
 ---
 
