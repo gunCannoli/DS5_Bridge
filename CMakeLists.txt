@@ -140,6 +140,9 @@ add_executable(ds5-bridge
         src/runtime_fail_fast.cpp
         src/watchdog_telemetry.cpp
         src/wake_on_lan.cpp
+        # LOCAL-ONLY fork patches (Features-Port.md 7a, 7b)
+        src/wake_on_lan_indicator.cpp
+        src/wake_on_lan_udp_frame.cpp
 )
 
 # Third-party archives follow the firmware's exception/RTTI policy instead of

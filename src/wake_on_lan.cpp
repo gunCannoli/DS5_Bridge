@@ -8,6 +8,7 @@
 #ifdef ENABLE_COMPANION
 #include "wake_on_lan_engine.h"
 #include "wake_on_lan_store.h"
+#include "wake_on_lan_udp_frame.h"  // LOCAL-ONLY
 #include "watchdog_telemetry.h"
 #include "pico/cyw43_arch.h"
 extern "C" {
@@ -275,7 +276,11 @@ bool send(const uint8_t *target,void *) {
     uint8_t frame[kFrameSize]; magic_frame(cyw43_state.mac,target,frame);
     WatchdogWindow window(WatchdogMainLoopPhase::WifiSend);
     note_step(RadioStep::Send);
-    const bool sent=cyw43_send_ethernet(&cyw43_state,CYW43_ITF_STA,sizeof(frame),frame,false)==0;
+    bool sent=cyw43_send_ethernet(&cyw43_state,CYW43_ITF_STA,sizeof(frame),frame,false)==0;
+    // LOCAL-ONLY (Features-Port.md 7b): also send the magic packet as a UDP
+    // broadcast frame; APs that drop the raw 0x0842 frame still forward it.
+    uint8_t udp_frame[kUdpFrameSize]; magic_udp_frame(cyw43_state.mac,target,udp_frame);
+    sent=(cyw43_send_ethernet(&cyw43_state,CYW43_ITF_STA,sizeof(udp_frame),udp_frame,false)==0) || sent;
     if (sent && teardown.packets<3) ++teardown.packets;
     return sent;
 }
@@ -388,6 +393,7 @@ uint32_t wake_on_lan_fault_detail() {
 bool wake_on_lan_preparing() { return engine.preparing(); }
 bool wake_on_lan_host_prepared() { return engine.host_prepared(); }
 bool wake_on_lan_armed() { return engine.armed(); }
+bool wake_on_lan_host_starting() { return engine.host_starting(); }  // LOCAL-ONLY
 uint8_t wake_on_lan_command(uint16_t op,const uint8_t *p,size_t n) {
     const uint8_t result=initialized ? engine.command(op,p,n):AckBusy;
     cached_quiet=engine.quiet_gate(); return result;
@@ -406,6 +412,7 @@ uint32_t wake_on_lan_fault_detail() { return 0; }
 bool wake_on_lan_preparing() { return false; }
 bool wake_on_lan_host_prepared() { return false; }
 bool wake_on_lan_armed() { return false; }
+bool wake_on_lan_host_starting() { return false; }  // LOCAL-ONLY
 uint8_t wake_on_lan_command(uint16_t,const uint8_t *,size_t) { return 5; }
 void wake_on_lan_encode_status(uint8_t *p,size_t n) { if (p && n>=64) std::memset(p,0,64); }
 #endif

@@ -40,6 +40,9 @@ bool wake_on_lan_preparing();
 // sleep-disconnect setting instead of forcing a controller power-off.
 bool wake_on_lan_host_prepared();
 bool wake_on_lan_armed();
+// LOCAL-ONLY (Features-Port.md 7a): a wake packet was submitted and the PC has
+// not yet been enumerated for 45 s. Drives the lightbar indicator.
+bool wake_on_lan_host_starting();
 // Uses ordinary companion AckResult values. Extra command bytes include zero
 // padding; encode_status writes all 64 bytes including feature report ID 0x1d.
 uint8_t wake_on_lan_command(uint16_t opcode, const uint8_t *payload, size_t length);

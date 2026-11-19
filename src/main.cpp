@@ -20,6 +20,7 @@
 #include "usb_descriptor_mode.h"
 #include "host_input.h"
 #include "wake_on_lan.h"
+#include "wake_on_lan_indicator.h"  // LOCAL-ONLY
 #include "controller_report.h"
 #include "dualsense_input_decoder.h"
 #include "dualsense_output.h"
@@ -938,10 +939,22 @@ int main() {
     }
 
     if (cyw43_arch_init()) {
-        DS5_LOG("Failed to initialize CYW43\n");
-        return 1;
+        // Returning here hangs the board (the watchdog is not armed yet) until
+        // it is unplugged; reboot instead so the next boot retries.
+        DS5_LOG("Failed to initialize CYW43, rebooting\n");
+        sleep_ms(500);
+        watchdog_reboot(0, 0, 0);
+        while (true) {
+            tight_loop_contents();
+        }
     }
     cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, false);
+
+    // Force the regulator into PWM mode: less 3V3 ripple at light load and no
+    // audible coil whine. Costs a few mA, which a USB-powered bridge can spare.
+#ifdef CYW43_WL_GPIO_SMPS_PIN
+    cyw43_arch_gpio_put(CYW43_WL_GPIO_SMPS_PIN, true);
+#endif
 
     if (watchdog_enable_caused_reboot()) {
         DS5_LOG("Rebooted by Watchdog!\n");
@@ -1046,6 +1059,7 @@ int main() {
         if (!wake_on_lan_quiet_gate()) {
             RUN_MAIN_PHASE(WatchdogMainLoopPhase::Lightbar, {
                 bt_lightbar_loop();
+                wol_indicator_service();  // LOCAL-ONLY (Features-Port.md 7a)
             });
         }
         RUN_MAIN_PHASE(WatchdogMainLoopPhase::Rssi, {

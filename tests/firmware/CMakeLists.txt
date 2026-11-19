@@ -88,6 +88,12 @@ add_executable(wake_on_lan_test
 target_include_directories(wake_on_lan_test PRIVATE ../../src)
 target_compile_definitions(wake_on_lan_test PRIVATE
     DS5_WOL_FIXTURES="${CMAKE_CURRENT_LIST_DIR}/fixtures")
+# LOCAL-ONLY (fork patch, Features-Port.md 7b): UDP-broadcast magic frame.
+add_executable(wake_on_lan_udp_frame_test
+    wake_on_lan_udp_frame_test.cpp
+    ../../src/wake_on_lan_udp_frame.cpp
+)
+target_include_directories(wake_on_lan_udp_frame_test PRIVATE ../../src)
 # The exact Wake-on-LAN fragments compiled into the generated CYW43 copies.
 add_executable(cyw43_wol_guards_test cyw43_wol_guards_test.c)
 add_executable(cyw43_wol_join_test cyw43_wol_join_test.c)
@@ -121,6 +127,7 @@ add_test(NAME controller_input_handoff_test COMMAND controller_input_handoff_tes
 add_test(NAME keyboard_tap_sequencer_test COMMAND keyboard_tap_sequencer_test)
 add_test(NAME bootloader_maintenance_test COMMAND bootloader_maintenance_test)
 add_test(NAME wake_on_lan_test COMMAND wake_on_lan_test)
+add_test(NAME wake_on_lan_udp_frame_test COMMAND wake_on_lan_udp_frame_test)
 add_test(NAME cyw43_wol_guards_test COMMAND cyw43_wol_guards_test)
 add_test(NAME cyw43_wol_inline_join_events_test COMMAND cyw43_wol_join_test events)
 add_test(NAME cyw43_wol_reused_event_buffer_test COMMAND cyw43_wol_join_test mask)

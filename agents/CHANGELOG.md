@@ -8,6 +8,23 @@ Architecture/known-issue knowledge that should inform future work lives in
 
 ---
 
+## 2026-11-07 — Wake-on-LAN: UDP-broadcast magic frame + lightbar indicator (LOCAL-ONLY)
+
+Symptom: upstream v2.0.1 WOL never woke the PC, while a phone app with the same
+IP/MAC did. Upstream sends a raw 0x0842 Ethernet frame; many APs/routers do not
+forward unknown EtherTypes from Wi-Fi to the wired side. Two additive patches
+(full hook list in `Features-Port.md` 7a/7b):
+1. `wake_on_lan_udp_frame.{h,cpp}`: the packet is now also sent as a finished
+   Ethernet+IPv4+UDP(port 9) broadcast frame (source 0.0.0.0, no IP stack). One
+   call-site change in `wake_on_lan.cpp send()`. Host test added.
+2. `wake_on_lan_indicator.{h,cpp}`: lightbar flashes green after a packet was
+   submitted until the PC enumerates the bridge, then solid green until the
+   engine's host-returned rule (45 s) ends, then the old color is restored.
+Build tooling: the `debug` variant now builds with the UART log only (the old
+`all` preset failed the link-time heap check on v2.0.1 even before these
+patches), and `tools/build-firmware.ps1` no longer stages a UF2 when the link
+verification fails. Status: builds, host tests pass; hardware smoke test pending.
+
 ## 2026-10-31 — Auto Switch Audio: eliminated steady-state polling churn and conhost micro-stuttering
 
 Symptom: with headsetAudioAutoSwitchEnabled on, DS5 Bridge.exe spawned

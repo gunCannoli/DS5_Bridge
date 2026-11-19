@@ -29,8 +29,9 @@
 
 .PARAMETER Variant
   final  (default) Release, no diagnostics. Shippable.
-  debug            Release + DS5_DIAGNOSTICS_PRESET=all: 921600-baud UART log of
-                   every BT state transition.
+  debug            Release + UART/BTstack log only (preset custom, ENABLE_DEBUG_LOGS=ON):
+                   921600-baud log of every BT and [WOL] state transition. The
+                   'all' preset no longer fits in RAM on v2.0.1 (heap check fails).
                    Use after a failed smoke test when you need the trace.
 
 .PARAMETER PicoSdkPath
@@ -72,8 +73,13 @@ if (-not $PicoSdkPath) {
 
 switch ($Variant) {
   'final' { $diagPreset = 'off' }
-  'debug' { $diagPreset = 'all' }
+  # 'all' (UART log + audio/trigger/feedback trace buffers) leaves too little
+  # heap on v2.0.1 and fails the link-time headroom check, so 'debug' enables
+  # only the UART/BTstack log, which is what the [WOL] messages need.
+  'debug' { $diagPreset = 'custom' }
 }
+$extraDiagArgs = @()
+if ($Variant -eq 'debug') { $extraDiagArgs = @('-DENABLE_DEBUG_LOGS=ON') }
 
 # Firmware version, e.g. "1.7.1" -> "1.71" for the filename.
 $rawVersion = (Get-Content (Join-Path $repoRoot 'firmware-version.txt') -Raw).Trim()
@@ -99,6 +105,7 @@ if (Test-Path -LiteralPath $rawUf2) {
   -DENABLE_COMPANION=ON `
   -DPICO_NO_COPRO_DIS=1 `
   "-DDS5_DIAGNOSTICS_PRESET=$diagPreset" `
+  @extraDiagArgs `
   "-DPICO_SDK_PATH=$PicoSdkPath"
 if ($LASTEXITCODE -ne 0) { throw "CMake configure failed (exit $LASTEXITCODE)." }
 
@@ -106,8 +113,13 @@ if ($LASTEXITCODE -ne 0) { throw "CMake configure failed (exit $LASTEXITCODE)." 
 # picotool/objcopy post-link chain is fine too, but keep a guard: if it didn't
 # produce a fresh UF2 (objcopy tripped, or this got launched from a bad process
 # tree after all), check the ELF and recover the UF2 rather than aborting.
-& cmake --build $buildDir --target ds5-bridge
+& cmake --build $buildDir --target ds5-bridge 2>&1 | Tee-Object -Variable buildOut
 $buildRc = $LASTEXITCODE
+# A failed link-time verification (heap headroom, SRAM hot paths) is a real
+# failure, not the picotool crash: never "recover" and stage such a build.
+if (($buildOut | Out-String) -match 'verify_\w+:') {
+  throw "Firmware verification failed (see output above); not staging a UF2."
+}
 
 if (-not (Test-Path -LiteralPath $rawElf)) {
   throw "Build failed before producing ds5-bridge.elf (exit $buildRc) -- real compile/link error."

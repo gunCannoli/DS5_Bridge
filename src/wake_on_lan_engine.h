@@ -39,6 +39,8 @@ public:
     /** Preparing under a host session, where the host asked the bridge to drop the controller. */
     bool host_prepared() const { return preparing() && !standalone_; }
     bool armed() const { return stage_==Stage::Armed; }
+    /** LOCAL-ONLY: a packet was submitted and the host has not yet returned. */
+    bool host_starting() const { return host_starting_; }
     /** The current transition was armed by the bridge itself, without host preparation. */
     bool standalone() const { return standalone_; }
 private:

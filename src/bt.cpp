@@ -2334,6 +2334,14 @@ void bt_save_lightbar_color(uint8_t red, uint8_t green, uint8_t blue, uint8_t br
     saved_lightbar_brightness = brightness_percent > 100 ? 100 : brightness_percent;
 }
 
+// LOCAL-ONLY (Features-Port.md 7a)
+void bt_get_lightbar_color(uint8_t *red, uint8_t *green, uint8_t *blue, uint8_t *brightness_percent) {
+    *red = saved_lightbar_red;
+    *green = saved_lightbar_green;
+    *blue = saved_lightbar_blue;
+    *brightness_percent = saved_lightbar_brightness;
+}
+
 void bt_lightbar_loop() {
     if (!lightbar_restore_enabled || !lightbar_restore_pending || hid_interrupt_cid == 0) {
         return;

@@ -77,6 +77,9 @@ pico_board_cmake_set(PICO_DEFAULT_BOOT_STAGE2, boot2_w25q080)
 #endif
 // Drive high to force power supply into PWM mode (lower ripple on 3V3 at light loads)
 // note the SMSP mode pin is on WL_GPIO1
+#ifndef CYW43_WL_GPIO_SMPS_PIN
+#define CYW43_WL_GPIO_SMPS_PIN 1
+#endif
 
 #ifndef CYW43_WL_GPIO_COUNT
 #define CYW43_WL_GPIO_COUNT 3

@@ -142,6 +142,8 @@ void bt_note_host_lightbar_released();
 bool bt_host_lightbar_owned();
 // Updates the color a restore applies without showing it now.
 void bt_save_lightbar_color(uint8_t red, uint8_t green, uint8_t blue, uint8_t brightness_percent);
+// LOCAL-ONLY (Features-Port.md 7a): the color a restore applies.
+void bt_get_lightbar_color(uint8_t *red, uint8_t *green, uint8_t *blue, uint8_t *brightness_percent);
 void bt_lightbar_loop();
 void bt_signal_strength_loop();
 void bt_inquiry_loop();
